@@ -162,4 +162,10 @@ SOURCES: dict[str, Source] = {
         ("div.article-content", "main article", "article", "main"),
         ("hkcert.org",),
     ),
+    "cyber-security-news": Source(
+        "Cyber Security News",
+        "https://cybersecuritynews.com/feed/",
+        ("div.td-post-content", "div.tdb_single_content", "div.entry-content", "article"),
+        ("cybersecuritynews.com",),
+    ),
 }

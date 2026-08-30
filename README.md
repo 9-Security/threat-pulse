@@ -14,7 +14,7 @@
 
 所有 feed 與文章請求只允許 HTTPS、來源設定中的文章網域及公開 IP；每次 redirect 都會重新驗證，並以串流方式在解壓後 12 MiB 上限立即中止，避免 feed 連結造成 SSRF 或無界下載。
 
-目前內建 25 個來源。除原始十個來源外，第一批高技術密度來源包括 ESET WeLiveSecurity、Securelist、SentinelLABS、Proofpoint Threat Insight、Recorded Future Insikt Group、SANS ISC、The DFIR Report、Elastic Security Labs、Check Point Research、CISA Advisories、watchTowr Labs、CERT/CC、TWCERT/CC TVN、NICS 與 HKCERT。
+目前內建 26 個來源。除原始十個來源外，高技術密度來源包括 ESET WeLiveSecurity、Securelist、SentinelLABS、Proofpoint Threat Insight、Recorded Future Insikt Group、SANS ISC、The DFIR Report、Elastic Security Labs、Check Point Research、CISA Advisories、watchTowr Labs、CERT/CC、TWCERT/CC TVN、NICS、HKCERT 與 Cyber Security News。
 
 TWCERT/CC 等來源可能限制內容重製與公開散布；本工具預設用途是組織內部 SOC 分析。部署者仍須依自身使用方式確認授權，不應把抓取到的全文直接公開再發布。
 
