@@ -1,9 +1,17 @@
+import json
 from datetime import datetime, timezone
 
 import httpx
 import pytest
+from bs4 import BeautifulSoup
 
-from soc_news_parser.parser import NewsParser, ParseError
+from soc_news_parser.parser import (
+    MAX_JSON_LD_NODES,
+    NewsParser,
+    ParseError,
+    _entry_datetime,
+    _json_ld_candidates,
+)
 from soc_news_parser.sources import Source
 
 
@@ -296,3 +304,40 @@ def test_missing_entry_date_is_exposed_as_diagnostic() -> None:
 
     assert articles == []
     assert "missing or invalid publication date" in parser.diagnostics[0]
+
+
+def test_naive_publication_date_is_treated_as_utc() -> None:
+    when, warning = _entry_datetime({"published": "Sat, 29 Aug 2026 12:00:00"})
+
+    assert when == datetime(2026, 8, 29, 12, 0, tzinfo=timezone.utc)
+    assert warning is not None
+    assert "timezone" in warning
+
+
+def test_json_ld_graph_is_capped() -> None:
+    nested: dict[str, object] = {}
+    for _ in range(200):
+        nested = {"@graph": [nested]}
+    page = (
+        '<html><head><script type="application/ld+json">'
+        f"{json.dumps(nested)}"
+        "</script></head><body></body></html>"
+    )
+    bodies = list(_json_ld_candidates(BeautifulSoup(page, "lxml")))
+
+    assert bodies == []
+
+
+def test_json_ld_still_reads_root_article_body() -> None:
+    payload = {
+        "articleBody": "Threat report body. " * 80,
+        "@graph": [{"name": str(index)} for index in range(MAX_JSON_LD_NODES * 2)],
+    }
+    page = (
+        '<html><head><script type="application/ld+json">'
+        f"{json.dumps(payload)}"
+        "</script></head><body></body></html>"
+    )
+    bodies = list(_json_ld_candidates(BeautifulSoup(page, "lxml")))
+
+    assert bodies[0].startswith("Threat report body")

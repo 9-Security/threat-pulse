@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 import tempfile
 from datetime import datetime
@@ -94,19 +95,34 @@ def _arguments() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def _parse_env_line(line: str) -> tuple[str, str] | None:
+    stripped = line.strip()
+    if not stripped or stripped.startswith("#"):
+        return None
+    if stripped.startswith("export "):
+        stripped = stripped[7:].strip()
+    if "=" not in stripped:
+        return None
+    key, value = stripped.split("=", 1)
+    key = key.strip()
+    value = value.strip()
+    if not key or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key):
+        return None
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+        value = value[1:-1]
+    else:
+        value = re.split(r"\s+#", value, maxsplit=1)[0].rstrip()
+    return key, value
+
+
 def _load_workspace_env() -> None:
     env_path = Path.cwd() / ".env"
     if not env_path.is_file():
         return
     for line in env_path.read_text(encoding="utf-8").splitlines():
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#") or "=" not in stripped:
-            continue
-        key, value = stripped.split("=", 1)
-        key = key.strip()
-        value = value.strip().strip("'\"")
-        if key and key not in os.environ:
-            os.environ[key] = value
+        parsed = _parse_env_line(line)
+        if parsed and parsed[0] not in os.environ:
+            os.environ[parsed[0]] = parsed[1]
 
 
 def _atomic_write(path: str, content: str) -> str:
@@ -142,6 +158,7 @@ def _write_report_pair(
         raise ValueError("JSON and Markdown output paths must be different")
 
     staged: list[tuple[Path, Path]] = []
+    completed: list[tuple[Path, Path | None]] = []
     try:
         for destination, content in (
             (json_destination, json_content),
@@ -162,12 +179,35 @@ def _write_report_pair(
                 os.fsync(output.fileno())
             staged.append((temporary, destination))
         for temporary, destination in staged:
-            os.replace(temporary, destination)
+            backup: Path | None = None
+            if destination.exists():
+                backup = destination.with_name(
+                    f".{destination.name}.{os.getpid()}.bak"
+                )
+                os.replace(destination, backup)
+            try:
+                os.replace(temporary, destination)
+            except OSError:
+                if backup and backup.exists():
+                    os.replace(backup, destination)
+                raise
+            completed.append((destination, backup))
+        for _, backup in completed:
+            if backup and backup.exists():
+                backup.unlink()
         return str(json_destination), str(markdown_destination)
+    except OSError:
+        for destination, backup in reversed(completed):
+            if backup and backup.exists():
+                os.replace(backup, destination)
+        raise
     finally:
         for temporary, _ in staged:
             if temporary.exists():
                 temporary.unlink()
+        for _, backup in completed:
+            if backup and backup.exists():
+                backup.unlink()
 
 
 def main() -> None:

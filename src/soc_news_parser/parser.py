@@ -8,6 +8,7 @@ import socket
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
+from importlib.metadata import PackageNotFoundError, version
 from typing import Any, Callable, Iterable
 from urllib.parse import urljoin, urlparse
 
@@ -19,11 +20,19 @@ from bs4 import BeautifulSoup, Tag
 from .sources import SOURCES, Source
 
 
+def _package_version() -> str:
+    try:
+        return version("soc-news-parser")
+    except PackageNotFoundError:
+        return "0.10.1"
+
+
 USER_AGENT = (
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/128.0 Safari/537.36 "
-    "SOC-News-Parser/0.1"
+    f"SOC-News-Parser/{_package_version()}"
 )
+MAX_JSON_LD_NODES = 64
 BLOCK_PAGE_MARKERS = (
     "performing security verification",
     "enable javascript and cookies to continue",
@@ -164,10 +173,25 @@ def _json_ld_candidates(soup: BeautifulSoup) -> Iterable[str]:
         except (json.JSONDecodeError, TypeError):
             continue
         queue = payload if isinstance(payload, list) else [payload]
-        for item in queue:
-            if isinstance(item, dict) and isinstance(item.get("@graph"), list):
-                queue.extend(item["@graph"])
-            if isinstance(item, dict) and isinstance(item.get("articleBody"), str):
+        seen: set[int] = set()
+        index = 0
+        visited = 0
+        while index < len(queue) and visited < MAX_JSON_LD_NODES:
+            item = queue[index]
+            index += 1
+            marker = id(item)
+            if marker in seen:
+                continue
+            seen.add(marker)
+            if not isinstance(item, dict):
+                continue
+            visited += 1
+            graph = item.get("@graph")
+            if isinstance(graph, list):
+                room = MAX_JSON_LD_NODES - len(queue)
+                if room > 0:
+                    queue.extend(graph[:room])
+            if isinstance(item.get("articleBody"), str):
                 yield _clean_text(item["articleBody"])
 
 
@@ -355,13 +379,17 @@ class NewsParser:
 
         articles: list[ParsedArticle] = []
         for entry in parsed.entries:
-            published = _entry_datetime(entry)
+            published, date_warning = _entry_datetime(entry)
             if published is None:
                 self.diagnostics.append(
                     f"skipped entry with missing or invalid publication date: "
                     f"{_clean_text(entry.get('title', '(untitled)'))}"
                 )
                 continue
+            if date_warning:
+                self.diagnostics.append(
+                    f"{date_warning}: {_clean_text(entry.get('title', '(untitled)'))}"
+                )
             if not (since <= published < until):
                 continue
             title = _clean_text(entry.get("title", ""))
@@ -462,20 +490,27 @@ class NewsParser:
         return body, method, warnings
 
 
-def _entry_datetime(entry: Any) -> datetime | None:
+def _entry_datetime(entry: Any) -> tuple[datetime | None, str | None]:
+    struct = entry.get("published_parsed") or entry.get("updated_parsed")
+    if struct:
+        try:
+            return datetime(*struct[:6], tzinfo=timezone.utc), None
+        except (TypeError, ValueError, OverflowError):
+            pass
     raw = entry.get("published") or entry.get("updated")
     if raw:
         try:
             value = parsedate_to_datetime(raw)
             if value.tzinfo is None:
                 value = value.replace(tzinfo=timezone.utc)
-            return value.astimezone(timezone.utc)
+                return (
+                    value.astimezone(timezone.utc),
+                    "publication date lacked a timezone and was treated as UTC",
+                )
+            return value.astimezone(timezone.utc), None
         except (TypeError, ValueError, OverflowError):
             pass
-    struct = entry.get("published_parsed") or entry.get("updated_parsed")
-    if struct:
-        return datetime(*struct[:6], tzinfo=timezone.utc)
-    return None
+    return None, None
 
 
 def parse_utc(value: str) -> datetime:

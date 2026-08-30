@@ -1,12 +1,13 @@
 import hashlib
 import json
+import os
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
 
-from soc_news_parser import _write_report_pair
+from soc_news_parser import _parse_env_line, _write_report_pair
 from soc_news_parser.evidence import build_manifest
 from soc_news_parser.parser import ParseError, ParsedArticle
 from soc_news_parser.report import (
@@ -94,6 +95,48 @@ def test_report_outputs_must_use_different_paths(tmp_path: Path) -> None:
     path = str(tmp_path / "report.out")
     with pytest.raises(ValueError, match="must be different"):
         _write_report_pair(path, path, "{}", "# report")
+
+
+def test_write_report_pair_rolls_back_when_second_replace_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    json_path = tmp_path / "report.json"
+    markdown_path = tmp_path / "report.md"
+    json_path.write_text("old-json", encoding="utf-8")
+    markdown_path.write_text("old-md", encoding="utf-8")
+    original = os.replace
+
+    def flaky_replace(src: str | Path, dst: str | Path) -> None:
+        source = Path(src)
+        destination = Path(dst)
+        if (
+            destination.name == "report.md"
+            and source.name.startswith(".report.md.")
+            and not source.name.endswith(".bak")
+        ):
+            raise OSError("disk full")
+        original(src, dst)
+
+    monkeypatch.setattr(os, "replace", flaky_replace)
+
+    with pytest.raises(OSError, match="disk full"):
+        _write_report_pair(str(json_path), str(markdown_path), "new-json", "new-md")
+
+    assert json_path.read_text(encoding="utf-8") == "old-json"
+    assert markdown_path.read_text(encoding="utf-8") == "old-md"
+
+
+def test_env_line_parser_accepts_export_and_strips_comments() -> None:
+    assert _parse_env_line("export RESEND_TO=a@b.com # dest") == (
+        "RESEND_TO",
+        "a@b.com",
+    )
+    assert _parse_env_line('RESEND_FROM="SOC <a@b.com>"') == (
+        "RESEND_FROM",
+        "SOC <a@b.com>",
+    )
+    assert _parse_env_line("# comment") is None
+    assert _parse_env_line("1INVALID=no") is None
 
 
 def test_markdown_escapes_untrusted_title() -> None:
