@@ -98,7 +98,7 @@ Markdown 是給 SOC／威脅分析師閱讀的值班報告：開頭是今日優�
 ```bash
 export RESEND_API_KEY="re_..."
 export RESEND_FROM="SOC Reports <reports@your-verified-domain.example>"
-export RESEND_TO="solar324yao@gmail.com"
+export RESEND_TO="solar324yao@gmail.com,shar.tseng@jjnet.com.tw"
 ```
 
 先執行不會寄信的驗證：
