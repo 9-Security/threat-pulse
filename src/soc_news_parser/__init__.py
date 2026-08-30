@@ -5,7 +5,15 @@ import json
 import sys
 from datetime import datetime
 
-from .parser import NewsParser, ParseError, default_window, parse_utc, source_key_for_url
+from .evidence import build_manifest
+from .parser import (
+    NewsParser,
+    ParseError,
+    ParsedArticle,
+    default_window,
+    parse_utc,
+    source_key_for_url,
+)
 from .sources import SOURCES
 
 
@@ -23,6 +31,15 @@ def _arguments() -> argparse.Namespace:
     article.add_argument("url")
     article.add_argument("--title", default="", help="expected article title")
     article.add_argument("--source", choices=sorted(SOURCES))
+
+    audit = subcommands.add_parser(
+        "audit", help="extract one article and emit an auditable IoC evidence manifest"
+    )
+    audit.add_argument("url")
+    audit.add_argument("--title", required=True, help="expected article title")
+    audit.add_argument("--source", choices=sorted(SOURCES))
+    audit.add_argument("--published-at", help="ISO-8601 publication timestamp")
+    audit.add_argument("--output", help="write JSON to this path")
 
     feed = subcommands.add_parser("feed", help="extract recent articles from one feed")
     feed.add_argument("source", choices=sorted(SOURCES))
@@ -50,19 +67,38 @@ def main() -> None:
 
     try:
         with NewsParser() as news_parser:
-            if args.command == "article":
+            if args.command in {"article", "audit"}:
                 source_key = args.source or source_key_for_url(args.url)
                 selectors = SOURCES[source_key].article_selectors if source_key else ()
                 body, method, warnings = news_parser.extract_html(
                     args.url, expected_title=args.title, selectors=selectors
                 )
-                result: object = {
-                    "url": args.url,
-                    "body": body,
-                    "extraction_method": method,
-                    "body_characters": len(body),
-                    "warnings": warnings,
-                }
+                if args.command == "audit":
+                    article_source = SOURCES[source_key].name if source_key else "Unknown"
+                    published = (
+                        parse_utc(args.published_at).isoformat()
+                        if args.published_at
+                        else None
+                    )
+                    parsed_article = ParsedArticle(
+                        source=article_source,
+                        title=args.title,
+                        url=args.url,
+                        published_at=published,
+                        body=body,
+                        extraction_method=method,
+                        body_characters=len(body),
+                        warnings=warnings,
+                    )
+                    result = build_manifest(parsed_article).to_dict()
+                else:
+                    result = {
+                        "url": args.url,
+                        "body": body,
+                        "extraction_method": method,
+                        "body_characters": len(body),
+                        "warnings": warnings,
+                    }
             else:
                 if args.hours <= 0:
                     raise ValueError("--hours must be greater than zero")

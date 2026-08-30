@@ -47,6 +47,25 @@ uv run soc-news-parser article \
   --title "Brave browser adds email aliases to help users evade tracking"
 ```
 
+產生可稽核 IoC evidence manifest：
+
+```bash
+uv run soc-news-parser audit \
+  "https://www.microsoft.com/en-us/security/blog/2026/08/28/terminalfix-campaign-deploys-reverse-tunnel-through-multistage-intrusion/" \
+  --source microsoft-security \
+  --title "TerminalFix campaign deploys a reverse tunnel through multistage intrusion" \
+  --published-at 2026-08-29T03:43:27Z \
+  --output terminalfix-evidence.json
+```
+
+Manifest 保存正文 SHA-256、擷取方法、parser 版本／Git revision、發布與擷取時間，以及每個候選值的原值、正規化值、行號、章節、上下文和理由：
+
+- `confirmed`：位於原文明確 IoC 章節，或同一行明確描述為 C2、惡意檔案、payload、攻擊者控制基礎設施等。
+- `candidate`：格式符合，但原文關係不足，必須人工複核；不計入 IoC 總數。
+- `rejected`：出版者網域，或位於 Related、Latest News、References 等編輯區塊。
+
+`confirmed` 代表「來源明確聲稱」，不是 parser 對惡意性的獨立背書。惡意工具家族及 ATT&CK 對映不做猜測，必須另外保存原文引句。
+
 ### 驗證
 
 ```bash
