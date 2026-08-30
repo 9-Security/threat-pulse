@@ -3,9 +3,9 @@
 - 報告時間：2026-08-30 01:21 UTC
 - 查核區間：2026-08-29 01:21 UTC ～ 2026-08-30 01:21 UTC
 - 來源：The Hacker News、BleepingComputer、Krebs on Security、Dark Reading、SecurityWeek、The Record、Unit 42、Cisco Talos、Microsoft Security Blog、Google Cloud/Mandiant
-- 符合區間文章數：3
+- 符合區間文章數：5
 - 明確 IoC 數：15（11 個 SHA-256、3 個網域、1 個 URL；以唯一值計數）
-- 建議郵件主旨：`[SOC] 每日資安新聞 IoC 彙整報告 - 文章數 3 / IoC數 15`
+- 建議郵件主旨：`[SOC] 每日資安新聞 IoC 彙整報告 - 文章數 5 / IoC數 15`
 
 > 計數原則：僅計入原文明確列在 IoC 區段中的唯一指標。檔名及合法程式被濫用時的名稱另列為調查線索，不灌入 IoC 總數。Defanged 網路指標已還原；上下文仍保留原文寫法供複核。
 
@@ -83,14 +83,34 @@
 - 攻擊手法摘要：Hasbro 表示今年稍早發現涉及其網路的資安事件，部分現任及前任員工個資可能遭存取；公司將部分系統離線並展開外部協助調查。文章明確指出尚無已知網路犯罪集團在資料外洩網站列出 Hasbro，且 Hasbro 表示未發現個資遭濫用。原文沒有交代初始入侵方法，故不推測。
 - **無擷取到 IoC**：文章未提供 hash、IP、惡意網域／URL 或可疑檔名。
 
+## 4. BleepingComputer
+
+### Brave browser adds email aliases to help users evade tracking
+
+- 發布時間：2026-08-29 10:19:23 EDT（2026-08-29 14:19:23 UTC）
+- 原文：[BleepingComputer](https://www.bleepingcomputer.com/news/security/brave-browser-adds-email-aliases-to-help-users-evade-tracking/)
+- 惡意工具／家族：未提及。
+- 攻擊手法摘要：本篇不是攻擊事件。文章說明郵件地址外洩可被用於跨網站身分關聯、垃圾郵件及後續網路釣魚，並介紹 Brave Email Aliases 與 OPAQUE 驗證的防護方式；未描述具體威脅活動。
+- **無擷取到 IoC**：文章未提供 hash、IP、惡意網域／URL 或可疑檔名。
+
+## 5. BleepingComputer
+
+### Anthropic is cutting Claude Code's current weekly limits by 17%
+
+- 發布時間：2026-08-29 19:11:51 EDT（2026-08-29 23:11:51 UTC）
+- 原文：[BleepingComputer](https://www.bleepingcomputer.com/news/artificial-intelligence/anthropic-is-cutting-claude-codes-current-weekly-limits-by-17-percent/)
+- 惡意工具／家族：未提及。
+- 攻擊手法摘要：不適用；本文是 Claude Code 用量上限政策變更，並非資安事件。正文尾端的攻防模擬文字屬贊助內容，未作為文章威脅情報。
+- **無擷取到 IoC**：文章未提供 hash、IP、惡意網域／URL 或可疑檔名。
+
 ## 來源查核結果
 
 | 來源 | 指定區間結果 |
 |---|---|
 | The Hacker News | 1 篇。 |
-| BleepingComputer | 未確認到符合區間的新文章；官方 Feed 受 Cloudflare 驗證阻擋，另以站內公開索引交叉查核。 |
+| BleepingComputer | 2 篇；一般網頁擷取受到 Cloudflare 驗證阻擋，改以標準 RSS reader User-Agent 取得官方 RSS 並查閱正文。 |
 | Krebs on Security | 0 篇；Feed 最後更新為 2026-08-27。 |
-| Dark Reading | 0 篇可確認符合；官方 RSS 抓取失敗，首頁最新文章標示 2026-08-28，未提供可可靠轉換為 UTC 的精確發布時間。 |
+| Dark Reading | 0 篇；官方 RSS 最新文章為 2026-08-28 20:19:22 UTC，早於起點。 |
 | SecurityWeek | 1 篇。 |
 | The Record | 0 篇；Feed 最新文章為 2026-08-28 16:30 UTC。 |
 | Unit 42 | 0 篇；Feed 最新文章為 2026-08-28 22:00:07 UTC，早於起點 3 小時 20 分 53 秒。 |
