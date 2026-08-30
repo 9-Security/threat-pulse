@@ -200,6 +200,9 @@ def main() -> None:
                     expected_title=args.title,
                     selectors=selectors,
                     allowed_hosts=allowed_hosts,
+                    min_body_characters=(
+                        source.min_body_characters if source else 500
+                    ),
                 )
                 if args.command == "audit":
                     article_source = source.name if source else "Unknown"

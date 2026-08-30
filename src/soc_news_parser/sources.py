@@ -7,6 +7,7 @@ class Source:
     feed_url: str
     article_selectors: tuple[str, ...] = ()
     article_hosts: tuple[str, ...] = ()
+    min_body_characters: int = 500
 
 
 SOURCES: dict[str, Source] = {
@@ -147,6 +148,7 @@ SOURCES: dict[str, Source] = {
         "https://www.twcert.org.tw/tw/rss-132-1.xml",
         ("div.content", "main article", "article", "main"),
         ("twcert.org.tw",),
+        200,
     ),
     "nics": Source(
         "國家資通安全研究院 NICS",

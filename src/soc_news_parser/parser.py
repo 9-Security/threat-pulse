@@ -77,14 +77,16 @@ def _clean_text(value: str) -> str:
     return "\n".join(line for line in lines if line)
 
 
-def _looks_like_body(text: str, expected_title: str = "") -> tuple[bool, list[str]]:
+def _looks_like_body(
+    text: str, expected_title: str = "", min_characters: int = 500
+) -> tuple[bool, list[str]]:
     warnings: list[str] = []
     lowered = text.lower()
     opening = lowered[:1500]
     marker_count = sum(marker in opening for marker in BLOCK_PAGE_MARKERS)
     if marker_count >= 2 or opening.lstrip().startswith("access denied"):
         return False, ["anti-bot or access-denied page detected"]
-    if len(text) < 500:
+    if len(text) < min_characters:
         return False, [f"body too short ({len(text)} characters)"]
     if text.count("\n") < 3:
         warnings.append("body has unusually few text blocks")
@@ -265,6 +267,7 @@ class NewsParser:
         expected_title: str = "",
         selectors: tuple[str, ...] = (),
         allowed_hosts: tuple[str, ...] = (),
+        min_body_characters: int = 500,
     ) -> tuple[str, str, list[str]]:
         response = self._get(url, allowed_hosts=allowed_hosts or None)
         page = response.text
@@ -299,7 +302,9 @@ class NewsParser:
         valid_attempts: list[tuple[float, str, str, list[str]]] = []
         for method, candidate in attempts:
             body = _clean_body_text(candidate)
-            valid, warnings = _looks_like_body(body, expected_title)
+            valid, warnings = _looks_like_body(
+                body, expected_title, min_body_characters
+            )
             if valid:
                 title_terms = set(re.findall(r"[a-z0-9]{4,}", expected_title.lower()))
                 title_hits = sum(term in body[:4000].lower() for term in title_terms)
@@ -373,6 +378,7 @@ class NewsParser:
                     title,
                     source.article_selectors,
                     source.article_hosts,
+                    source.min_body_characters,
                 )
             except ParseError as error:
                 body = ""
@@ -406,6 +412,7 @@ class NewsParser:
         title: str,
         selectors: tuple[str, ...],
         allowed_hosts: tuple[str, ...],
+        min_body_characters: int,
     ) -> tuple[str, str, list[str]]:
         feed_candidates: list[tuple[str, str]] = []
         for item in entry.get("content", []):
@@ -420,7 +427,7 @@ class NewsParser:
 
         valid_feed_candidates: list[tuple[str, str, list[str]]] = []
         for method, body in feed_candidates:
-            valid, warnings = _looks_like_body(body, title)
+            valid, warnings = _looks_like_body(body, title, min_body_characters)
             if valid:
                 valid_feed_candidates.append((method, body, warnings))
         complete = [item for item in valid_feed_candidates if len(item[1]) >= 1200]
@@ -434,6 +441,7 @@ class NewsParser:
                 expected_title=title,
                 selectors=selectors,
                 allowed_hosts=allowed_hosts,
+                min_body_characters=min_body_characters,
             )
         except ParseError:
             if valid_feed_candidates:
