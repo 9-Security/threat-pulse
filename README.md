@@ -82,7 +82,7 @@ uv run soc-news-parser report \
   --markdown-output daily-report.md
 ```
 
-預設處理所有內建來源；可重複使用 `--source microsoft-security --source the-hacker-news` 限定來源。單一來源或文章失敗不會中止整批報告，錯誤會保存在 `source_failures` 或文章的 `extraction_method: "failed"`。
+預設處理所有內建來源；可重複使用 `--source microsoft-security --source the-hacker-news` 限定來源。同一來源在時間窗內的多篇文章會各自擷取與抽 IoC，只依正規化 URL 去重，不會每站只留一篇。單一來源或文章失敗不會中止整批報告，錯誤會保存在 `source_failures` 或文章的 `extraction_method: "failed"`。同一 IoC 出現在多篇文章時，主旨總數只計一次。
 
 報告主旨的文章數只計標題或來源摘要具有明確資安主題訊號的文章；不相關文章仍保留在 JSON 的 `excluded_articles` 供稽核。IoC 總數採全報告唯一值，僅計 `confirmed` 的 MD5、SHA-1、SHA-256、IPv4/IPv6、domain、URL 與 CVE，檔名與原文指稱另行統計。
 

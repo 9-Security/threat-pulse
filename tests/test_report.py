@@ -210,6 +210,60 @@ def test_topic_filter_keeps_security_articles_without_iocs() -> None:
     assert "IoC：原文未提供明確指標。" in markdown
 
 
+def test_same_source_keeps_every_same_day_article_with_iocs() -> None:
+    class BusySourceParser:
+        def parse_feed(self, source: object, **_: object) -> list[ParsedArticle]:
+            name = getattr(source, "name")
+            morning = parsed_article(
+                name,
+                "Morning ransomware note",
+                "Indicators of Compromise\n"
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"
+                "shared[.]example\n",
+            )
+            afternoon = parsed_article(
+                name,
+                "Afternoon phishing wave",
+                "Indicators of Compromise\nshared[.]example\nphish[.]example\n",
+            )
+            evening = parsed_article(
+                name,
+                "Evening CVE advisory",
+                "CVE-2026-76581 allows unauthenticated takeover.\n",
+            )
+            morning.published_at = "2026-08-29T08:00:00+00:00"
+            afternoon.published_at = "2026-08-29T14:00:00+00:00"
+            evening.published_at = "2026-08-29T20:00:00+00:00"
+            return [morning, afternoon, evening]
+
+    generated = datetime(2026, 8, 30, 1, 21, tzinfo=timezone.utc)
+    report = collect_report(
+        BusySourceParser(),  # type: ignore[arg-type]
+        ["bleepingcomputer"],
+        since=datetime(2026, 8, 29, 1, 21, tzinfo=timezone.utc),
+        until=generated,
+        generated_at=generated,
+    )
+    markdown = render_markdown(report)
+    titles = [item.article_title for item in report.articles]
+
+    assert report.active_source_count == 1
+    assert report.article_count == 3
+    assert titles == [
+        "Evening CVE advisory",
+        "Afternoon phishing wave",
+        "Morning ransomware note",
+    ]
+    assert report.confirmed_ioc_count == 4
+    assert "Morning ransomware note" in markdown
+    assert "Afternoon phishing wave" in markdown
+    assert "Evening CVE advisory" in markdown
+    assert markdown.count("### 明確 IoC") == 3
+    assert "`shared.example`" in markdown
+    assert "`phish.example`" in markdown
+    assert "`CVE-2026-76581`" in markdown
+
+
 def test_reader_report_includes_explicit_cves_and_quoted_claims() -> None:
     class ClaimParser:
         def parse_feed(self, source: object, **_: object) -> list[ParsedArticle]:

@@ -80,6 +80,53 @@ def test_json_ld_article_body_is_used() -> None:
     assert extracted.startswith("Threat report body")
 
 
+def test_feed_keeps_all_in_window_articles_from_one_source() -> None:
+    feed_url = "https://example.test/feed"
+    items = []
+    routes: dict[str, tuple[str, str]] = {}
+    for hour, slug in ((8, "one"), (12, "two"), (16, "three")):
+        article_url = f"https://example.test/{slug}"
+        items.append(
+            f"<item><title>Story {slug}</title><link>{article_url}</link>"
+            f"<pubDate>Sat, 29 Aug 2026 {hour:02d}:00:00 +0000</pubDate>"
+            f"<description>Short.</description></item>"
+        )
+        routes[article_url] = (
+            "text/html",
+            "<html><body><article><h1>Story "
+            + slug
+            + "</h1>"
+            + "".join(
+                f"<p>Malware campaign technical analysis paragraph {number}: "
+                f"{'validated technical detail ' * 12}</p>"
+                for number in range(6)
+            )
+            + "</article></body></html>",
+        )
+    routes[feed_url] = (
+        "application/rss+xml",
+        '<?xml version="1.0"?><rss version="2.0"><channel><title>Test</title>'
+        + "".join(items)
+        + "</channel></rss>",
+    )
+    parser = news_parser()
+    parser.client.close()
+    parser.client = client_for(routes)
+
+    with parser:
+        articles = parser.parse_feed(
+            Source("Test", feed_url, ("article",), ("example.test",)),
+            since=datetime(2026, 8, 29, 0, tzinfo=timezone.utc),
+            until=datetime(2026, 8, 30, 0, tzinfo=timezone.utc),
+        )
+
+    assert [item.url for item in articles] == [
+        "https://example.test/one",
+        "https://example.test/two",
+        "https://example.test/three",
+    ]
+
+
 def test_anti_bot_page_is_rejected() -> None:
     url = "https://example.test/challenge"
     page = (
