@@ -252,6 +252,21 @@ def _markdown_url(value: str) -> str:
     return quote(value, safe="/:?&=#%+@,;~-._")
 
 
+def _reader_context(evidence: Evidence) -> str:
+    parts = [part.strip() for part in evidence.context.splitlines() if part.strip()]
+    needle = evidence.normalized_value.lower()
+    raw = evidence.raw_value.lower()
+    chosen = next(
+        (part for part in parts if needle in part.lower() or raw in part.lower()),
+        parts[0] if parts else evidence.context,
+    )
+    chosen = re.sub(r"\s+", " ", chosen).strip()
+    if len(chosen) <= 240:
+        return chosen
+    truncated = chosen[:240].rsplit(" ", 1)[0].rstrip(" ,;:-")
+    return f"{truncated}…"
+
+
 def _unique_article_evidence(
     manifest: EvidenceManifest, status: str
 ) -> list[Evidence]:
@@ -321,7 +336,7 @@ def render_markdown(report: DailyReport) -> str:
                     [
                         f"- **{evidence.indicator_type.upper()}**："
                         f"`{_markdown_code(evidence.normalized_value)}`",
-                        f"  - 上下文：{_markdown_escape(evidence.context).replace(chr(10), ' / ')}",
+                        f"  - 上下文：{_markdown_escape(_reader_context(evidence))}",
                     ]
                 )
         else:
@@ -332,7 +347,7 @@ def render_markdown(report: DailyReport) -> str:
                 lines.extend(
                     [
                         f"- `{_markdown_code(evidence.normalized_value)}`",
-                        f"  - 上下文：{_markdown_escape(evidence.context).replace(chr(10), ' / ')}",
+                        f"  - 上下文：{_markdown_escape(_reader_context(evidence))}",
                     ]
                 )
         if claims:
@@ -342,7 +357,7 @@ def render_markdown(report: DailyReport) -> str:
                 lines.extend(
                     [
                         f"- **{label}**：`{_markdown_code(evidence.normalized_value)}`",
-                        f"  - 上下文：{_markdown_escape(evidence.context).replace(chr(10), ' / ')}",
+                        f"  - 上下文：{_markdown_escape(_reader_context(evidence))}",
                     ]
                 )
         lines.append("")

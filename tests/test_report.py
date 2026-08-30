@@ -220,8 +220,9 @@ def test_reader_report_includes_explicit_cves_and_quoted_claims() -> None:
                     """Researchers tracked the malware family named LockBit.
 The operators used ATT&CK technique T1059.001 during execution.
 CVE-2026-76581 allows unauthenticated takeover.
-A feature called Email Aliases is unrelated.
-(Affects all versions up to, and including, 4.16.7.1)
+    A feature called Email Aliases is unrelated.
+    Related : ATF Confirms Cyber Incident After Ransomware Group Claims Attack
+    (Affects all versions up to, and including, 4.16.7.1)
 """,
                 )
             ]
@@ -243,7 +244,10 @@ A feature called Email Aliases is unrelated.
     assert "**惡意程式家族**：`LockBit`" in markdown
     assert "**攻擊技術**：`T1059.001`" in markdown
     assert "**惡意程式家族**：`Email Aliases`" not in markdown
+    assert "**惡意程式家族**：`After`" not in markdown
     assert "4.16.7.1" not in markdown
+    cve_block = markdown.split("### 明確 IoC", 1)[1].split("## 報告說明", 1)[0]
+    assert "Email Aliases" not in cve_block
 
 
 def test_serialize_report_pairs_json_to_reader_digest() -> None:

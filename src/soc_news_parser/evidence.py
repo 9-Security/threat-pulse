@@ -60,22 +60,49 @@ ATTACK_RE = re.compile(
 )
 GENERIC_CLAIM_NAMES = frozenset(
     {
-        "windows",
+        "after",
+        "against",
+        "alleged",
+        "another",
+        "android",
+        "before",
+        "claims",
+        "confirms",
+        "custom",
+        "cyber",
+        "during",
+        "following",
+        "generic",
+        "group",
+        "incident",
+        "into",
+        "java",
+        "known",
+        "latest",
         "linux",
         "macos",
-        "android",
-        "python",
-        "java",
-        "unknown",
-        "generic",
-        "custom",
+        "major",
         "malicious",
         "new",
-        "this",
+        "python",
+        "recent",
+        "related",
+        "suspected",
         "that",
         "their",
+        "these",
+        "this",
+        "those",
+        "unknown",
+        "when",
+        "where",
+        "which",
+        "while",
+        "windows",
+        "with",
     }
 )
+RELATED_LINE_RE = re.compile(r"^related(?:\s+articles?)?\s*[:：-]", re.IGNORECASE)
 FILE_RE = re.compile(
     r"(?<![\w.-])[\w@+-][\w@().+-]*\."
     r"(?:exe|dll|sys|ps1|bat|cmd|vbs|js|jar|py|zip|rar|7z|hta|msi|scr|"
@@ -338,6 +365,7 @@ def extract_evidence(article: ParsedArticle) -> list[Evidence]:
                 zone = "excluded"
             continue
 
+        line_zone = "excluded" if RELATED_LINE_RE.match(stripped) else zone
         before = lines[index - 2].strip() if index > 1 else ""
         after = lines[index].strip() if index < len(lines) else ""
         context = "\n".join(part for part in (before, stripped, after) if part)
@@ -353,7 +381,7 @@ def extract_evidence(article: ParsedArticle) -> list[Evidence]:
             indicator_type = _hash_type(raw) if generic_type == "hash" else generic_type
             normalized = _normalize(raw, generic_type)
             status, assertion, reasons = _classify(
-                zone=zone,
+                zone=line_zone,
                 article=article,
                 generic_type=generic_type,
                 normalized=normalized,

@@ -142,7 +142,8 @@ A feature called Email Aliases is not malware.
 CVE-2026-76581 and cve-2026-18431 are listed.
 (Affects all versions up to, and including, 4.16.7.1)
 The C2 server 185.199.108.153 remains unconfirmed.
-Related Articles
+    Related : ATF Confirms Cyber Incident After Ransomware Group Claims Attack
+    Related Articles
 CVE-2024-0001 is only in an editorial list.
 """
     article = article_with_mixed_evidence()
@@ -166,6 +167,7 @@ CVE-2024-0001 is only in an editorial list.
     assert ("attack_technique", "T1059.001") in confirmed
     assert "T1027" not in values
     assert "Email Aliases" not in values
+    assert "After" not in values
     assert "4.16.7.1" not in values
     assert "CVE-2024-0001" in rejected
     ip = next(item for item in manifest.evidence if item.normalized_value == "185.199.108.153")
