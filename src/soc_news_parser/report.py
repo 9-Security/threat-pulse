@@ -87,12 +87,27 @@ def _unique_confirmed(
 _SENTENCE_ENDINGS = ".!?。！？"
 
 
+def _last_sentence_end(summary: str) -> int:
+    for index in range(len(summary) - 1, -1, -1):
+        mark = summary[index]
+        if mark not in _SENTENCE_ENDINGS:
+            continue
+        if mark == ".":
+            previous = summary[index - 1] if index > 0 else ""
+            following = summary[index + 1] if index + 1 < len(summary) else ""
+            if previous.isdigit() or following.isdigit():
+                continue
+        return index
+    return -1
+
+
 def _source_summary(manifest: EvidenceManifest) -> str:
     summary = (manifest.source_summary or "").strip()
     summary = re.sub(r"\s+", " ", summary).strip()
     summary = re.split(
         r"\bThe post\b.+\bappeared first on\b", summary, maxsplit=1
     )[0].strip()
+    summary = re.sub(r"\[(?:\.\.\.|…|⋯)\]\s*$", "", summary).strip()
     if not summary:
         paragraphs = [
             line.strip()
@@ -100,8 +115,8 @@ def _source_summary(manifest: EvidenceManifest) -> str:
             if line.strip() and not line.startswith("##")
         ]
         summary = paragraphs[0] if paragraphs else ""
-    if summary and summary[-1] not in _SENTENCE_ENDINGS + "]":
-        complete = max(summary.rfind(mark) for mark in _SENTENCE_ENDINGS)
+    if summary and summary[-1] not in _SENTENCE_ENDINGS:
+        complete = _last_sentence_end(summary)
         ending = summary[complete] if complete >= 0 else ""
         if complete >= 30 or (ending in "。！？" and complete >= 8):
             summary = summary[: complete + 1]

@@ -135,6 +135,29 @@ def test_reader_summary_keeps_complete_chinese_sentence() -> None:
     assert summary == "這是一句完整的資安事件說明。"
 
 
+def test_reader_summary_does_not_treat_decimal_as_sentence_end() -> None:
+    article = parsed_article("The Hacker News", "WordPress flaws", "Body")
+    article.feed_excerpt = (
+        "A complete security incident sentence. "
+        "CVE-2026-76581 (CVSS score: 9.8) - An authentication bypass flaw in"
+    )
+    summary = _source_summary(build_manifest(article))
+
+    assert summary == "A complete security incident sentence."
+    assert "CVSS" not in summary
+
+
+def test_reader_summary_strips_read_more_ellipsis() -> None:
+    article = parsed_article("BleepingComputer", "Security breach", "Body")
+    article.feed_excerpt = (
+        "The latest version of the Brave browser introduces aliases. [...]"
+    )
+    summary = _source_summary(build_manifest(article))
+
+    assert summary == "The latest version of the Brave browser introduces aliases."
+    assert "[...]" not in summary
+
+
 def test_reader_summary_does_not_truncate_at_abbreviation() -> None:
     article = parsed_article("SecurityWeek", "Security breach", "Body")
     article.feed_excerpt = (
