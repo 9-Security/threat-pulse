@@ -89,3 +89,36 @@ def test_anti_bot_page_is_rejected() -> None:
 
     with parser, pytest.raises(ParseError, match="anti-bot"):
         parser.extract_html(url)
+
+
+def test_blocked_article_is_reported_without_using_excerpt_as_body() -> None:
+    feed_url = "https://example.test/feed"
+    article_url = "https://example.test/blocked"
+    feed = f"""<?xml version="1.0"?>
+    <rss version="2.0"><channel><title>Test</title>
+      <item><title>Blocked technical report</title>
+      <link>{article_url}</link>
+      <pubDate>Sat, 29 Aug 2026 03:43:27 +0000</pubDate>
+      <description>This is only a feed excerpt, not the full report.</description></item>
+    </channel></rss>"""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if str(request.url) == feed_url:
+            return httpx.Response(200, text=feed, request=request)
+        return httpx.Response(403, text="Access denied", request=request)
+
+    parser = NewsParser()
+    parser.client.close()
+    parser.client = httpx.Client(transport=httpx.MockTransport(handler))
+
+    with parser:
+        articles = parser.parse_feed(
+            Source("Test", feed_url),
+            since=datetime(2026, 8, 29, 0, tzinfo=timezone.utc),
+            until=datetime(2026, 8, 30, 0, tzinfo=timezone.utc),
+        )
+
+    assert articles[0].extraction_method == "failed"
+    assert articles[0].body == ""
+    assert articles[0].feed_excerpt == "This is only a feed excerpt, not the full report."
+    assert "403 Forbidden" in articles[0].warnings[1]

@@ -10,7 +10,7 @@
 4. 使用 Trafilatura 做通用正文抽取。
 5. 最後嘗試 `article`、`main` 等語意標籤。
 
-解析結果會記錄 `extraction_method`、字元數及 warnings。Cloudflare 驗證頁、Access Denied、過短內容不會被當成文章正文。
+解析結果會記錄 `extraction_method`、字元數及 warnings。Cloudflare 驗證頁、Access Denied、過短內容不會被當成文章正文。若所有正文方法都失敗，該篇仍會保留在輸出中，但標為 `extraction_method: "failed"`、`body` 留空；RSS 摘要只存於 `feed_excerpt`，不會冒充完整內文供 IoC 抽取。
 
 目前內建原始十個來源：The Hacker News、BleepingComputer、Krebs on Security、Dark Reading、SecurityWeek、The Record、Unit 42、Cisco Talos、Microsoft Security Blog、Google Cloud/Mandiant。
 

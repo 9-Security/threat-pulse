@@ -61,6 +61,7 @@ class ParsedArticle:
     extraction_method: str
     body_characters: int
     warnings: list[str]
+    feed_excerpt: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -145,8 +146,11 @@ class NewsParser:
         self.close()
 
     def _get(self, url: str) -> httpx.Response:
-        response = self.client.get(url)
-        response.raise_for_status()
+        try:
+            response = self.client.get(url)
+            response.raise_for_status()
+        except httpx.HTTPError as error:
+            raise ParseError(f"HTTP fetch failed for {url}: {error}") from error
         if len(response.content) > 12 * 1024 * 1024:
             raise ParseError(f"response exceeds 12 MiB: {url}")
         return response
@@ -219,9 +223,18 @@ class NewsParser:
             if not title or not url:
                 continue
 
-            body, method, warnings = self._entry_or_html_body(
-                entry, url, title, source.article_selectors
-            )
+            excerpt = _clean_text(entry.get("summary", "")) or None
+            try:
+                body, method, warnings = self._entry_or_html_body(
+                    entry, url, title, source.article_selectors
+                )
+            except ParseError as error:
+                body = ""
+                method = "failed"
+                warnings = [
+                    "full article extraction failed; feed excerpt is metadata only",
+                    str(error),
+                ]
             articles.append(
                 ParsedArticle(
                     source=source.name,
@@ -232,6 +245,7 @@ class NewsParser:
                     extraction_method=method,
                     body_characters=len(body),
                     warnings=warnings,
+                    feed_excerpt=excerpt,
                 )
             )
             if limit is not None and len(articles) >= limit:
