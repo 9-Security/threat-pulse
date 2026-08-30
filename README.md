@@ -84,7 +84,9 @@ uv run soc-news-parser report \
 
 預設處理所有內建來源；可重複使用 `--source microsoft-security --source the-hacker-news` 限定來源。單一來源或文章失敗不會中止整批報告，錯誤會保存在 `source_failures` 或文章的 `extraction_method: "failed"`。
 
-報告主旨的 IoC 總數採全報告唯一值，僅計 `confirmed` 的 MD5、SHA-1、SHA-256、IPv4/IPv6、domain 與 URL；檔名另行統計。Markdown 只列 confirmed 指標與證據，candidate／rejected 的逐筆紀錄保留在 JSON。兩份輸出具有相同 Report ID，會拒絕相同輸出路徑並先完成暫存寫入再替換。
+報告主旨的文章數只計標題或來源摘要具有明確資安主題訊號的文章；不相關文章仍保留在 JSON 的 `excluded_articles` 供稽核。IoC 總數採全報告唯一值，僅計 `confirmed` 的 MD5、SHA-1、SHA-256、IPv4/IPv6、domain 與 URL，檔名另行統計。
+
+Markdown 是給收件者閱讀的標準報告，只呈現查核期間、相關文章、來源摘要、明確 IoC、相關檔名和必要方法說明。Report ID、parser 版本、正文 hash、warnings、candidate/rejected、排除文章及來源錯誤只保留於 JSON 稽核檔。兩份輸出在寄送前仍會驗證 Report ID 配對，並拒絕相同輸出路徑。
 
 ### 使用 Resend 寄送報告
 
@@ -113,7 +115,7 @@ uv run soc-news-parser send-report \
   --markdown-report daily-report.md
 ```
 
-也可重複使用 `--to analyst@example.com` 指定收件人，並以 `--from` 覆寫寄件者。寄送前會確認 JSON 與 Markdown 的 Report ID 一致，兩份檔案都會以附件寄出。Resend `POST /emails` 請求使用由 Report ID 與收件人衍生的 `Idempotency-Key`；24 小時內重試相同 payload 不會重複寄送。
+也可重複使用 `--to analyst@example.com` 指定收件人，並以 `--from` 覆寫寄件者。寄送前會確認 JSON 與 Markdown 的 Report ID 一致，兩份檔案都會以附件寄出；郵件正文會將 Markdown 安全渲染為標準 HTML，不顯示 parser/debug 欄位。Resend `POST /emails` 請求使用由 Report ID 與收件人衍生的 `Idempotency-Key`；24 小時內重試相同 payload 不會重複寄送。
 
 附件原始總大小限制為 28 MiB，保留 Base64 後低於 Resend 每封 40 MB 的上限。遇到網路錯誤、HTTP 429 或 5xx 最多重試三次；其他 API 拒絕會立即回報且不宣稱寄送成功。
 

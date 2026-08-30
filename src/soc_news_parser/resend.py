@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import base64
 import hashlib
-import html
 import json
 import os
 import time
@@ -12,6 +11,8 @@ from pathlib import Path
 from typing import Any, Callable
 
 import httpx
+from bs4 import BeautifulSoup
+from markdown import markdown as render_markdown_html
 
 
 RESEND_ENDPOINT = "https://api.resend.com/emails"
@@ -35,6 +36,20 @@ class SendResult:
     email_id: str
     report_id: str
     idempotency_key: str
+
+
+def _sanitize_rendered_html(value: str) -> str:
+    soup = BeautifulSoup(value, "html.parser")
+    for node in soup.select("script, style, iframe, object, embed, link, meta, img"):
+        node.decompose()
+    for node in soup.find_all(True):
+        href = node.get("href")
+        node.attrs = {}
+        if node.name == "a" and isinstance(href, str):
+            if href.startswith(("https://", "http://")):
+                node["href"] = href
+                node["rel"] = "noopener noreferrer"
+    return str(soup)
 
 
 def _valid_address(value: str, *, allow_display_name: bool = False) -> str:
@@ -96,17 +111,30 @@ def build_report_email(
         "\n".join(sorted(normalized_recipients)).encode()
     ).hexdigest()[:16]
     idempotency_key = f"soc-report/{report_id}/{recipient_digest}"
+    rendered_report = render_markdown_html(
+        markdown,
+        extensions=["sane_lists"],
+        output_format="html",
+    )
+    rendered_report = _sanitize_rendered_html(rendered_report)
     payload = {
         "from": sender,
         "to": normalized_recipients,
         "subject": report["subject"],
         "text": markdown,
         "html": (
-            "<html><body><h1>SOC 每日資安新聞 IoC 彙整報告</h1>"
-            f"<p><strong>Report ID:</strong> <code>{report_id}</code></p>"
-            '<pre style="white-space:pre-wrap;font-family:ui-monospace,monospace">'
-            f"{html.escape(markdown)}"
-            "</pre></body></html>"
+            "<html><head><style>"
+            "body{font-family:Arial,'Noto Sans TC',sans-serif;line-height:1.6;"
+            "color:#17202a;max-width:860px;margin:24px auto;padding:0 20px}"
+            "h1{font-size:26px;border-bottom:2px solid #1f618d;padding-bottom:10px}"
+            "h2{font-size:20px;margin-top:30px;color:#154360}"
+            "h3{font-size:16px;color:#1f618d}"
+            "code{background:#f2f4f4;padding:2px 5px;border-radius:3px;"
+            "overflow-wrap:anywhere}"
+            "li{margin:5px 0}a{color:#1a5276}"
+            "</style></head><body>"
+            f"{rendered_report}"
+            "</body></html>"
         ),
         "attachments": [
             {

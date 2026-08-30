@@ -59,21 +59,24 @@ def test_report_counts_unique_confirmed_values_and_failures() -> None:
         generated_at=generated,
     )
 
-    assert report.article_count == 2
+    assert report.collected_article_count == 2
+    assert report.article_count == 1
+    assert report.excluded_article_count == 1
     assert report.sources_checked == ["the-hacker-news", "bleepingcomputer"]
     assert report.confirmed_ioc_count == 2
     assert report.confirmed_filename_count == 1
-    assert report.subject.endswith("文章數 2 / IoC數 2")
+    assert report.subject.endswith("文章數 1 / IoC數 2")
     assert len(report.source_failures) == 1
     assert len(report.report_id) == 64
 
     markdown = render_markdown(report)
-    assert "simulated source failure" in markdown
-    assert "Candidate 唯一值：1" in markdown
-    assert "正文 SHA-256" in markdown
-    assert "不納入主旨統計" in markdown
-    assert report.report_id in markdown
-    assert "已查核來源數：2" in markdown
+    assert "simulated source failure" not in markdown
+    assert "Candidate 唯一值" not in markdown
+    assert "正文 SHA-256" not in markdown
+    assert "Parser" not in markdown
+    assert report.report_id not in markdown
+    assert "完整證據、候選值、排除理由與程式診斷" in markdown
+    assert "查核來源：2 個" in markdown
 
 
 def test_report_outputs_must_use_different_paths(tmp_path: Path) -> None:

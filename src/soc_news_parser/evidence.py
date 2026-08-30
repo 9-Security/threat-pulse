@@ -82,6 +82,7 @@ class EvidenceManifest:
     article_title: str
     article_url: str
     published_at: str | None
+    source_summary: str | None
     retrieved_at: str
     body_sha256: str
     canonical_body: str
@@ -333,6 +334,7 @@ def build_manifest(
         article_title=article.title,
         article_url=article.url,
         published_at=article.published_at,
+        source_summary=article.feed_excerpt,
         retrieved_at=retrieved.astimezone(timezone.utc).isoformat(),
         body_sha256=hashlib.sha256(article.body.encode()).hexdigest(),
         canonical_body=article.body,

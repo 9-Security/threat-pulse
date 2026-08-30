@@ -16,6 +16,14 @@ from .sources import SOURCES
 
 REPORT_SCHEMA_VERSION = "1.1"
 COUNTED_IOC_TYPES = frozenset({"md5", "sha1", "sha256", "ip", "domain", "url"})
+TOPIC_RE = re.compile(
+    r"\b(?:cyber|security|malware|ransomware|phishing|vulnerability|cve-\d|"
+    r"exploit|attack|breach|threat|apt|backdoor|botnet|zero-day|0-day|"
+    r"privacy|tracking|credential|remote code execution|rce|data exposure|"
+    r"incident response|ioc)\b|"
+    r"(?:資安|網路攻擊|惡意程式|勒索軟體|漏洞|資料外洩|釣魚|威脅|入侵|隱私)",
+    re.IGNORECASE,
+)
 
 
 @dataclass(frozen=True)
@@ -40,11 +48,14 @@ class DailyReport:
     window_end: str
     generated_at: str
     sources_checked: list[str]
+    collected_article_count: int
     article_count: int
+    excluded_article_count: int
     confirmed_ioc_count: int
     confirmed_filename_count: int
     count_policy: str
     articles: list[EvidenceManifest]
+    excluded_articles: list[EvidenceManifest]
     source_failures: list[SourceFailure]
     source_warnings: list[SourceWarning]
 
@@ -71,6 +82,27 @@ def _unique_confirmed(
         if evidence.status == "confirmed"
         and evidence.indicator_type in accepted_types
     }
+
+
+def _source_summary(manifest: EvidenceManifest) -> str:
+    summary = (manifest.source_summary or "").strip()
+    summary = re.split(r"\bThe post\b.+\bappeared first on\b", summary, maxsplit=1)[0]
+    summary = re.sub(r"\s+", " ", summary).strip()
+    if not summary:
+        paragraphs = [
+            line.strip()
+            for line in manifest.canonical_body.splitlines()
+            if line.strip() and not line.startswith("##")
+        ]
+        summary = paragraphs[0] if paragraphs else ""
+    return summary[:800].rstrip()
+
+
+def _is_topic_relevant(manifest: EvidenceManifest) -> bool:
+    if any(evidence.status == "confirmed" for evidence in manifest.evidence):
+        return True
+    source_text = f"{manifest.article_title}\n{manifest.source_summary or ''}"
+    return bool(TOPIC_RE.search(source_text))
 
 
 def collect_report(
@@ -104,11 +136,15 @@ def collect_report(
     for manifest in manifests:
         key = _canonical_article_url(manifest.article_url)
         deduplicated.setdefault(key, manifest)
-    manifests = sorted(
+    all_manifests = sorted(
         deduplicated.values(),
         key=lambda item: (item.published_at or "", item.article_url),
         reverse=True,
     )
+    manifests = [item for item in all_manifests if _is_topic_relevant(item)]
+    excluded_articles = [
+        item for item in all_manifests if not _is_topic_relevant(item)
+    ]
 
     confirmed_iocs = _unique_confirmed(manifests, COUNTED_IOC_TYPES)
     confirmed_filenames = _unique_confirmed(manifests, frozenset({"filename"}))
@@ -119,7 +155,12 @@ def collect_report(
         "generated_at": retrieved_at.astimezone(timezone.utc).isoformat(),
         "sources_checked": checked_keys,
         "articles": [
-            (manifest.article_url, manifest.body_sha256) for manifest in manifests
+            (
+                manifest.article_url,
+                manifest.body_sha256,
+                _is_topic_relevant(manifest),
+            )
+            for manifest in all_manifests
         ],
         "failures": [asdict(failure) for failure in failures],
         "warnings": [asdict(warning) for warning in source_warnings],
@@ -134,7 +175,9 @@ def collect_report(
         window_end=until.astimezone(timezone.utc).isoformat(),
         generated_at=retrieved_at.astimezone(timezone.utc).isoformat(),
         sources_checked=checked_keys,
+        collected_article_count=len(all_manifests),
         article_count=len(manifests),
+        excluded_article_count=len(excluded_articles),
         confirmed_ioc_count=len(confirmed_iocs),
         confirmed_filename_count=len(confirmed_filenames),
         count_policy=(
@@ -142,6 +185,7 @@ def collect_report(
             "and URL values. Confirmed filenames are reported separately."
         ),
         articles=manifests,
+        excluded_articles=excluded_articles,
         source_failures=failures,
         source_warnings=source_warnings,
     )
@@ -156,7 +200,7 @@ def _canonical_article_url(value: str) -> str:
 
 
 def _markdown_escape(value: str) -> str:
-    escaped = html.escape(value, quote=True)
+    escaped = html.escape(value, quote=False)
     return re.sub(r"([\\`*_\[\]{}()#+.!|])", r"\\\1", escaped)
 
 
@@ -181,113 +225,77 @@ def _unique_article_evidence(
 
 
 def render_markdown(report: DailyReport) -> str:
+    start = datetime.fromisoformat(report.window_start).astimezone(timezone.utc)
+    end = datetime.fromisoformat(report.window_end).astimezone(timezone.utc)
     lines = [
         "# 每日資安新聞 IoC 彙整報告",
         "",
-        f"- Report ID：`{report.report_id}`",
-        f"- 郵件主旨：`{report.subject}`",
-        f"- 查核區間：{report.window_start} ～ {report.window_end}",
-        f"- 產生時間：{report.generated_at}",
-        f"- 已查核來源數：{len(report.sources_checked)}",
-        f"- 已查核來源：{', '.join(_markdown_escape(key) for key in report.sources_checked)}",
-        f"- 文章數：{report.article_count}",
-        f"- Confirmed IoC 數：{report.confirmed_ioc_count}",
-        f"- Confirmed 可疑檔名數：{report.confirmed_filename_count}",
-        f"- 計數政策：{report.count_policy}",
-        "",
-        "> `confirmed` 代表來源文字明確標示，不代表本系統獨立證實其惡意性或目前仍有效。",
+        f"- 查核期間：{start:%Y-%m-%d %H:%M} ～ {end:%Y-%m-%d %H:%M} UTC",
+        f"- 查核來源：{len(report.sources_checked)} 個",
+        f"- 相關文章：{report.article_count} 篇",
+        f"- 明確 IoC：{report.confirmed_ioc_count} 個",
+        f"- 可疑檔名：{report.confirmed_filename_count} 個",
         "",
     ]
 
-    if report.source_failures:
-        lines.extend(["## 來源擷取失敗", ""])
-        for failure in report.source_failures:
-            lines.append(
-                f"- **{_markdown_escape(failure.source_name)}** "
-                f"(`{_markdown_escape(failure.source_key)}`)："
-                f"{_markdown_escape(failure.error)}"
-            )
-        lines.append("")
-
-    if report.source_warnings:
-        lines.extend(["## 來源資料警告", ""])
-        for warning in report.source_warnings:
-            lines.append(
-                f"- **{_markdown_escape(warning.source_name)}** "
-                f"(`{_markdown_escape(warning.source_key)}`)："
-                f"{_markdown_escape(warning.warning)}"
-            )
-        lines.append("")
-
     for number, manifest in enumerate(report.articles, start=1):
         confirmed = _unique_article_evidence(manifest, "confirmed")
-        candidate = _unique_article_evidence(manifest, "candidate")
-        rejected = _unique_article_evidence(manifest, "rejected")
+        iocs = [
+            evidence
+            for evidence in confirmed
+            if evidence.indicator_type in COUNTED_IOC_TYPES
+        ]
+        filenames = [
+            evidence
+            for evidence in confirmed
+            if evidence.indicator_type == "filename"
+        ]
+        published = (
+            datetime.fromisoformat(manifest.published_at).astimezone(timezone.utc)
+            if manifest.published_at
+            else None
+        )
         lines.extend(
             [
-                f"## {number}\\. {_markdown_escape(manifest.source)}",
+                f"## {number}. {_markdown_escape(manifest.article_title)}",
                 "",
-                f"### [{_markdown_escape(manifest.article_title)}]"
+                f"- 來源：[{_markdown_escape(manifest.source)}]"
                 f"({_markdown_url(manifest.article_url)})",
-                "",
-                f"- 發布時間：{manifest.published_at or '來源未提供'}",
-                f"- 正文擷取：`{manifest.extraction_method}`；"
-                f"{manifest.body_characters} 字元",
-                f"- 正文 SHA-256：`{manifest.body_sha256}`",
-                f"- Parser：`{manifest.parser_version}`"
-                + (
-                    f" (`{manifest.parser_revision}`)"
-                    if manifest.parser_revision
-                    else ""
-                ),
-                f"- 證據狀態：confirmed {len(confirmed)} / "
-                f"candidate {len(candidate)} / rejected {len(rejected)}",
-                f"- 擷取警告：{len(manifest.extraction_warnings)}",
+                f"- 發布時間：{published.strftime('%Y-%m-%d %H:%M UTC') if published else '來源未提供'}",
+                f"- 重點：{_markdown_escape(_source_summary(manifest))}",
                 "",
             ]
         )
-        if manifest.extraction_method == "failed":
-            lines.extend(["**正文擷取失敗，未執行 IoC 判定。**", ""])
-            continue
-        if not confirmed:
-            lines.extend(["**無擷取到 confirmed IoC。**", ""])
-        else:
-            lines.extend(["#### Confirmed indicators", ""])
-            for evidence in confirmed:
+        if iocs:
+            lines.extend(["### 明確 IoC", ""])
+            for evidence in iocs:
                 lines.extend(
                     [
-                        f"- **{evidence.indicator_type}**："
+                        f"- **{evidence.indicator_type.upper()}**："
                         f"`{_markdown_escape(evidence.normalized_value)}`",
-                        f"  - 原值：`{_markdown_escape(evidence.raw_value)}`",
-                        f"  - 證據：L{evidence.line_number}，"
-                        f"章節「{_markdown_escape(evidence.section)}」，"
-                        f"理由 `{','.join(evidence.reason_codes)}`",
                         f"  - 上下文：{_markdown_escape(evidence.context).replace(chr(10), ' / ')}",
                     ]
                 )
-            lines.append("")
-        if candidate or rejected:
-            lines.extend(
-                [
-                    "#### 待複核與排除摘要",
-                    "",
-                    f"- Candidate 唯一值：{len(candidate)}（不納入主旨統計）",
-                    f"- Rejected 唯一值：{len(rejected)}（不納入主旨統計）",
-                    "- 完整逐筆理由請查閱同批 JSON evidence manifest。",
-                    "",
-                ]
-            )
+        else:
+            lines.append("- IoC：原文未提供明確指標。")
+        if filenames:
+            lines.extend(["", "### 相關檔案", ""])
+            for evidence in filenames:
+                lines.extend(
+                    [
+                        f"- `{_markdown_escape(evidence.normalized_value)}`",
+                        f"  - 上下文：{_markdown_escape(evidence.context).replace(chr(10), ' / ')}",
+                    ]
+                )
+        lines.append("")
 
     lines.extend(
         [
-            "## 可驗證性與限制",
+            "## 報告說明",
             "",
-            "- JSON 稽核檔保留 confirmed、candidate、rejected 的所有 occurrence。",
-            f"- JSON 與 Markdown 應具有相同 Report ID：`{report.report_id}`。",
-            "- 相同 indicator 在多篇文章出現時，主旨只計一次。",
-            "- 惡意工具家族、攻擊手法摘要及 ATT&CK 對映不由 regex 推測；"
-            "必須附來源引句後另行加入。",
-            "- 原文內容變更時，正文 SHA-256 會改變，應重新複核。",
+            "- 僅收錄標題或來源摘要與資安主題明確相關的文章。",
+            "- IoC 僅計原文明確列於 IoC 章節的 hash、IP、domain 與 URL；相同值跨文章只計一次。",
+            "- 完整證據、候選值、排除理由與程式診斷位於隨附 JSON 稽核檔。",
             "",
         ]
     )
