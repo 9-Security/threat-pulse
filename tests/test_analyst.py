@@ -156,6 +156,25 @@ def test_each_cve_keeps_its_own_cvss_and_impact() -> None:
     assert "驗證繞過" not in by_cve["CVE-2024-2222"].reason
 
 
+def test_cve_impact_can_use_following_sentence_before_next_cve() -> None:
+    actions = build_actions(
+        build_manifest(
+            _article(
+                "GiveWP command execution",
+                "CVE-2024-3333 (CVSS score: 10.0) - A vulnerability in GiveWP.\n"
+                "The flaw turns into remote code execution when three ingredients line up.\n"
+                "\n"
+                "CVE-2024-4444 (CVSS score: 5.3) - An information leak with no takeover.\n",
+            )
+        )
+    )
+    by_cve = {item.target: item for item in actions}
+    assert "遠端程式碼執行" in by_cve["CVE-2024-3333"].reason
+    assert by_cve["CVE-2024-3333"].reason.startswith("CVSS 10")
+    assert "遠端程式碼執行" not in by_cve["CVE-2024-4444"].reason
+    assert by_cve["CVE-2024-4444"].reason.startswith("CVSS 5.3")
+
+
 def test_duplicate_cve_across_articles_counts_once() -> None:
     brief = build_brief(
         [

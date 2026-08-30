@@ -206,7 +206,16 @@ def _local_window(manifest: EvidenceManifest, evidence: Evidence) -> str:
         if not any(needle in lowered for needle in needles):
             continue
         window = [line]
-        if index + 1 < len(body_lines):
+        if evidence.indicator_type == "cve":
+            for following in body_lines[index + 1 :]:
+                if not following.strip():
+                    break
+                if _other_cve_present(following, evidence.normalized_value):
+                    break
+                window.append(following)
+                if len(window) >= 5:
+                    break
+        elif index + 1 < len(body_lines):
             following = body_lines[index + 1]
             if CVSS_RE.search(following) and not _other_cve_present(
                 following, evidence.normalized_value
