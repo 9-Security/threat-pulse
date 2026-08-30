@@ -241,9 +241,14 @@ class NewsParser:
                         if size > maximum_bytes:
                             raise ParseError(f"response exceeds 12 MiB: {current_url}")
                         chunks.append(chunk)
+                    decoded_headers = {
+                        key: value
+                        for key, value in response.headers.items()
+                        if key.lower() not in {"content-encoding", "content-length"}
+                    }
                     return httpx.Response(
                         response.status_code,
-                        headers=response.headers,
+                        headers=decoded_headers,
                         content=b"".join(chunks),
                         request=response.request,
                     )
