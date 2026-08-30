@@ -85,6 +85,7 @@ class EvidenceManifest:
     confirmed_unique_iocs: int
     candidate_unique_iocs: int
     rejected_unique_iocs: int
+    unique_counts_by_status_and_type: dict[str, dict[str, int]]
     evidence: list[Evidence]
     limitations: list[str]
 
@@ -245,6 +246,18 @@ def build_manifest(
             }
         )
 
+    counts_by_status_and_type: dict[str, dict[str, int]] = {}
+    for status in ("confirmed", "candidate", "rejected"):
+        values = {
+            (item.indicator_type, item.normalized_value)
+            for item in evidence
+            if item.status == status
+        }
+        type_counts: dict[str, int] = {"total": len(values)}
+        for indicator_type, _ in values:
+            type_counts[indicator_type] = type_counts.get(indicator_type, 0) + 1
+        counts_by_status_and_type[status] = dict(sorted(type_counts.items()))
+
     limitations = [
         "Only deterministic indicator patterns are extracted; malware-family and ATT&CK "
         "claims require separate source quotations.",
@@ -269,6 +282,7 @@ def build_manifest(
         confirmed_unique_iocs=unique_count("confirmed"),
         candidate_unique_iocs=unique_count("candidate"),
         rejected_unique_iocs=unique_count("rejected"),
+        unique_counts_by_status_and_type=counts_by_status_and_type,
         evidence=evidence,
         limitations=limitations,
     )

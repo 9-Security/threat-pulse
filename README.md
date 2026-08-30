@@ -65,6 +65,7 @@ Manifest 保存正文 SHA-256、擷取方法、parser 版本／Git revision、�
 - `rejected`：出版者網域，或位於 Related、Latest News、References 等編輯區塊。
 
 `confirmed` 代表「來源明確聲稱」，不是 parser 對惡意性的獨立背書。惡意工具家族及 ATT&CK 對映不做猜測，必須另外保存原文引句。
+`unique_counts_by_status_and_type` 會公開各狀態及類型的唯一值計數；報告若決定不把檔名納入主旨的 IoC 總數，必須明示該計數政策，不能只呈現一個無法重算的總數。
 
 ### 驗證
 

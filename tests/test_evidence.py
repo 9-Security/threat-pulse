@@ -57,6 +57,11 @@ def test_evidence_manifest_is_reproducible_and_challengeable() -> None:
     assert any(item.normalized_value == "unrelated.example.com" for item in rejected)
     assert any("excluded_editorial_section" in item.reason_codes for item in rejected)
     assert all(item.context and item.line_number > 0 for item in manifest.evidence)
+    assert (
+        manifest.unique_counts_by_status_and_type["confirmed"]["total"]
+        == manifest.confirmed_unique_iocs
+    )
+    assert manifest.unique_counts_by_status_and_type["confirmed"]["sha256"] == 1
 
 
 def test_publisher_domain_is_rejected() -> None:
