@@ -52,10 +52,14 @@ def test_build_report_email_validates_pair_and_attaches_both_files(
     assert email.report_id == REPORT_ID
     assert email.payload["to"] == ["analyst@example.com"]
     assert email.payload["subject"].startswith("[SOC]")
-    assert len(email.payload["attachments"]) == 2
+    assert len(email.payload["attachments"]) == 3
+    assert email.payload["attachments"][2]["filename"] == "iocs.csv"
+    assert email.payload["attachments"][2]["content_type"].startswith("text/csv")
     assert base64.b64decode(email.payload["attachments"][0]["content"]).startswith(
         b"# Report"
     )
+    csv_text = base64.b64decode(email.payload["attachments"][2]["content"]).decode()
+    assert csv_text.startswith("action,priority,is_new,indicator_type")
     assert "<script>" not in email.payload["html"]
     assert len(email.idempotency_key) <= 256
 
@@ -121,6 +125,10 @@ def test_serialized_reader_report_can_be_emailed(tmp_path: Path) -> None:
     assert report.report_id not in markdown
     assert "Parser" not in markdown
     assert "<script>" not in email.payload["html"]
+    assert len(email.payload["attachments"]) == 3
+    csv_text = base64.b64decode(email.payload["attachments"][2]["content"]).decode()
+    assert "hunt" in csv_text
+    assert "a" * 64 in csv_text
 
 
 def test_legacy_report_id_pairing_still_accepted(tmp_path: Path) -> None:

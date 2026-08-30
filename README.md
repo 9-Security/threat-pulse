@@ -89,7 +89,7 @@ uv run soc-news-parser report \
 
 郵件主旨改為值班可掃描的處置數字：待修 CVE、待封鎖網路指標、待 hunt 端點指標、相關文章數。這三個處置數字與 IoC 總數一樣採全報告唯一值；同一 CVE 被兩家媒體寫到只計一次，清單仍保留各來源列供對照。文章數只計標題或來源摘要具有明確資安主題訊號的文章；不相關文章仍保留在 JSON 的 `excluded_articles` 供稽核。IoC 總數僅計 `confirmed` 的 MD5、SHA-1、SHA-256、IPv4/IPv6、domain、URL 與 CVE，檔名與原文指稱另行統計。
 
-Markdown 是給 SOC／威脅分析師閱讀的值班報告：開頭是今日優先處置一句話，接著是修補、封鎖、Hunt、監控、觀察清單。每個 CVE 的 CVSS 與影響只取該指標所在文句，不會把同篇最高分套到全部漏洞。事件叢集只在同一 CVE 出現於兩篇以上來源時列出。清單只根據原文明確的 CVE、IoC 章節指標與原文影響用語產生，不把 candidate 升成 confirmed。Report ID、parser 版本、正文 hash、warnings、candidate/rejected、排除文章及來源錯誤只保留於 JSON 稽核檔。CSV 是一列一個可操作指標，方便匯入 SIEM 或封鎖清單。JSON 會寫入 `reader_digest`（Markdown 的 SHA-256），寄送前用它核對兩份檔案仍成對，並拒絕相同輸出路徑。
+Markdown 是給 SOC／威脅分析師閱讀的值班報告：開頭是今日優先處置一句話，接著是修補、封鎖、Hunt、監控、觀察清單。每個 CVE 的 CVSS 與影響只取該指標所在文句，不會把同篇最高分套到全部漏洞。事件叢集只在同一 CVE 出現於兩篇以上來源時列出。監控／觀察只在標題或來源摘要寫成外洩、釣魚活動或勒索事件時列出；產品文正文帶過 phishing／個資不會進處置清單，文章仍留在報告後半。公共遞迴 DNS（例如 `8.8.8.8`、`1.1.1.1`、`dns.google`）若出現在 IoC 章節仍記成 confirmed，但降為 hunt 複核，不列入待封鎖；不會把 AWS／CDN／GitHub 整段降級。清單只根據原文明確的 CVE、IoC 章節指標與原文影響用語產生，不把 candidate 升成 confirmed。Report ID、parser 版本、正文 hash、warnings、candidate/rejected、排除文章及來源錯誤只保留於 JSON 稽核檔。CSV 是一列一個可操作指標。JSON 會寫入 `reader_digest`（Markdown 的 SHA-256），寄送前用它核對兩份檔案仍成對，並拒絕相同輸出路徑。
 
 ### 使用 Resend 寄送報告
 
@@ -118,7 +118,7 @@ uv run soc-news-parser send-report \
   --markdown-report daily-report.md
 ```
 
-也可重複使用 `--to analyst@example.com` 指定收件人，並以 `--from` 覆寫寄件者。寄送前會確認 JSON 與 Markdown 的 Report ID 一致，兩份檔案都會以附件寄出；郵件正文會將 Markdown 安全渲染為標準 HTML，不顯示 parser/debug 欄位。Resend `POST /emails` 請求使用由 Report ID 與收件人衍生的 `Idempotency-Key`；24 小時內重試相同 payload 不會重複寄送。
+也可重複使用 `--to analyst@example.com` 指定收件人，並以 `--from` 覆寫寄件者。寄送前會確認 JSON 與 Markdown 的 Report ID 一致，並從該份 JSON 現算 `iocs.csv`（沒有可操作指標時仍附表頭）。三份檔案都會以附件寄出；郵件正文會將 Markdown 安全渲染為標準 HTML，不顯示 parser/debug 欄位。Resend `POST /emails` 請求使用由 Report ID 與收件人衍生的 `Idempotency-Key`；24 小時內重試相同 payload 不會重複寄送。
 
 附件原始總大小限制為 28 MiB，保留 Base64 後低於 Resend 每封 40 MB 的上限。遇到網路錯誤、HTTP 429 或 5xx 最多重試三次；其他 API 拒絕會立即回報且不宣稱寄送成功。
 

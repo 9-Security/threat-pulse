@@ -75,12 +75,12 @@ def test_ip_or_domain_is_block() -> None:
                 "C2 infrastructure observed",
                 "The C2 server was observed contacting victims.\n"
                 "Indicators of Compromise\n"
-                "8.8.8.8\n",
+                "1.2.3.4\n",
             )
         )
     )
     assert [item.action for item in actions] == ["block"]
-    assert actions[0].target == "8.8.8.8"
+    assert actions[0].target == "1.2.3.4"
     assert "command_and_control" in {
         key
         for key, _ in article_impacts(
@@ -89,19 +89,69 @@ def test_ip_or_domain_is_block() -> None:
                     "C2 infrastructure observed",
                     "The C2 server was observed contacting victims.\n"
                     "Indicators of Compromise\n"
-                    "8.8.8.8\n",
+                    "1.2.3.4\n",
                 )
             )
         )
     }
 
 
-def test_topic_article_without_confirmed_iocs_is_observe() -> None:
+def test_public_dns_stays_confirmed_but_is_hunt_not_block() -> None:
+    manifest = build_manifest(
+        _article(
+            "C2 infrastructure observed",
+            "The C2 server was observed contacting victims.\n"
+            "Indicators of Compromise\n"
+            "8.8.8.8\n"
+            "dns.google\n",
+        )
+    )
+    actions = build_actions(manifest)
+    by_target = {item.target: item for item in actions}
+    assert by_target["8.8.8.8"].action == "hunt"
+    assert "不建議直接封鎖" in by_target["8.8.8.8"].reason
+    assert by_target["dns.google"].action == "hunt"
+    assert all(
+        item.status == "confirmed"
+        for item in manifest.evidence
+        if item.normalized_value in {"8.8.8.8", "dns.google"}
+    )
+    brief = build_brief([manifest])
+    assert brief.block_count == 0
+    assert brief.hunt_count == 2
+
+
+def test_topic_article_without_event_headline_stays_off_the_board() -> None:
     actions = build_actions(
         build_manifest(
             _article(
                 "Windows security update guidance",
                 "Microsoft has released security updates for supported versions.",
+            )
+        )
+    )
+    assert actions == []
+
+
+def test_body_only_phishing_mention_is_not_an_observe_action() -> None:
+    actions = build_actions(
+        build_manifest(
+            _article(
+                "Brave browser adds email aliases to help users evade tracking",
+                "The feature helps users reduce spam and phishing attacks "
+                "that can follow data breaches.",
+            )
+        )
+    )
+    assert actions == []
+
+
+def test_headline_phishing_campaign_is_observe() -> None:
+    actions = build_actions(
+        build_manifest(
+            _article(
+                "Phishing campaign targets payroll portals",
+                "Researchers described a phishing campaign. No indicators were listed.",
             )
         )
     )
@@ -262,9 +312,8 @@ def test_analyst_brief_counts_and_sort_order() -> None:
     ]
     brief = build_brief(manifests)
     assert brief.patch_count == 1
-    assert brief.monitor_count == 1
-    assert brief.actions[0].action == "patch"
-    assert brief.actions[1].action == "observe"
+    assert brief.monitor_count == 0
+    assert [item.action for item in brief.actions] == ["patch"]
     assert brief.priority_line.startswith("今日優先：修補 CVE-2024-1234")
     assert brief.new_ioc_count is None
 

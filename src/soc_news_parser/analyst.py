@@ -3,12 +3,14 @@ from __future__ import annotations
 import csv
 import hashlib
 import io
+import ipaddress
 import json
 import re
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterable
+from urllib.parse import urlsplit
 
 from .evidence import (
     COUNTED_IOC_TYPES,
@@ -78,6 +80,64 @@ NETWORK_TYPES = frozenset({"ip", "domain", "url"})
 HOST_TYPES = frozenset({"md5", "sha1", "sha256", "filename"})
 ACTIONABLE = frozenset({"patch", "block", "hunt"})
 ACTION_VERBS = {"patch": "修補", "block": "封鎖", "hunt": "hunt"}
+BREACH_EVENT_RE = re.compile(
+    r"\b(?:data breach|breach notification|"
+    r"notifying (?:employees|customers|individuals)|"
+    r"disclos(?:ed|es|ing) a (?:data )?breach)\b|"
+    r"(?:資料外洩|個資外洩|外洩通知)",
+    re.IGNORECASE,
+)
+PHISHING_EVENT_RE = re.compile(
+    r"\bphishing\s+(?:campaign|wave|operation|lure|emails?|attacks?)\b|"
+    r"釣魚(?:攻擊|活動|郵件|信件|詐騙)",
+    re.IGNORECASE,
+)
+RANSOMWARE_EVENT_RE = re.compile(r"\bransomware\b|勒索軟體", re.IGNORECASE)
+PUBLIC_DNS_IPS = frozenset(
+    str(ipaddress.ip_address(value))
+    for value in (
+        "8.8.8.8",
+        "8.8.4.4",
+        "1.1.1.1",
+        "1.0.0.1",
+        "9.9.9.9",
+        "149.112.112.112",
+        "208.67.222.222",
+        "208.67.220.220",
+        "2001:4860:4860::8888",
+        "2001:4860:4860::8844",
+        "2606:4700:4700::1111",
+        "2606:4700:4700::1001",
+        "2620:fe::fe",
+        "2620:fe::9",
+        "2620:119:35::35",
+        "2620:119:53::53",
+    )
+)
+PUBLIC_DNS_HOSTS = frozenset(
+    {
+        "dns.google",
+        "dns.google.com",
+        "one.one.one.one",
+        "1dot1dot1dot1.cloudflare-dns.com",
+        "cloudflare-dns.com",
+        "dns.quad9.net",
+        "dns.opendns.com",
+        "resolver1.opendns.com",
+        "resolver2.opendns.com",
+    }
+)
+CSV_HEADER = [
+    "action",
+    "priority",
+    "is_new",
+    "indicator_type",
+    "normalized_value",
+    "article_title",
+    "article_url",
+    "reason",
+]
+PUBLIC_DNS_REASON = "常見公共 DNS，不建議直接封鎖；改為連線／DNS hunt 複核"
 
 
 @dataclass(frozen=True)
@@ -269,6 +329,39 @@ def _priority(impacts: list[tuple[str, str]], cvss: float | None) -> str:
     return "medium" if impacts else "low"
 
 
+def _headline_text(manifest: EvidenceManifest) -> str:
+    return "\n".join(
+        part
+        for part in (manifest.article_title, manifest.source_summary or "")
+        if part
+    )
+
+
+def _headline_events(manifest: EvidenceManifest) -> set[str]:
+    text = _headline_text(manifest)
+    events: set[str] = set()
+    if BREACH_EVENT_RE.search(text):
+        events.add("data_breach")
+    if PHISHING_EVENT_RE.search(text):
+        events.add("phishing")
+    if RANSOMWARE_EVENT_RE.search(text):
+        events.add("ransomware")
+    return events
+
+
+def is_public_dns(target_type: str, target: str) -> bool:
+    if target_type == "ip":
+        try:
+            return str(ipaddress.ip_address(target)) in PUBLIC_DNS_IPS
+        except ValueError:
+            return False
+    host = target
+    if target_type == "url":
+        host = urlsplit(target).hostname or ""
+    host = host.lower().rstrip(".").removeprefix("www.")
+    return any(host == item or host.endswith(f".{item}") for item in PUBLIC_DNS_HOSTS)
+
+
 def _make_action(
     action: str,
     priority: str,
@@ -290,8 +383,6 @@ def _make_action(
 
 def build_actions(manifest: EvidenceManifest) -> list[AnalystAction]:
     confirmed = _confirmed(manifest)
-    impacts = article_impacts(manifest)
-    impact_labels = "、".join(label for _, label in impacts) or "原文明確記載"
     actions: list[AnalystAction] = []
     for evidence in confirmed:
         local_impacts, cvss = _evidence_impacts_and_cvss(manifest, evidence)
@@ -310,16 +401,28 @@ def build_actions(manifest: EvidenceManifest) -> list[AnalystAction]:
                 )
             )
         elif evidence.indicator_type in NETWORK_TYPES:
-            actions.append(
-                _make_action(
-                    "block",
-                    priority if priority != "low" else "medium",
-                    evidence.indicator_type,
-                    evidence.normalized_value,
-                    f"防火牆／DNS／proxy 封鎖後再 hunt 連線；{local_labels}",
-                    manifest,
+            if is_public_dns(evidence.indicator_type, evidence.normalized_value):
+                actions.append(
+                    _make_action(
+                        "hunt",
+                        "low",
+                        evidence.indicator_type,
+                        evidence.normalized_value,
+                        PUBLIC_DNS_REASON,
+                        manifest,
+                    )
                 )
-            )
+            else:
+                actions.append(
+                    _make_action(
+                        "block",
+                        priority if priority != "low" else "medium",
+                        evidence.indicator_type,
+                        evidence.normalized_value,
+                        f"防火牆／DNS／proxy 封鎖後再 hunt 連線；{local_labels}",
+                        manifest,
+                    )
+                )
         elif evidence.indicator_type in HOST_TYPES:
             actions.append(
                 _make_action(
@@ -333,38 +436,31 @@ def build_actions(manifest: EvidenceManifest) -> list[AnalystAction]:
             )
     if actions:
         return actions
-    if any(key == "data_breach" for key, _ in impacts):
+    events = _headline_events(manifest)
+    if "data_breach" in events:
         return [
             _make_action(
                 "monitor",
                 "medium",
                 "article",
                 manifest.article_title,
-                "原文描述外洩但未提供可封鎖指標；追蹤身分與供應商通報",
+                "標題或來源摘要描述外洩事件，但未提供可封鎖指標；追蹤身分與供應商通報",
                 manifest,
             )
         ]
-    if impacts:
+    if "phishing" in events or "ransomware" in events:
+        label = "釣魚活動" if "phishing" in events else "勒索事件"
         return [
             _make_action(
                 "observe",
                 "low",
                 "article",
                 manifest.article_title,
-                f"原文明確提到{impact_labels}，但沒有可立即封鎖或修補的指標",
+                f"標題或來源摘要寫成{label}，但沒有可立即封鎖或修補的指標",
                 manifest,
             )
         ]
-    return [
-        _make_action(
-            "observe",
-            "low",
-            "article",
-            manifest.article_title,
-            "主題相關但原文沒有明確處置標的",
-            manifest,
-        )
-    ]
+    return []
 
 
 def build_clusters(manifests: list[EvidenceManifest]) -> list[EventCluster]:
@@ -541,37 +637,63 @@ def build_brief(
     )
 
 
+def _csv_is_new(value: bool | None) -> str:
+    return "" if value is None else str(value).lower()
+
+
+def render_ioc_csv_from_actions(actions: Iterable[AnalystAction | dict[str, Any]]) -> str:
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(CSV_HEADER)
+    for action in actions:
+        if isinstance(action, AnalystAction):
+            if action.action not in ACTIONABLE:
+                continue
+            writer.writerow(
+                [
+                    action.action,
+                    action.priority,
+                    _csv_is_new(action.is_new),
+                    action.target_type,
+                    action.target,
+                    action.article_title,
+                    action.article_url,
+                    action.reason,
+                ]
+            )
+            continue
+        name = action.get("action")
+        if name not in ACTIONABLE:
+            continue
+        writer.writerow(
+            [
+                name,
+                action.get("priority", ""),
+                _csv_is_new(action.get("is_new") if isinstance(action.get("is_new"), bool) else None),
+                action.get("target_type", ""),
+                action.get("target", ""),
+                action.get("article_title", ""),
+                action.get("article_url", ""),
+                action.get("reason", ""),
+            ]
+        )
+    return output.getvalue()
+
+
+def render_ioc_csv_from_report_dict(payload: dict[str, Any]) -> str:
+    brief = payload.get("analyst_brief") or {}
+    actions = brief.get("actions") if isinstance(brief, dict) else None
+    if not isinstance(actions, list):
+        return render_ioc_csv_from_actions([])
+    return render_ioc_csv_from_actions(
+        item for item in actions if isinstance(item, dict)
+    )
+
+
 def render_ioc_csv(
     manifests: list[EvidenceManifest],
     previous_iocs: set[tuple[str, str]] | None = None,
 ) -> str:
-    output = io.StringIO()
-    writer = csv.writer(output)
-    writer.writerow(
-        [
-            "action",
-            "priority",
-            "is_new",
-            "indicator_type",
-            "normalized_value",
-            "article_title",
-            "article_url",
-            "reason",
-        ]
+    return render_ioc_csv_from_actions(
+        build_brief(manifests, previous_iocs=previous_iocs).actions
     )
-    for action in build_brief(manifests, previous_iocs=previous_iocs).actions:
-        if action.action not in ACTIONABLE:
-            continue
-        writer.writerow(
-            [
-                action.action,
-                action.priority,
-                "" if action.is_new is None else str(action.is_new).lower(),
-                action.target_type,
-                action.target,
-                action.article_title,
-                action.article_url,
-                action.reason,
-            ]
-        )
-    return output.getvalue()

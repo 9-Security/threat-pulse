@@ -256,6 +256,7 @@ def test_topic_filter_keeps_security_articles_without_iocs() -> None:
     assert "Quarterly earnings" not in markdown
     assert "IoC：原文未提供明確指標。" in markdown
     assert "今日沒有可立即修補、封鎖或 hunt 的明確指標。" in markdown
+    assert "### 觀察" in markdown
 
 
 def test_same_source_keeps_every_same_day_article_with_iocs() -> None:

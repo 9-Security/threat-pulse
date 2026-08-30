@@ -14,6 +14,8 @@ import httpx
 from bs4 import BeautifulSoup
 from markdown import markdown as render_markdown_html
 
+from .analyst import render_ioc_csv_from_report_dict
+
 
 RESEND_ENDPOINT = "https://api.resend.com/emails"
 MAX_RAW_ATTACHMENT_BYTES = 28 * 1024 * 1024
@@ -68,7 +70,7 @@ def _valid_address(value: str, *, allow_display_name: bool = False) -> str:
 
 def _load_report_pair(
     json_path: str, markdown_path: str
-) -> tuple[dict[str, Any], str, bytes, bytes]:
+) -> tuple[dict[str, Any], str, bytes, bytes, bytes]:
     json_file = Path(json_path).expanduser().resolve()
     markdown_file = Path(markdown_path).expanduser().resolve()
     try:
@@ -92,9 +94,10 @@ def _load_report_pair(
             raise ResendError("JSON and Markdown reader digest do not match")
     elif report_id not in markdown:
         raise ResendError("JSON and Markdown Report IDs do not match")
-    if len(json_bytes) + len(markdown_bytes) > MAX_RAW_ATTACHMENT_BYTES:
+    csv_bytes = render_ioc_csv_from_report_dict(report).encode("utf-8")
+    if len(json_bytes) + len(markdown_bytes) + len(csv_bytes) > MAX_RAW_ATTACHMENT_BYTES:
         raise ResendError("report attachments exceed the safe 28 MiB raw-size limit")
-    return report, markdown, json_bytes, markdown_bytes
+    return report, markdown, json_bytes, markdown_bytes, csv_bytes
 
 
 def build_report_email(
@@ -108,7 +111,7 @@ def build_report_email(
         raise ResendError("at least one recipient is required")
     sender = _valid_address(sender, allow_display_name=True)
     normalized_recipients = [_valid_address(value) for value in recipients]
-    report, markdown, json_bytes, markdown_bytes = _load_report_pair(
+    report, markdown, json_bytes, markdown_bytes, csv_bytes = _load_report_pair(
         json_path, markdown_path
     )
     report_id = report["report_id"]
@@ -151,6 +154,11 @@ def build_report_email(
                 "filename": Path(json_path).name,
                 "content": base64.b64encode(json_bytes).decode("ascii"),
                 "content_type": "application/json",
+            },
+            {
+                "filename": "iocs.csv",
+                "content": base64.b64encode(csv_bytes).decode("ascii"),
+                "content_type": "text/csv; charset=utf-8",
             },
         ],
         "tags": [{"name": "report_id", "value": report_id}],
