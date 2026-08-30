@@ -122,6 +122,37 @@ uv run soc-news-parser send-report \
 
 附件原始總大小限制為 28 MiB，保留 Base64 後低於 Resend 每封 40 MB 的上限。遇到網路錯誤、HTTP 429 或 5xx 最多重試三次；其他 API 拒絕會立即回報且不宣稱寄送成功。
 
+### 每日台北時間 06:00 發送
+
+預設時區是 `Asia/Taipei`（GMT+8），預設發送時刻是 06:00。每次會蒐集該時刻往回 24 小時的文章（例如 8/30 06:00 寄出的是 8/29 06:00 ～ 8/30 06:00），寫入 `reports/YYYY-MM-DD/`，並寄到 `RESEND_TO`。若前一日資料夾已有 JSON，會自動當昨日對照。同一班次的 `generated_at` 固定在 06:00，重試不會重複寄出。
+
+先確認不會真的寄信：
+
+```bash
+uv run soc-news-parser deliver --dry-run
+```
+
+在會長駐的機器上用 cron（建議做法）：
+
+```bash
+./deploy/install-taipei-cron.sh
+```
+
+或手動加入 crontab，務必帶 `CRON_TZ`：
+
+```cron
+CRON_TZ=Asia/Taipei
+0 6 * * * cd /path/to/soc-news-parser && /path/to/uv run soc-news-parser deliver --hours 24 --at 06:00 --timezone Asia/Taipei --output-dir /path/to/soc-news-parser/reports >> /path/to/soc-news-parser/reports/deliver.log 2>&1
+```
+
+沒有 cron 時可讓程式自己等到下一班 06:00：
+
+```bash
+uv run soc-news-parser schedule --at 06:00 --timezone Asia/Taipei
+```
+
+此命令只在程序持續執行時有效。雲端工作階段或筆電休眠後不會繼續寄信，請把 cron 裝在會一直開著的主機或 NAS 上。
+
 ### 驗證
 
 ```bash

@@ -6,6 +6,7 @@ import os
 import re
 import sys
 import tempfile
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -21,6 +22,15 @@ from .parser import (
 from .analyst import load_previous_iocs, render_ioc_csv
 from .report import collect_report, serialize_report
 from .resend import ResendClient, ResendError, build_report_email
+from .schedule import (
+    DEFAULT_CLOCK,
+    DEFAULT_TIMEZONE,
+    current_slot,
+    find_previous_json,
+    next_slot,
+    report_paths,
+    slot_window,
+)
 from .sources import SOURCES
 
 
@@ -100,6 +110,81 @@ def _arguments() -> argparse.Namespace:
         "--dry-run",
         action="store_true",
         help="validate and summarize without calling Resend",
+    )
+
+    deliver = subcommands.add_parser(
+        "deliver",
+        help="collect the last 24 hours and email the SOC report",
+    )
+    deliver.add_argument(
+        "--source",
+        action="append",
+        choices=sorted(SOURCES),
+        help="source to include; repeat as needed (defaults to all)",
+    )
+    deliver.add_argument("--hours", type=int, default=24)
+    deliver.add_argument(
+        "--at",
+        default=DEFAULT_CLOCK,
+        help="local send clock HH:MM (default 06:00)",
+    )
+    deliver.add_argument(
+        "--timezone",
+        default=DEFAULT_TIMEZONE,
+        help="IANA timezone for --at (default Asia/Taipei)",
+    )
+    deliver.add_argument(
+        "--now",
+        help="ISO-8601 instant used to choose the most recent send slot",
+    )
+    deliver.add_argument(
+        "--output-dir",
+        default="reports",
+        help="directory for dated report folders (default reports/)",
+    )
+    deliver.add_argument(
+        "--previous-json",
+        help="override yesterday's JSON; defaults to the previous dated folder",
+    )
+    deliver.add_argument(
+        "--to",
+        action="append",
+        help="recipient; repeat as needed (defaults to comma-separated RESEND_TO)",
+    )
+    deliver.add_argument(
+        "--from",
+        dest="sender",
+        help="verified sender (defaults to RESEND_FROM)",
+    )
+    deliver.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="write the report and validate email without calling Resend",
+    )
+
+    schedule = subcommands.add_parser(
+        "schedule",
+        help="wait until the daily Taipei slot and deliver the SOC report",
+    )
+    schedule.add_argument("--hours", type=int, default=24)
+    schedule.add_argument("--at", default=DEFAULT_CLOCK)
+    schedule.add_argument("--timezone", default=DEFAULT_TIMEZONE)
+    schedule.add_argument("--output-dir", default="reports")
+    schedule.add_argument(
+        "--to",
+        action="append",
+        help="recipient; repeat as needed (defaults to comma-separated RESEND_TO)",
+    )
+    schedule.add_argument("--from", dest="sender")
+    schedule.add_argument(
+        "--once",
+        action="store_true",
+        help="deliver the next slot once, then exit",
+    )
+    schedule.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="write and validate each slot without calling Resend",
     )
     return parser.parse_args()
 
@@ -219,6 +304,155 @@ def _write_report_pair(
                 backup.unlink()
 
 
+def _recipients(args: argparse.Namespace) -> list[str]:
+    return getattr(args, "to", None) or [
+        value.strip()
+        for value in os.environ.get("RESEND_TO", "").split(",")
+        if value.strip()
+    ]
+
+
+def _sender(args: argparse.Namespace) -> str:
+    return getattr(args, "sender", None) or os.environ.get("RESEND_FROM", "")
+
+
+def _send_report_files(
+    *,
+    json_path: str,
+    markdown_path: str,
+    sender: str,
+    recipients: list[str],
+    dry_run: bool,
+) -> dict[str, object]:
+    email = build_report_email(
+        json_path=json_path,
+        markdown_path=markdown_path,
+        sender=sender,
+        recipients=recipients,
+    )
+    if dry_run:
+        return {
+            "dry_run": True,
+            "report_id": email.report_id,
+            "subject": email.payload["subject"],
+            "sender": email.payload["from"],
+            "recipients": email.payload["to"],
+            "attachment_count": len(email.payload["attachments"]),
+            "idempotency_key": email.idempotency_key,
+        }
+    with ResendClient.from_environment() as resend:
+        sent = resend.send(email)
+    return {
+        "dry_run": False,
+        "email_id": sent.email_id,
+        "report_id": sent.report_id,
+        "idempotency_key": sent.idempotency_key,
+    }
+
+
+def _deliver(args: argparse.Namespace) -> dict[str, object]:
+    if args.hours <= 0:
+        raise ValueError("--hours must be greater than zero")
+    now = parse_utc(args.now) if getattr(args, "now", None) else datetime.now().astimezone()
+    if now.tzinfo is None:
+        raise ValueError("now must be timezone-aware")
+    slot = current_slot(now, timezone_name=args.timezone, clock=args.at)
+    since, until = slot_window(slot, args.hours)
+    json_path, markdown_path, csv_path = report_paths(
+        args.output_dir, slot, args.timezone
+    )
+    json_path.parent.mkdir(parents=True, exist_ok=True)
+    previous_path = getattr(args, "previous_json", None) or find_previous_json(
+        args.output_dir, slot, args.timezone
+    )
+    previous_iocs = load_previous_iocs(str(previous_path)) if previous_path else None
+    with NewsParser() as news_parser:
+        report = collect_report(
+            news_parser,
+            getattr(args, "source", None) or list(SOURCES),
+            since=since,
+            until=until,
+            generated_at=until,
+            previous_iocs=previous_iocs,
+        )
+    json_content, markdown_content = serialize_report(report)
+    json_output, markdown_output = _write_report_pair(
+        str(json_path),
+        str(markdown_path),
+        json_content,
+        markdown_content,
+    )
+    csv_output = _atomic_write(
+        str(csv_path), render_ioc_csv(report.articles, previous_iocs=previous_iocs)
+    )
+    sent = _send_report_files(
+        json_path=json_output,
+        markdown_path=markdown_output,
+        sender=_sender(args),
+        recipients=_recipients(args),
+        dry_run=bool(getattr(args, "dry_run", False)),
+    )
+    return {
+        "slot": slot.isoformat(),
+        "window_start": since.isoformat(),
+        "window_end": until.isoformat(),
+        "timezone": args.timezone,
+        "subject": report.subject,
+        "article_count": report.article_count,
+        "confirmed_ioc_count": report.confirmed_ioc_count,
+        "patch_count": report.analyst_brief.patch_count,
+        "block_count": report.analyst_brief.block_count,
+        "hunt_count": report.analyst_brief.hunt_count,
+        "new_ioc_count": report.analyst_brief.new_ioc_count,
+        "previous_json": str(previous_path) if previous_path else None,
+        "json_output": json_output,
+        "markdown_output": markdown_output,
+        "csv_output": csv_output,
+        **sent,
+    }
+
+
+def _sleep_until(target: datetime, sleeper: object = time.sleep) -> None:
+    while True:
+        remaining = (target.astimezone() - datetime.now().astimezone()).total_seconds()
+        if remaining <= 0:
+            return
+        sleeper(min(remaining, 30))  # type: ignore[operator]
+
+
+def _schedule(args: argparse.Namespace) -> None:
+    while True:
+        now = datetime.now().astimezone()
+        target = next_slot(now, timezone_name=args.timezone, clock=args.at)
+        print(
+            json.dumps(
+                {
+                    "waiting_until": target.isoformat(),
+                    "timezone": args.timezone,
+                },
+                ensure_ascii=False,
+            ),
+            flush=True,
+        )
+        _sleep_until(target)
+        args.now = target.isoformat()
+        try:
+            result = _deliver(args)
+            print(json.dumps(result, ensure_ascii=False, indent=2), flush=True)
+        except (ParseError, ResendError, ValueError, OSError) as error:
+            print(
+                json.dumps(
+                    {"error": str(error), "slot": target.isoformat()},
+                    ensure_ascii=False,
+                ),
+                flush=True,
+            )
+            if args.once:
+                raise
+        if args.once:
+            return
+
+
 def main() -> None:
     args = _arguments()
     _load_workspace_env()
@@ -235,42 +469,35 @@ def main() -> None:
         )
         return
     if args.command == "send-report":
-        recipients = args.to or [
-            value.strip()
-            for value in os.environ.get("RESEND_TO", "").split(",")
-            if value.strip()
-        ]
-        sender = args.sender or os.environ.get("RESEND_FROM", "")
         try:
-            email = build_report_email(
+            result = _send_report_files(
                 json_path=args.json_report,
                 markdown_path=args.markdown_report,
-                sender=sender,
-                recipients=recipients,
+                sender=_sender(args),
+                recipients=_recipients(args),
+                dry_run=args.dry_run,
             )
-            if args.dry_run:
-                result = {
-                    "dry_run": True,
-                    "report_id": email.report_id,
-                    "subject": email.payload["subject"],
-                    "sender": email.payload["from"],
-                    "recipients": email.payload["to"],
-                    "attachment_count": len(email.payload["attachments"]),
-                    "idempotency_key": email.idempotency_key,
-                }
-            else:
-                with ResendClient.from_environment() as resend:
-                    sent = resend.send(email)
-                result = {
-                    "dry_run": False,
-                    "email_id": sent.email_id,
-                    "report_id": sent.report_id,
-                    "idempotency_key": sent.idempotency_key,
-                }
         except ResendError as error:
             print(f"error: {error}", file=sys.stderr)
             raise SystemExit(1) from error
         print(json.dumps(result, ensure_ascii=False, indent=2))
+        return
+    if args.command == "deliver":
+        try:
+            result = _deliver(args)
+        except (ParseError, ResendError, ValueError, OSError) as error:
+            print(f"error: {error}", file=sys.stderr)
+            raise SystemExit(1) from error
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return
+    if args.command == "schedule":
+        try:
+            _schedule(args)
+        except (ParseError, ResendError, ValueError, OSError, KeyboardInterrupt) as error:
+            if isinstance(error, KeyboardInterrupt):
+                raise SystemExit(130) from error
+            print(f"error: {error}", file=sys.stderr)
+            raise SystemExit(1) from error
         return
 
     try:
