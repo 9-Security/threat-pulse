@@ -1,0 +1,28 @@
+[project]
+name = "soc-news-parser"
+version = "0.1.0"
+description = "Validated RSS and raw-HTML parser for SOC security-news collection"
+readme = "README.md"
+authors = [
+    { name = "Cursor Agent", email = "cursoragent@cursor.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "beautifulsoup4>=4.15.0",
+    "feedparser>=6.0.14",
+    "httpx>=0.28.1",
+    "lxml>=6.1.2",
+    "trafilatura>=2.2.0",
+]
+
+[project.scripts]
+soc-news-parser = "soc_news_parser:main"
+
+[build-system]
+requires = ["uv_build>=0.12.7,<0.13.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]
