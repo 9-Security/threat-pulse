@@ -425,7 +425,8 @@ class NewsParser:
                 valid_feed_candidates.append((method, body, warnings))
         complete = [item for item in valid_feed_candidates if len(item[1]) >= 1200]
         if complete:
-            return max(complete, key=lambda item: len(item[1]))
+            method, body, warnings = max(complete, key=lambda item: len(item[1]))
+            return body, method, warnings
 
         try:
             body, method, warnings = self.extract_html(

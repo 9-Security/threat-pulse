@@ -177,6 +177,32 @@ def test_valid_partial_feed_body_is_retained_when_html_is_blocked() -> None:
     assert "incomplete feed content" in articles[0].warnings[0]
 
 
+def test_complete_feed_content_preserves_body_and_method_order() -> None:
+    feed_url = "https://example.test/feed"
+    article_url = "https://example.test/story"
+    content = "Complete technical article body. " * 60
+    feed = f"""<rss version="2.0"
+    xmlns:content="http://purl.org/rss/1.0/modules/content/"><channel>
+    <title>Test</title><item><title>Complete technical article</title>
+    <link>{article_url}</link>
+    <pubDate>Sat, 29 Aug 2026 03:43:27 +0000</pubDate>
+    <content:encoded><![CDATA[<p>{content}</p>]]></content:encoded>
+    </item></channel></rss>"""
+    parser = news_parser()
+    parser.client.close()
+    parser.client = client_for({feed_url: ("application/rss+xml", feed)})
+
+    with parser:
+        articles = parser.parse_feed(
+            Source("Test", feed_url),
+            since=datetime(2026, 8, 29, 0, tzinfo=timezone.utc),
+            until=datetime(2026, 8, 30, 0, tzinfo=timezone.utc),
+        )
+
+    assert articles[0].extraction_method == "feed:content"
+    assert articles[0].body.startswith("Complete technical article body")
+
+
 def test_article_discussing_access_denied_is_not_rejected() -> None:
     url = "https://example.test/story"
     paragraphs = "".join(
