@@ -21,7 +21,7 @@ HASH_RE = re.compile(
 URL_RE = re.compile(r"\b(?:hxxps?|https?)://[^\s<>\"']+", re.IGNORECASE)
 IP_RE = re.compile(r"(?<!\d)(?:\d{1,3}(?:\.|\[\.\]|\(\.\))){3}\d{1,3}(?!\d)")
 FILE_RE = re.compile(
-    r"(?<![\w.-])[\w@()+-][\w@().+-]*\."
+    r"(?<![\w.-])[\w@+-][\w@().+-]*\."
     r"(?:exe|dll|sys|ps1|bat|cmd|vbs|js|jar|py|zip|rar|7z|hta|msi|scr|elf|bin|dat|pem)"
     r"(?![\w.-])",
     re.IGNORECASE,
@@ -93,7 +93,7 @@ class EvidenceManifest:
 
 
 def _normalize(value: str, indicator_type: str) -> str:
-    normalized = value.strip().rstrip(".,;:)]}'\"")
+    normalized = value.strip().strip("([{<'\"").rstrip(".,;:)]}>'\"")
     normalized = re.sub(r"\[\.\]|\(\.\)", ".", normalized)
     if indicator_type == "url":
         normalized = re.sub(r"^hxxps://", "https://", normalized, flags=re.I)
@@ -118,6 +118,8 @@ def _line_matches(line: str) -> Iterable[tuple[str, re.Match[str]]]:
         for match in pattern.finditer(line):
             span = match.span()
             if any(span[0] < end and start < span[1] for start, end in occupied):
+                continue
+            if indicator_type == "domain" and span[0] > 0 and line[span[0] - 1] in "/\\":
                 continue
             if indicator_type == "ip":
                 try:
@@ -174,7 +176,9 @@ def extract_evidence(article: ParsedArticle) -> list[Evidence]:
                 status = "confirmed"
                 assertion = "source_explicit"
                 reasons = ["explicit_ioc_section"]
-            elif EXPLICIT_MALICIOUS_RE.search(line):
+            elif generic_type != "filename" and EXPLICIT_MALICIOUS_RE.search(
+                line[max(0, match.start() - 100) : match.end() + 100]
+            ):
                 status = "confirmed"
                 assertion = "source_explicit"
                 reasons = ["explicit_malicious_relationship"]

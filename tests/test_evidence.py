@@ -8,6 +8,8 @@ from soc_news_parser.parser import ParsedArticle
 def article_with_mixed_evidence() -> ParsedArticle:
     body = """Threat campaign report
 Researchers observed example.org in a screenshot, but did not characterize it.
+Command and Control to gitnow[.]dev; detection Trojan:Python/Indigo.SA.
+The signed trusted.exe loaded a malicious payload.
 Indicators of Compromise (IoCs)
 File indicators
 18c2090e8a0ae0568af9b87e59eaf8270f23d2909600ed9db91a9444fd8b278f
@@ -50,6 +52,8 @@ def test_evidence_manifest_is_reproducible_and_challengeable() -> None:
     assert any(item.normalized_value == "gitnow.dev" for item in confirmed)
     assert any(item.normalized_value == "https://linked-log.com/" for item in confirmed)
     assert any(item.normalized_value == "example.org" for item in candidates)
+    assert any(item.normalized_value == "trusted.exe" for item in candidates)
+    assert not any(item.normalized_value == "indigo.sa" for item in manifest.evidence)
     assert any(item.normalized_value == "unrelated.example.com" for item in rejected)
     assert any("excluded_editorial_section" in item.reason_codes for item in rejected)
     assert all(item.context and item.line_number > 0 for item in manifest.evidence)
