@@ -135,6 +135,68 @@ def test_data_breach_without_iocs_is_monitor() -> None:
     assert [item.action for item in actions] == ["monitor"]
 
 
+def test_each_cve_keeps_its_own_cvss_and_impact() -> None:
+    actions = build_actions(
+        build_manifest(
+            _article(
+                "Two WordPress flaws",
+                "CVE-2024-1111 (CVSS score: 9.8) - An authentication bypass flaw "
+                "in the dashboard plugin.\n"
+                "CVE-2024-2222 (CVSS score: 10.0) - A remote code execution flaw "
+                "in the payment plugin.\n",
+            )
+        )
+    )
+    by_cve = {item.target: item for item in actions}
+    assert by_cve["CVE-2024-1111"].reason.startswith("CVSS 9.8")
+    assert "驗證繞過" in by_cve["CVE-2024-1111"].reason
+    assert "遠端程式碼執行" not in by_cve["CVE-2024-1111"].reason
+    assert by_cve["CVE-2024-2222"].reason.startswith("CVSS 10")
+    assert "遠端程式碼執行" in by_cve["CVE-2024-2222"].reason
+    assert "驗證繞過" not in by_cve["CVE-2024-2222"].reason
+
+
+def test_duplicate_cve_across_articles_counts_once() -> None:
+    brief = build_brief(
+        [
+            build_manifest(
+                _article(
+                    "Vendor advisory",
+                    "CVE-2024-38063 is being exploited.",
+                    url="https://www.microsoft.com/en-us/security/blog/one/",
+                )
+            ),
+            build_manifest(
+                _article(
+                    "CISA catalog",
+                    "CISA added CVE-2024-38063 to the catalog.",
+                    url="https://www.cisa.gov/news-events/alerts/aa24-001",
+                    source="CISA",
+                )
+            ),
+        ]
+    )
+    assert brief.patch_count == 1
+    assert [item.target for item in brief.actions if item.action == "patch"] == [
+        "CVE-2024-38063",
+        "CVE-2024-38063",
+    ]
+
+
+def test_clusters_omit_single_article_groups() -> None:
+    singleton = build_clusters(
+        [
+            build_manifest(
+                _article(
+                    "Five flaws",
+                    "CVE-2024-1111 and CVE-2024-2222 were patched.",
+                )
+            )
+        ]
+    )
+    assert singleton == []
+
+
 def test_same_cve_articles_form_one_cluster() -> None:
     manifests = [
         build_manifest(

@@ -12,6 +12,7 @@ from typing import Any, Iterable
 
 from .evidence import (
     COUNTED_IOC_TYPES,
+    CVE_RE,
     EXCLUDED_HEADING_RE,
     IOC_HEADING_RE,
     RELATED_LINE_RE,
@@ -166,8 +167,7 @@ def _article_text(manifest: EvidenceManifest) -> str:
     )
 
 
-def article_impacts(manifest: EvidenceManifest) -> list[tuple[str, str]]:
-    text = _article_text(manifest)
+def _impacts_in(text: str) -> list[tuple[str, str]]:
     return [
         (key, label)
         for key, label, pattern in IMPACT_PATTERNS
@@ -175,9 +175,64 @@ def article_impacts(manifest: EvidenceManifest) -> list[tuple[str, str]]:
     ]
 
 
-def article_cvss(manifest: EvidenceManifest) -> float | None:
-    scores = [float(match) for match in CVSS_RE.findall(_article_text(manifest))]
+def article_impacts(manifest: EvidenceManifest) -> list[tuple[str, str]]:
+    return _impacts_in(_article_text(manifest))
+
+
+def _cvss_in(text: str) -> float | None:
+    scores = [float(match) for match in CVSS_RE.findall(text)]
     return max(scores) if scores else None
+
+
+def article_cvss(manifest: EvidenceManifest) -> float | None:
+    return _cvss_in(_article_text(manifest))
+
+
+def _other_cve_present(text: str, current: str) -> bool:
+    found = {match.group().upper() for match in CVE_RE.finditer(text)}
+    found.discard(current.upper())
+    return bool(found)
+
+
+def _local_window(manifest: EvidenceManifest, evidence: Evidence) -> str:
+    needles = {
+        evidence.normalized_value.lower(),
+        evidence.raw_value.lower(),
+    }
+    needles.discard("")
+    body_lines = _body_for_impacts(manifest.canonical_body).splitlines()
+    for index, line in enumerate(body_lines):
+        lowered = line.lower()
+        if not any(needle in lowered for needle in needles):
+            continue
+        window = [line]
+        if index + 1 < len(body_lines):
+            following = body_lines[index + 1]
+            if CVSS_RE.search(following) and not _other_cve_present(
+                following, evidence.normalized_value
+            ):
+                window.append(following)
+        return "\n".join(window)
+    context_lines = [
+        part
+        for part in evidence.context.splitlines()
+        if any(needle in part.lower() for needle in needles)
+    ]
+    return "\n".join(context_lines)
+
+
+def _evidence_impacts_and_cvss(
+    manifest: EvidenceManifest, evidence: Evidence
+) -> tuple[list[tuple[str, str]], float | None]:
+    local = _local_window(manifest, evidence)
+    if evidence.indicator_type == "cve":
+        return _impacts_in(local), _cvss_in(local)
+    scoped = "\n".join(
+        part
+        for part in (manifest.article_title, manifest.source_summary or "", local)
+        if part
+    )
+    return _impacts_in(scoped), _cvss_in(local)
 
 
 def _confirmed(manifest: EvidenceManifest) -> list[Evidence]:
@@ -228,10 +283,11 @@ def build_actions(manifest: EvidenceManifest) -> list[AnalystAction]:
     confirmed = _confirmed(manifest)
     impacts = article_impacts(manifest)
     impact_labels = "、".join(label for _, label in impacts) or "原文明確記載"
-    cvss = article_cvss(manifest)
-    priority = _priority(impacts, cvss)
     actions: list[AnalystAction] = []
     for evidence in confirmed:
+        local_impacts, cvss = _evidence_impacts_and_cvss(manifest, evidence)
+        local_labels = "、".join(label for _, label in local_impacts) or "原文明確記載"
+        priority = _priority(local_impacts, cvss)
         if evidence.indicator_type == "cve":
             score = f"CVSS {cvss:g}" if cvss is not None else "未寫 CVSS"
             actions.append(
@@ -240,7 +296,7 @@ def build_actions(manifest: EvidenceManifest) -> list[AnalystAction]:
                     "high" if priority == "high" or (cvss or 0) >= 9 else "medium",
                     "cve",
                     evidence.normalized_value,
-                    f"{score}；{impact_labels}",
+                    f"{score}；{local_labels}",
                     manifest,
                 )
             )
@@ -251,7 +307,7 @@ def build_actions(manifest: EvidenceManifest) -> list[AnalystAction]:
                     priority if priority != "low" else "medium",
                     evidence.indicator_type,
                     evidence.normalized_value,
-                    f"防火牆／DNS／proxy 封鎖後再 hunt 連線；{impact_labels}",
+                    f"防火牆／DNS／proxy 封鎖後再 hunt 連線；{local_labels}",
                     manifest,
                 )
             )
@@ -262,7 +318,7 @@ def build_actions(manifest: EvidenceManifest) -> list[AnalystAction]:
                     priority if priority != "low" else "medium",
                     evidence.indicator_type,
                     evidence.normalized_value,
-                    f"端點 hash／檔名 hunt；{impact_labels}",
+                    f"端點 hash／檔名 hunt；{local_labels}",
                     manifest,
                 )
             )
@@ -332,8 +388,10 @@ def build_clusters(manifests: list[EvidenceManifest]) -> list[EventCluster]:
 
     clusters: list[EventCluster] = []
     for members in groups.values():
-        cves = sorted({cve for index in members for cve in cves_by_article[index]})
         urls = [manifests[index].article_url for index in members]
+        if len(urls) < 2:
+            continue
+        cves = sorted({cve for index in members for cve in cves_by_article[index]})
         impacts: list[str] = []
         for index in members:
             for _, label in article_impacts(manifests[index]):
@@ -398,6 +456,16 @@ def load_previous_iocs(path: str) -> set[tuple[str, str]]:
     return values
 
 
+def _unique_action_targets(
+    actions: list[AnalystAction], action_name: str
+) -> set[tuple[str, str]]:
+    return {
+        (item.target_type, item.target)
+        for item in actions
+        if item.action == action_name
+    }
+
+
 def _priority_line(actions: list[AnalystAction]) -> str:
     ranked = [item for item in actions if item.action in ACTIONABLE]
     if not ranked:
@@ -406,9 +474,9 @@ def _priority_line(actions: list[AnalystAction]) -> str:
     focus = high[0] if high else ranked[0]
     verb = ACTION_VERBS[focus.action]
     counts = {
-        "patch": sum(item.action == "patch" for item in ranked),
-        "block": sum(item.action == "block" for item in ranked),
-        "hunt": sum(item.action == "hunt" for item in ranked),
+        "patch": len(_unique_action_targets(ranked, "patch")),
+        "block": len(_unique_action_targets(ranked, "block")),
+        "hunt": len(_unique_action_targets(ranked, "hunt")),
     }
     extras = []
     if counts["patch"] > 1:
@@ -447,10 +515,16 @@ def build_brief(
     return AnalystBrief(
         actions=marked,
         clusters=build_clusters(ordered),
-        patch_count=sum(item.action == "patch" for item in marked),
-        block_count=sum(item.action == "block" for item in marked),
-        hunt_count=sum(item.action == "hunt" for item in marked),
-        monitor_count=sum(item.action in {"monitor", "observe"} for item in marked),
+        patch_count=len(_unique_action_targets(marked, "patch")),
+        block_count=len(_unique_action_targets(marked, "block")),
+        hunt_count=len(_unique_action_targets(marked, "hunt")),
+        monitor_count=len(
+            {
+                item.article_url
+                for item in marked
+                if item.action in {"monitor", "observe"}
+            }
+        ),
         new_ioc_count=new_count,
         repeat_ioc_count=repeat_count,
         gone_ioc_count=gone_count,
