@@ -1,6 +1,6 @@
 [project]
 name = "soc-news-parser"
-version = "0.9.0"
+version = "0.10.0"
 description = "Validated RSS and raw-HTML parser for SOC security-news collection"
 readme = "README.md"
 authors = [

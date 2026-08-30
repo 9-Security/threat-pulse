@@ -7,16 +7,21 @@ import re
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from typing import Any, Iterable
-from urllib.parse import quote, urlsplit, urlunsplit
 
-from .evidence import Evidence, EvidenceManifest, build_manifest
+from urllib.parse import parse_qsl, quote, urlencode, urlsplit, urlunsplit
+
+from .evidence import (
+    CLAIM_TYPES,
+    COUNTED_IOC_TYPES,
+    Evidence,
+    EvidenceManifest,
+    build_manifest,
+)
 from .parser import NewsParser, ParseError
 from .sources import SOURCES
 
 
-REPORT_SCHEMA_VERSION = "1.2"
-COUNTED_IOC_TYPES = frozenset({"md5", "sha1", "sha256", "ip", "domain", "url", "cve"})
-CLAIM_TYPES = frozenset({"malware_family", "attack_technique"})
+REPORT_SCHEMA_VERSION = "1.3"
 CLAIM_LABELS = {
     "malware_family": "惡意程式家族",
     "attack_technique": "攻擊技術",
@@ -228,12 +233,28 @@ def collect_report(
     )
 
 
+TRACKING_QUERY_KEYS = frozenset({"fbclid", "gclid", "mc_cid", "mc_eid"})
+
+
 def _canonical_article_url(value: str) -> str:
     parts = urlsplit(value)
     host = (parts.hostname or "").lower()
-    netloc = host + (f":{parts.port}" if parts.port else "")
+    try:
+        port = parts.port
+    except ValueError:
+        port = None
+    netloc = host + (f":{port}" if port else "")
     path = parts.path.rstrip("/") or "/"
-    return urlunsplit((parts.scheme.lower(), netloc, path, parts.query, ""))
+    query = urlencode(
+        [
+            (key, item)
+            for key, item in parse_qsl(parts.query, keep_blank_values=True)
+            if key.lower() not in TRACKING_QUERY_KEYS
+            and not key.lower().startswith("utm_")
+        ],
+        doseq=True,
+    )
+    return urlunsplit((parts.scheme.lower(), netloc, path, query, ""))
 
 
 def _markdown_escape(value: str) -> str:

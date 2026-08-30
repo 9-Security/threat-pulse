@@ -10,6 +10,7 @@ from soc_news_parser import _write_report_pair
 from soc_news_parser.evidence import build_manifest
 from soc_news_parser.parser import ParseError, ParsedArticle
 from soc_news_parser.report import (
+    _canonical_article_url,
     _source_summary,
     collect_report,
     render_markdown,
@@ -318,3 +319,46 @@ def test_serialize_report_pairs_json_to_reader_digest() -> None:
 
     assert report.report_id not in markdown
     assert payload["reader_digest"] == hashlib.sha256(markdown.encode()).hexdigest()
+
+
+def test_tracking_query_and_invalid_port_do_not_break_dedup() -> None:
+    class DupParser:
+        def parse_feed(self, source: object, **_: object) -> list[ParsedArticle]:
+            name = getattr(source, "name")
+            first = parsed_article(
+                name,
+                "Shared story",
+                "Indicators of Compromise\nevil[.]example\n",
+            )
+            second = parsed_article(
+                name,
+                "Shared story copy",
+                "Indicators of Compromise\nevil[.]example\nextra[.]example\n",
+            )
+            broken = parsed_article(
+                name,
+                "Broken port story",
+                "CVE-2026-76581 is listed.\n",
+            )
+            first.url = "https://example.test/shared?utm_source=rss&id=1"
+            second.url = "https://example.test/shared?id=1&fbclid=abc"
+            broken.url = "https://example.test:notaport/broken"
+            return [first, second, broken]
+
+    generated = datetime(2026, 8, 30, 1, 21, tzinfo=timezone.utc)
+    report = collect_report(
+        DupParser(),  # type: ignore[arg-type]
+        ["the-hacker-news"],
+        since=datetime(2026, 8, 29, 1, 21, tzinfo=timezone.utc),
+        until=generated,
+        generated_at=generated,
+    )
+
+    assert _canonical_article_url("https://example.test/shared?utm_source=rss&id=1") == (
+        "https://example.test/shared?id=1"
+    )
+    assert report.collected_article_count == 2
+    assert report.article_count == 2
+    assert report.confirmed_ioc_count == 2
+    titles = {item.article_title for item in report.articles}
+    assert titles == {"Shared story", "Broken port story"}

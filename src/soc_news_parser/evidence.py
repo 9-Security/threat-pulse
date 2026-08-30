@@ -11,10 +11,12 @@ from pathlib import Path
 from typing import Any, Iterable
 from urllib.parse import urlsplit, urlunsplit
 
-from .parser import ParsedArticle
+from .parser import ParsedArticle, _is_public_address
 
 
-MANIFEST_VERSION = "1.2"
+MANIFEST_VERSION = "1.3"
+COUNTED_IOC_TYPES = frozenset({"md5", "sha1", "sha256", "ip", "domain", "url", "cve"})
+CLAIM_TYPES = frozenset({"malware_family", "attack_technique"})
 HASH_RE = re.compile(
     r"(?<![0-9a-f])(?:[0-9a-f]{64}|[0-9a-f]{40}|[0-9a-f]{32})(?![0-9a-f])",
     re.IGNORECASE,
@@ -53,9 +55,9 @@ FAMILY_RE = re.compile(
     """
 )
 ATTACK_RE = re.compile(
-    r"(?:ATT(?:&|＆)CK|MITRE|technique)\s+(?:technique\s+)?(?:ID\s*)?(T\d{4}(?:\.\d{3})?)"
+    r"(?:(?:MITRE\s+)?ATT(?:&|＆)CK|MITRE)\s+(?:technique\s+)?(?:ID\s*)?(T\d{4}(?:\.\d{3})?)"
     r"|"
-    r"(T\d{4}(?:\.\d{3})?)\s*(?:ATT(?:&|＆)CK|technique)",
+    r"(T\d{4}(?:\.\d{3})?)\s*(?:(?:MITRE\s+)?ATT(?:&|＆)CK)",
     re.IGNORECASE,
 )
 GENERIC_CLAIM_NAMES = frozenset(
@@ -117,17 +119,22 @@ DOMAIN_RE = re.compile(
 )
 IOC_HEADING_RE = re.compile(
     r"^(?:indicators? of compromise(?: \(iocs?\))?|iocs?|file indicators?|"
-    r"network indicators?|hash(?:es)?|domains?|ip addresses?)[:：]?$",
+    r"network indicators?|hash(?:es)?|domains?|ip addresses?|"
+    r"妥協指標|威脅指標|網路指標|檔案指標|指標(?:清單|列表|一覽)?|"
+    r"(?:惡意)?(?:雜湊|哈希|檔名|網域|網址)(?:值|清單)?|"
+    r"(?:惡意)?IP(?:位址|清單)?)[:：]?$",
     re.IGNORECASE,
 )
 EXCLUDED_HEADING_RE = re.compile(
     r"^(?:related articles?|related posts?|latest news|learn more|additional resources|"
-    r"references|recommended|more from .+|you may also like)[:：]?$",
+    r"references|recommended|more from .+|you may also like|"
+    r"相關文章|延伸閱讀|參考資料|更多消息)[:：]?$",
     re.IGNORECASE,
 )
 SECTION_END_RE = re.compile(
     r"^(?:mitigations?|recommendations?|conclusions?|summary|detections?|"
-    r"advanced hunting queries|acknowledgements?)[:：]?$",
+    r"advanced hunting queries|acknowledgements?|"
+    r"緩解措施|建議|結論|摘要|偵測)[:：]?$",
     re.IGNORECASE,
 )
 FILE_CONTEXT_RE = re.compile(
@@ -298,6 +305,12 @@ def _classify(
         return "rejected", "machine_rejected", ["excluded_editorial_section"]
     if _source_host_matches(normalized, article, generic_type):
         return "rejected", "machine_rejected", ["publisher_domain"]
+    if generic_type == "ip":
+        try:
+            if not _is_public_address(normalized):
+                return "rejected", "machine_rejected", ["non_public_ip"]
+        except ValueError:
+            return "rejected", "machine_rejected", ["non_public_ip"]
     if generic_type == "cve":
         return "confirmed", "source_explicit", ["explicit_cve_identifier"]
     if generic_type in {"malware_family", "attack_technique"}:
@@ -447,12 +460,13 @@ def build_manifest(
     evidence = extract_evidence(article) if article.body else []
     retrieved = retrieved_at or datetime.now(timezone.utc)
 
-    def unique_count(status: str) -> int:
+    def unique_count(status: str, accepted: frozenset[str] | None = None) -> int:
         return len(
             {
                 (item.indicator_type, item.normalized_value)
                 for item in evidence
                 if item.status == status
+                and (accepted is None or item.indicator_type in accepted)
             }
         )
 
@@ -475,6 +489,8 @@ def build_manifest(
         "it does not independently prove that the indicator is malicious or currently active.",
         "CVE identifiers are confirmed from explicit CVE IDs; software version strings "
         "that look like IPv4 addresses are not treated as network indicators.",
+        "Private, loopback, link-local, multicast, reserved, and unspecified IP "
+        "addresses are rejected as non-public and are not counted as IoCs.",
     ]
     if article.extraction_method == "failed":
         limitations.insert(0, "Full article body was unavailable; no IoC decision was made.")
@@ -494,9 +510,9 @@ def build_manifest(
         extraction_warnings=article.warnings,
         parser_version=_package_version(),
         parser_revision=_git_revision(),
-        confirmed_unique_iocs=unique_count("confirmed"),
-        candidate_unique_iocs=unique_count("candidate"),
-        rejected_unique_iocs=unique_count("rejected"),
+        confirmed_unique_iocs=unique_count("confirmed", COUNTED_IOC_TYPES),
+        candidate_unique_iocs=unique_count("candidate", COUNTED_IOC_TYPES),
+        rejected_unique_iocs=unique_count("rejected", COUNTED_IOC_TYPES),
         unique_counts_by_status_and_type=counts_by_status_and_type,
         evidence=evidence,
         limitations=limitations,

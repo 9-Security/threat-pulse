@@ -66,10 +66,10 @@ Manifest 保存 canonical body、正文 SHA-256、擷取 warnings、parser 版�
 
 - `confirmed`：原文明確 IoC 章節中的 hash／IP／domain／URL，以及正文中的 CVE ID、原文明確命名的惡意程式家族與 ATT&CK 技術。
 - `candidate`：格式符合，但原文關係不足，必須人工複核；不計入 IoC 總數。
-- `rejected`：出版者網域，或位於 Related、Latest News、References 等編輯區塊。
+- `rejected`：出版者網域、非公開 IP，或位於 Related、Latest News、References、相關文章等編輯區塊。
 
-`confirmed` 代表「來源明確聲稱」，不是 parser 對惡意性的獨立背書。惡意工具家族及 ATT&CK 只在原文明確命名時入列，並保留原文句子。軟體版本號（如 `4.16.7.1`）不會當成 IP。
-`unique_counts_by_status_and_type` 會公開各狀態及類型的唯一值計數；報告主旨的 IoC 總數只計 hash、IP、domain、URL 與 CVE，檔名與原文指稱另行統計。
+`confirmed` 代表「來源明確聲稱」，不是 parser 對惡意性的獨立背書。惡意工具家族只在原文明確命名時入列；ATT&CK 技術必須同行出現 `ATT&CK` 或 `MITRE`。軟體版本號（如 `4.16.7.1`）與私有／迴環 IP 不會當成可操作 IoC。中文「妥協指標」「惡意網域」等標題與英文 IoC 章節同等效力。
+`confirmed_unique_iocs` 與報告主旨只計 hash、IP、domain、URL 與 CVE；檔名與原文指稱另行統計。`unique_counts_by_status_and_type` 仍列出各類型完整細項。
 
 產生多來源每日報告與完整稽核 JSON：
 
@@ -82,7 +82,7 @@ uv run soc-news-parser report \
   --markdown-output daily-report.md
 ```
 
-預設處理所有內建來源；可重複使用 `--source microsoft-security --source the-hacker-news` 限定來源。同一來源在時間窗內的多篇文章會各自擷取與抽 IoC，只依正規化 URL 去重，不會每站只留一篇。單一來源或文章失敗不會中止整批報告，錯誤會保存在 `source_failures` 或文章的 `extraction_method: "failed"`。同一 IoC 出現在多篇文章時，主旨總數只計一次。
+預設處理所有內建來源；可重複使用 `--source microsoft-security --source the-hacker-news` 限定來源。同一來源在時間窗內的多篇文章會各自擷取與抽 IoC，只依正規化 URL 去重（去掉 `utm_*`／點擊追蹤參數；非法 port 不會中斷整份報告），不會每站只留一篇。單一來源或文章失敗不會中止整批報告，錯誤會保存在 `source_failures` 或文章的 `extraction_method: "failed"`。同一 IoC 出現在多篇文章時，主旨總數只計一次。
 
 報告主旨的文章數只計標題或來源摘要具有明確資安主題訊號的文章；不相關文章仍保留在 JSON 的 `excluded_articles` 供稽核。IoC 總數採全報告唯一值，僅計 `confirmed` 的 MD5、SHA-1、SHA-256、IPv4/IPv6、domain、URL 與 CVE，檔名與原文指稱另行統計。
 

@@ -1,7 +1,7 @@
 import hashlib
 from datetime import datetime, timezone
 
-from soc_news_parser.evidence import build_manifest
+from soc_news_parser.evidence import COUNTED_IOC_TYPES, build_manifest
 from soc_news_parser.parser import ParsedArticle
 
 
@@ -61,11 +61,15 @@ def test_evidence_manifest_is_reproducible_and_challengeable() -> None:
     assert any(item.normalized_value == "unrelated.example.com" for item in rejected)
     assert any("excluded_editorial_section" in item.reason_codes for item in rejected)
     assert all(item.context and item.line_number > 0 for item in manifest.evidence)
-    assert (
-        manifest.unique_counts_by_status_and_type["confirmed"]["total"]
-        == manifest.confirmed_unique_iocs
+    counted_confirmed = sum(
+        count
+        for key, count in manifest.unique_counts_by_status_and_type["confirmed"].items()
+        if key in COUNTED_IOC_TYPES
     )
+    assert manifest.confirmed_unique_iocs == counted_confirmed
     assert manifest.unique_counts_by_status_and_type["confirmed"]["sha256"] == 1
+    assert manifest.unique_counts_by_status_and_type["confirmed"]["filename"] == 1
+    assert manifest.confirmed_unique_iocs == 3
 
 
 def test_publisher_domain_is_rejected() -> None:
@@ -172,6 +176,60 @@ CVE-2024-0001 is only in an editorial list.
     assert "CVE-2024-0001" in rejected
     ip = next(item for item in manifest.evidence if item.normalized_value == "185.199.108.153")
     assert ip.status == "candidate"
+
+
+def test_private_ip_is_rejected_even_in_ioc_section() -> None:
+    body = """## Indicators of Compromise
+127.0.0.1
+10.0.0.8
+185.199.108.153
+"""
+    article = article_with_mixed_evidence()
+    article.body = body
+    manifest = build_manifest(article)
+    evidence = {item.normalized_value: item for item in manifest.evidence}
+
+    assert evidence["127.0.0.1"].status == "rejected"
+    assert evidence["127.0.0.1"].reason_codes == ["non_public_ip"]
+    assert evidence["10.0.0.8"].reason_codes == ["non_public_ip"]
+    assert evidence["185.199.108.153"].status == "confirmed"
+
+
+def test_chinese_ioc_heading_confirms_network_indicators() -> None:
+    body = """威脅分析
+妥協指標
+evil[.]example
+相關文章
+sidebar.example
+"""
+    article = article_with_mixed_evidence()
+    article.body = body
+    manifest = build_manifest(article)
+    statuses = {
+        item.normalized_value: item.status
+        for item in manifest.evidence
+        if item.indicator_type == "domain"
+    }
+
+    assert statuses["evil.example"] == "confirmed"
+    assert statuses["sidebar.example"] == "rejected"
+
+
+def test_technique_without_attack_framework_is_not_extracted() -> None:
+    body = """Analysis
+Operators used the technique T1055 during injection.
+MITRE ATT&CK T1059.001 was named explicitly.
+"""
+    article = article_with_mixed_evidence()
+    article.body = body
+    manifest = build_manifest(article)
+    techniques = {
+        item.normalized_value
+        for item in manifest.evidence
+        if item.indicator_type == "attack_technique"
+    }
+
+    assert techniques == {"T1059.001"}
 
 
 def test_negated_inline_indicator_and_document_are_not_confirmed_domains() -> None:
