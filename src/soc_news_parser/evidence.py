@@ -53,7 +53,8 @@ SECTION_END_RE = re.compile(
     re.IGNORECASE,
 )
 FILE_CONTEXT_RE = re.compile(
-    r"\b(?:file(?:name)?|attachment|document|payload|dropper|archive)\b",
+    r"\b(?:file(?:name)?|attachment|document|payload)\s+"
+    r"(?:is|named|called)?\s*[:=]?\s*$",
     re.IGNORECASE,
 )
 
@@ -205,8 +206,8 @@ def extract_evidence(article: ParsedArticle) -> list[Evidence]:
 
         for generic_type, match in _line_matches(line):
             raw = match.group()
-            local_context = line[max(0, match.start() - 80) : match.end() + 80]
-            if generic_type == "domain" and FILE_CONTEXT_RE.search(local_context):
+            prefix = line[max(0, match.start() - 80) : match.start()]
+            if generic_type == "domain" and FILE_CONTEXT_RE.search(prefix):
                 generic_type = "filename"
             indicator_type = _hash_type(raw) if generic_type == "hash" else generic_type
             normalized = _normalize(raw, generic_type)

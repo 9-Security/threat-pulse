@@ -137,6 +137,7 @@ def test_negated_inline_indicator_and_document_are_not_confirmed_domains() -> No
     body = """## Analysis
 This is not an IoC: benign.example.
 The malicious file is invoice.docx.
+Payload delivery domain bestsocialmedianewspapper.com serves an archive.
 """
     article = article_with_mixed_evidence()
     article.body = body
@@ -146,3 +147,4 @@ The malicious file is invoice.docx.
     assert evidence["benign.example"].status == "candidate"
     assert evidence["invoice.docx"].indicator_type == "filename"
     assert evidence["invoice.docx"].status == "candidate"
+    assert evidence["bestsocialmedianewspapper.com"].indicator_type == "domain"
