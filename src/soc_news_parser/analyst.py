@@ -15,12 +15,10 @@ from urllib.parse import urlsplit
 from .evidence import (
     COUNTED_IOC_TYPES,
     CVE_RE,
-    EXCLUDED_HEADING_RE,
-    IOC_HEADING_RE,
     RELATED_LINE_RE,
-    SECTION_END_RE,
     Evidence,
     EvidenceManifest,
+    heading_kind,
 )
 
 
@@ -201,13 +199,9 @@ def _body_for_impacts(body: str) -> str:
     for line in body.splitlines():
         stripped = line.strip()
         marked = re.fullmatch(r"#{1,6}\s+(.+)", stripped)
-        heading = marked.group(1).strip() if marked else stripped
-        is_known = any(
-            pattern.fullmatch(heading)
-            for pattern in (IOC_HEADING_RE, EXCLUDED_HEADING_RE, SECTION_END_RE)
-        )
-        if marked or is_known:
-            zone = "excluded" if EXCLUDED_HEADING_RE.fullmatch(heading) else "general"
+        kind = heading_kind(stripped)
+        if marked or kind:
+            zone = "excluded" if kind == "excluded" else "general"
             continue
         if zone == "excluded" or RELATED_LINE_RE.match(stripped):
             continue

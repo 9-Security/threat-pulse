@@ -247,3 +247,35 @@ Payload delivery domain bestsocialmedianewspapper.com serves an archive.
     assert evidence["invoice.docx"].indicator_type == "filename"
     assert evidence["invoice.docx"].status == "candidate"
     assert evidence["bestsocialmedianewspapper.com"].indicator_type == "domain"
+
+
+def test_markdown_ioc_heading_noise_still_confirms_section_values() -> None:
+    article = article_with_mixed_evidence()
+    article.body = """The scam sites collect browser information.
+Indicators of compromise (IoCs):-**
+| Type | Indicator | Description |
+| IP address | `157.230.180.90` | Hosting server |
+| Domain | `detectsysscanner[.]at` | Scam site |
+| Domain | `detectsysscanner[.]xn--q9jyb4c` | IDN scam site |
+## Analysis
+later.example
+"""
+    manifest = build_manifest(article)
+    by_value = {item.normalized_value: item for item in manifest.evidence}
+
+    assert by_value["157.230.180.90"].status == "confirmed"
+    assert by_value["detectsysscanner.at"].status == "confirmed"
+    assert by_value["detectsysscanner.xn--q9jyb4c"].status == "confirmed"
+    assert by_value["later.example"].status == "candidate"
+
+
+def test_prose_mention_of_iocs_is_not_a_heading() -> None:
+    article = article_with_mixed_evidence()
+    article.body = """The report lists indicators of compromise below.
+prose.example
+"""
+    manifest = build_manifest(article)
+    by_value = {item.normalized_value: item for item in manifest.evidence}
+
+    assert by_value["prose.example"].status == "candidate"
+

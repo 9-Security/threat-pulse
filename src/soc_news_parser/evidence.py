@@ -114,7 +114,7 @@ FILE_RE = re.compile(
 )
 DOMAIN_RE = re.compile(
     r"(?<![\w@.-])(?:[a-z0-9-]{1,63}(?:\.|\[\.\]|\(\.\))){1,}"
-    r"[a-z]{2,63}(?![\w-]|\.[a-z0-9])",
+    r"(?:[a-z]{2,63}|xn--[a-z0-9-]{2,59})(?![\w-]|\.[a-z0-9])",
     re.IGNORECASE,
 )
 IOC_HEADING_RE = re.compile(
@@ -142,6 +142,24 @@ FILE_CONTEXT_RE = re.compile(
     r"(?:is|named|called)?\s*[:=]?\s*$",
     re.IGNORECASE,
 )
+def normalize_heading(line: str) -> str:
+    text = line.strip()
+    text = re.sub(r"^#{1,6}\s+", "", text)
+    text = re.sub(r"[*_`]+", "", text)
+    text = re.sub(r"\s*\(\s*iocs?\s*\)", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"\s+", " ", text).strip()
+    return re.sub(r"[\s:：\-–—*]+$", "", text)
+
+
+def heading_kind(line: str) -> str | None:
+    heading = normalize_heading(line)
+    if IOC_HEADING_RE.fullmatch(heading):
+        return "ioc"
+    if EXCLUDED_HEADING_RE.fullmatch(heading):
+        return "excluded"
+    if SECTION_END_RE.fullmatch(heading):
+        return "end"
+    return None
 
 
 @dataclass(frozen=True)
@@ -365,16 +383,12 @@ def extract_evidence(article: ParsedArticle) -> list[Evidence]:
     for index, line in enumerate(lines, start=1):
         stripped = line.strip()
         marked_heading = re.fullmatch(r"#{1,6}\s+(.+)", stripped)
-        heading = marked_heading.group(1).strip() if marked_heading else stripped
-        is_known_heading = any(
-            pattern.fullmatch(heading)
-            for pattern in (IOC_HEADING_RE, EXCLUDED_HEADING_RE, SECTION_END_RE)
-        )
-        if marked_heading or is_known_heading:
-            current_section, zone = heading, "general"
-            if IOC_HEADING_RE.fullmatch(heading):
+        kind = heading_kind(stripped)
+        if marked_heading or kind:
+            current_section, zone = stripped, "general"
+            if kind == "ioc":
                 zone = "ioc"
-            elif EXCLUDED_HEADING_RE.fullmatch(heading):
+            elif kind == "excluded":
                 zone = "excluded"
             continue
 
