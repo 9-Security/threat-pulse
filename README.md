@@ -10,7 +10,9 @@
 4. 使用 Trafilatura 做通用正文抽取。
 5. 最後嘗試 `article`、`main` 等語意標籤。
 
-解析結果會記錄 `extraction_method`、字元數及 warnings。Cloudflare 驗證頁、Access Denied、過短內容不會被當成文章正文。若所有正文方法都失敗，該篇仍會保留在輸出中，但標為 `extraction_method: "failed"`、`body` 留空；RSS 摘要只存於 `feed_excerpt`，不會冒充完整內文供 IoC 抽取。
+解析結果會記錄 `extraction_method`、字元數及 warnings。Cloudflare 驗證頁、Access Denied、過短內容不會被當成文章正文。若完整 HTML 受阻但 RSS 有通過品質檢查的部分正文，會標成 `feed:*:partial`；兩者皆不可用時才標成 `extraction_method: "failed"`、`body` 留空。
+
+所有 feed 與文章請求只允許 HTTPS、來源設定中的文章網域及公開 IP；每次 redirect 都會重新驗證，並以串流方式在解壓後 12 MiB 上限立即中止，避免 feed 連結造成 SSRF 或無界下載。
 
 目前內建原始十個來源：The Hacker News、BleepingComputer、Krebs on Security、Dark Reading、SecurityWeek、The Record、Unit 42、Cisco Talos、Microsoft Security Blog、Google Cloud/Mandiant。
 
@@ -58,9 +60,9 @@ uv run soc-news-parser audit \
   --output terminalfix-evidence.json
 ```
 
-Manifest 保存正文 SHA-256、擷取方法、parser 版本／Git revision、發布與擷取時間，以及每個候選值的原值、正規化值、行號、章節、上下文和理由：
+Manifest 保存 canonical body、正文 SHA-256、擷取 warnings、parser 版本／Git revision、發布與擷取時間，以及每個候選值的原值、正規化值、行列位置、章節、上下文和理由：
 
-- `confirmed`：位於原文明確 IoC 章節，或同一行明確描述為 C2、惡意檔案、payload、攻擊者控制基礎設施等。
+- `confirmed`：只限位於原文明確 IoC 章節的值。
 - `candidate`：格式符合，但原文關係不足，必須人工複核；不計入 IoC 總數。
 - `rejected`：出版者網域，或位於 Related、Latest News、References 等編輯區塊。
 
@@ -73,13 +75,14 @@ Manifest 保存正文 SHA-256、擷取方法、parser 版本／Git revision、�
 uv run soc-news-parser report \
   --hours 24 \
   --now 2026-08-30T01:21:00Z \
+  --generated-at 2026-08-30T01:30:00Z \
   --json-output daily-evidence.json \
   --markdown-output daily-report.md
 ```
 
 預設處理所有內建來源；可重複使用 `--source microsoft-security --source the-hacker-news` 限定來源。單一來源或文章失敗不會中止整批報告，錯誤會保存在 `source_failures` 或文章的 `extraction_method: "failed"`。
 
-報告主旨的 IoC 總數採全報告唯一值，僅計 `confirmed` 的 MD5、SHA-1、SHA-256、IP、domain 與 URL；檔名另行統計。Markdown 只列 confirmed 指標與證據，candidate／rejected 的逐筆紀錄保留在 JSON。
+報告主旨的 IoC 總數採全報告唯一值，僅計 `confirmed` 的 MD5、SHA-1、SHA-256、IPv4/IPv6、domain 與 URL；檔名另行統計。Markdown 只列 confirmed 指標與證據，candidate／rejected 的逐筆紀錄保留在 JSON。兩份輸出具有相同 Report ID，會拒絕相同輸出路徑並先完成暫存寫入再替換。
 
 ### 驗證
 

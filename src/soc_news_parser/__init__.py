@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
+import tempfile
 from datetime import datetime
+from pathlib import Path
 
 from .evidence import build_manifest
 from .parser import (
@@ -60,9 +63,74 @@ def _arguments() -> argparse.Namespace:
     )
     report.add_argument("--hours", type=int, default=24)
     report.add_argument("--now", help="ISO-8601 UTC window end; defaults to current time")
+    report.add_argument(
+        "--generated-at",
+        help="ISO-8601 generation timestamp for reproducible output",
+    )
     report.add_argument("--json-output", required=True)
     report.add_argument("--markdown-output", required=True)
     return parser.parse_args()
+
+
+def _atomic_write(path: str, content: str) -> str:
+    destination = Path(path).expanduser().resolve()
+    if not destination.parent.is_dir():
+        raise OSError(f"output directory does not exist: {destination.parent}")
+    temporary: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            "w",
+            encoding="utf-8",
+            dir=destination.parent,
+            prefix=f".{destination.name}.",
+            delete=False,
+        ) as output:
+            temporary = Path(output.name)
+            output.write(content)
+            output.flush()
+            os.fsync(output.fileno())
+        os.replace(temporary, destination)
+        return str(destination)
+    finally:
+        if temporary and temporary.exists():
+            temporary.unlink()
+
+
+def _write_report_pair(
+    json_path: str, markdown_path: str, json_content: str, markdown_content: str
+) -> tuple[str, str]:
+    json_destination = Path(json_path).expanduser().resolve()
+    markdown_destination = Path(markdown_path).expanduser().resolve()
+    if json_destination == markdown_destination:
+        raise ValueError("JSON and Markdown output paths must be different")
+
+    staged: list[tuple[Path, Path]] = []
+    try:
+        for destination, content in (
+            (json_destination, json_content),
+            (markdown_destination, markdown_content),
+        ):
+            if not destination.parent.is_dir():
+                raise OSError(f"output directory does not exist: {destination.parent}")
+            with tempfile.NamedTemporaryFile(
+                "w",
+                encoding="utf-8",
+                dir=destination.parent,
+                prefix=f".{destination.name}.",
+                delete=False,
+            ) as output:
+                temporary = Path(output.name)
+                output.write(content)
+                output.flush()
+                os.fsync(output.fileno())
+            staged.append((temporary, destination))
+        for temporary, destination in staged:
+            os.replace(temporary, destination)
+        return str(json_destination), str(markdown_destination)
+    finally:
+        for temporary, _ in staged:
+            if temporary.exists():
+                temporary.unlink()
 
 
 def main() -> None:
@@ -87,27 +155,35 @@ def main() -> None:
                     raise ValueError("--hours must be greater than zero")
                 now = parse_utc(args.now) if args.now else None
                 since, until = default_window(args.hours, now)
+                generated_at = (
+                    parse_utc(args.generated_at) if args.generated_at else None
+                )
                 report = collect_report(
                     news_parser,
                     args.source or list(SOURCES),
                     since=since,
                     until=until,
+                    generated_at=generated_at,
                 )
                 rendered = json.dumps(report.to_dict(), ensure_ascii=False, indent=2)
-                with open(args.json_output, "w", encoding="utf-8") as output:
-                    output.write(rendered + "\n")
-                with open(args.markdown_output, "w", encoding="utf-8") as output:
-                    output.write(render_markdown(report))
+                json_output, markdown_output = _write_report_pair(
+                    args.json_output,
+                    args.markdown_output,
+                    rendered + "\n",
+                    render_markdown(report),
+                )
                 print(
                     json.dumps(
                         {
                             "subject": report.subject,
+                            "report_id": report.report_id,
                             "article_count": report.article_count,
                             "confirmed_ioc_count": report.confirmed_ioc_count,
                             "confirmed_filename_count": report.confirmed_filename_count,
                             "source_failures": len(report.source_failures),
-                            "json_output": args.json_output,
-                            "markdown_output": args.markdown_output,
+                            "source_warnings": len(report.source_warnings),
+                            "json_output": json_output,
+                            "markdown_output": markdown_output,
                         },
                         ensure_ascii=False,
                         indent=2,
@@ -116,12 +192,17 @@ def main() -> None:
                 return
             if args.command in {"article", "audit"}:
                 source_key = args.source or source_key_for_url(args.url)
-                selectors = SOURCES[source_key].article_selectors if source_key else ()
+                source = SOURCES[source_key] if source_key else None
+                selectors = source.article_selectors if source else ()
+                allowed_hosts = source.article_hosts if source else ()
                 body, method, warnings = news_parser.extract_html(
-                    args.url, expected_title=args.title, selectors=selectors
+                    args.url,
+                    expected_title=args.title,
+                    selectors=selectors,
+                    allowed_hosts=allowed_hosts,
                 )
                 if args.command == "audit":
-                    article_source = SOURCES[source_key].name if source_key else "Unknown"
+                    article_source = source.name if source else "Unknown"
                     published = (
                         parse_utc(args.published_at).isoformat()
                         if args.published_at
@@ -136,6 +217,7 @@ def main() -> None:
                         extraction_method=method,
                         body_characters=len(body),
                         warnings=warnings,
+                        publisher_hosts=source.article_hosts if source else (),
                     )
                     result = build_manifest(parsed_article).to_dict()
                 else:
@@ -166,7 +248,6 @@ def main() -> None:
 
     rendered = json.dumps(result, ensure_ascii=False, indent=2)
     if getattr(args, "output", None):
-        with open(args.output, "w", encoding="utf-8") as output:
-            output.write(rendered + "\n")
+        _atomic_write(args.output, rendered + "\n")
     else:
         print(rendered)

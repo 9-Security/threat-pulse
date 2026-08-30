@@ -17,7 +17,11 @@ def client_for(routes: dict[str, tuple[str, str]]) -> httpx.Client:
             request=request,
         )
 
-    return httpx.Client(transport=httpx.MockTransport(handler), follow_redirects=True)
+    return httpx.Client(transport=httpx.MockTransport(handler), follow_redirects=False)
+
+
+def news_parser() -> NewsParser:
+    return NewsParser(resolver=lambda _: ["93.184.216.34"])
 
 
 def test_feed_summary_falls_back_to_site_parser() -> None:
@@ -36,7 +40,7 @@ def test_feed_summary_falls_back_to_site_parser() -> None:
         for number in range(6)
     )
     page = f"<html><body><article><h1>Malware campaign technical analysis</h1>{paragraphs}</article></body></html>"
-    parser = NewsParser()
+    parser = news_parser()
     parser.client.close()
     parser.client = client_for(
         {
@@ -65,7 +69,7 @@ def test_json_ld_article_body_is_used() -> None:
     {{"@type":"NewsArticle","articleBody":{body!r}}}
     </script></head><body><main>Navigation only</main></body></html>"""
     page = page.replace("'", '"')
-    parser = NewsParser()
+    parser = news_parser()
     parser.client.close()
     parser.client = client_for({url: ("text/html", page)})
 
@@ -83,7 +87,7 @@ def test_anti_bot_page_is_rejected() -> None:
         + "<p>Enable JavaScript and cookies to continue.</p>" * 100
         + "</main></body></html>"
     )
-    parser = NewsParser()
+    parser = news_parser()
     parser.client.close()
     parser.client = client_for({url: ("text/html", page)})
 
@@ -107,7 +111,7 @@ def test_blocked_article_is_reported_without_using_excerpt_as_body() -> None:
             return httpx.Response(200, text=feed, request=request)
         return httpx.Response(403, text="Access denied", request=request)
 
-    parser = NewsParser()
+    parser = news_parser()
     parser.client.close()
     parser.client = httpx.Client(transport=httpx.MockTransport(handler))
 
@@ -122,3 +126,100 @@ def test_blocked_article_is_reported_without_using_excerpt_as_body() -> None:
     assert articles[0].body == ""
     assert articles[0].feed_excerpt == "This is only a feed excerpt, not the full report."
     assert "403 Forbidden" in articles[0].warnings[1]
+
+
+def test_redirect_to_private_address_is_rejected() -> None:
+    url = "https://example.test/story"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            302,
+            headers={"location": "https://127.0.0.1/latest/meta-data"},
+            request=request,
+        )
+
+    parser = news_parser()
+    parser.client.close()
+    parser.client = httpx.Client(transport=httpx.MockTransport(handler))
+
+    with parser, pytest.raises(ParseError, match="non-public"):
+        parser.extract_html(
+            url, allowed_hosts=("example.test", "127.0.0.1")
+        )
+
+
+def test_valid_partial_feed_body_is_retained_when_html_is_blocked() -> None:
+    feed_url = "https://example.test/feed"
+    article_url = "https://example.test/blocked"
+    partial = "Technical report paragraph. " * 25
+    feed = f"""<rss version="2.0"><channel><title>Test</title>
+    <item><title>Technical report</title><link>{article_url}</link>
+    <pubDate>Sat, 29 Aug 2026 03:43:27 +0000</pubDate>
+    <description>{partial}</description></item></channel></rss>"""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        status = 200 if str(request.url) == feed_url else 403
+        return httpx.Response(status, text=feed if status == 200 else "", request=request)
+
+    parser = news_parser()
+    parser.client.close()
+    parser.client = httpx.Client(transport=httpx.MockTransport(handler))
+
+    with parser:
+        articles = parser.parse_feed(
+            Source("Test", feed_url, article_hosts=("example.test",)),
+            since=datetime(2026, 8, 29, 0, tzinfo=timezone.utc),
+            until=datetime(2026, 8, 30, 0, tzinfo=timezone.utc),
+        )
+
+    assert articles[0].extraction_method == "feed:summary:partial"
+    assert articles[0].body.startswith("Technical report paragraph")
+    assert "incomplete feed content" in articles[0].warnings[0]
+
+
+def test_article_discussing_access_denied_is_not_rejected() -> None:
+    url = "https://example.test/story"
+    paragraphs = "".join(
+        f"<p>Analysis paragraph {index} discusses an Access Denied response "
+        f"without being a challenge page. {'detail ' * 30}</p>"
+        for index in range(5)
+    )
+    parser = news_parser()
+    parser.client.close()
+    parser.client = client_for(
+        {url: ("text/html", f"<article>{paragraphs}</article>")}
+    )
+
+    with parser:
+        body, _, _ = parser.extract_html(url)
+
+    assert "Access Denied" in body
+
+
+def test_source_host_mismatch_is_rejected_before_fetch() -> None:
+    parser = news_parser()
+    with parser, pytest.raises(ParseError, match="not allowed"):
+        parser.extract_html(
+            "https://unrelated.example/story",
+            allowed_hosts=("microsoft.com",),
+        )
+
+
+def test_missing_entry_date_is_exposed_as_diagnostic() -> None:
+    feed_url = "https://example.test/feed"
+    feed = """<rss version="2.0"><channel><title>Test</title>
+    <item><title>Undated report</title><link>https://example.test/story</link>
+    </item></channel></rss>"""
+    parser = news_parser()
+    parser.client.close()
+    parser.client = client_for({feed_url: ("application/rss+xml", feed)})
+
+    with parser:
+        articles = parser.parse_feed(
+            Source("Test", feed_url),
+            since=datetime(2026, 8, 29, 0, tzinfo=timezone.utc),
+            until=datetime(2026, 8, 30, 0, tzinfo=timezone.utc),
+        )
+
+    assert articles == []
+    assert "missing or invalid publication date" in parser.diagnostics[0]

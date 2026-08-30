@@ -7,22 +7,28 @@ import subprocess
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from importlib.metadata import PackageNotFoundError, version
+from pathlib import Path
 from typing import Any, Iterable
-from urllib.parse import urlparse
+from urllib.parse import urlsplit, urlunsplit
 
 from .parser import ParsedArticle
 
 
-MANIFEST_VERSION = "1.0"
+MANIFEST_VERSION = "1.1"
 HASH_RE = re.compile(
     r"(?<![0-9a-f])(?:[0-9a-f]{64}|[0-9a-f]{40}|[0-9a-f]{32})(?![0-9a-f])",
     re.IGNORECASE,
 )
 URL_RE = re.compile(r"\b(?:hxxps?|https?)://[^\s<>\"']+", re.IGNORECASE)
 IP_RE = re.compile(r"(?<!\d)(?:\d{1,3}(?:\.|\[\.\]|\(\.\))){3}\d{1,3}(?!\d)")
+IPV6_RE = re.compile(
+    r"(?<![0-9a-f:])(?:[0-9a-f]{0,4}:){2,7}[0-9a-f]{0,4}(?![0-9a-f:])",
+    re.IGNORECASE,
+)
 FILE_RE = re.compile(
     r"(?<![\w.-])[\w@+-][\w@().+-]*\."
-    r"(?:exe|dll|sys|ps1|bat|cmd|vbs|js|jar|py|zip|rar|7z|hta|msi|scr|elf|bin|dat|pem)"
+    r"(?:exe|dll|sys|ps1|bat|cmd|vbs|js|jar|py|zip|rar|7z|hta|msi|scr|"
+    r"elf|bin|dat|pem|lnk|iso|img|doc|docx|xls|xlsx|ppt|pptx|pdf)"
     r"(?![\w.-])",
     re.IGNORECASE,
 )
@@ -46,11 +52,8 @@ SECTION_END_RE = re.compile(
     r"advanced hunting queries|acknowledgements?)[:：]?$",
     re.IGNORECASE,
 )
-EXPLICIT_MALICIOUS_RE = re.compile(
-    r"\b(?:indicator(?:s)? of compromise|ioc|c2|command[- ]and[- ]control|"
-    r"malicious (?:file|dll|domain|url|ip|payload)|attacker[- ]controlled|"
-    r"payload delivery|custom (?:tunnel )?implant|compromised website|"
-    r"initial (?:zip )?archive|dropped (?:file|payload)|backdoor)\b",
+FILE_CONTEXT_RE = re.compile(
+    r"\b(?:file(?:name)?|attachment|document|payload|dropper|archive)\b",
     re.IGNORECASE,
 )
 
@@ -62,6 +65,8 @@ class Evidence:
     raw_value: str
     normalized_value: str
     line_number: int
+    column_start: int
+    column_end: int
     section: str
     context: str
     status: str
@@ -78,8 +83,10 @@ class EvidenceManifest:
     published_at: str | None
     retrieved_at: str
     body_sha256: str
+    canonical_body: str
     body_characters: int
     extraction_method: str
+    extraction_warnings: list[str]
     parser_version: str
     parser_revision: str | None
     confirmed_unique_iocs: int
@@ -99,7 +106,20 @@ def _normalize(value: str, indicator_type: str) -> str:
     if indicator_type == "url":
         normalized = re.sub(r"^hxxps://", "https://", normalized, flags=re.I)
         normalized = re.sub(r"^hxxp://", "http://", normalized, flags=re.I)
-    return normalized.lower() if indicator_type in {"hash", "domain", "url"} else normalized
+        parts = urlsplit(normalized)
+        host = (parts.hostname or "").lower()
+        if ":" in host:
+            host = f"[{host}]"
+        netloc = host
+        try:
+            if parts.port:
+                netloc = f"{netloc}:{parts.port}"
+        except ValueError:
+            return normalized
+        return urlunsplit(
+            (parts.scheme.lower(), netloc, parts.path, parts.query, parts.fragment)
+        )
+    return normalized.lower() if indicator_type in {"hash", "domain"} else normalized
 
 
 def _hash_type(value: str) -> str:
@@ -112,6 +132,7 @@ def _line_matches(line: str) -> Iterable[tuple[str, re.Match[str]]]:
         ("hash", HASH_RE),
         ("url", URL_RE),
         ("ip", IP_RE),
+        ("ip", IPV6_RE),
         ("filename", FILE_RE),
         ("domain", DOMAIN_RE),
     )
@@ -122,6 +143,16 @@ def _line_matches(line: str) -> Iterable[tuple[str, re.Match[str]]]:
                 continue
             if indicator_type == "domain" and span[0] > 0 and line[span[0] - 1] in "/\\":
                 continue
+            if indicator_type == "domain":
+                labels = _normalize(match.group(), "domain").split(".")
+                if any(
+                    not label
+                    or len(label) > 63
+                    or label.startswith("-")
+                    or label.endswith("-")
+                    for label in labels
+                ):
+                    continue
             if indicator_type == "ip":
                 try:
                     ipaddress.ip_address(_normalize(match.group(), "ip"))
@@ -131,37 +162,52 @@ def _line_matches(line: str) -> Iterable[tuple[str, re.Match[str]]]:
             yield indicator_type, match
 
 
-def _source_host_matches(value: str, article_url: str, indicator_type: str) -> bool:
-    host = (urlparse(article_url).hostname or "").removeprefix("www.")
+def _source_host_matches(
+    value: str, article: ParsedArticle, indicator_type: str
+) -> bool:
     if indicator_type == "url":
-        candidate = (urlparse(value).hostname or "").removeprefix("www.")
+        candidate = (urlsplit(value).hostname or "").removeprefix("www.")
     elif indicator_type == "domain":
         candidate = value.removeprefix("www.")
     else:
         return False
-    return bool(host and candidate == host)
+    trusted = article.publisher_hosts or ((urlsplit(article.url).hostname or ""),)
+    return any(
+        candidate == host.removeprefix("www.")
+        or candidate.endswith(f".{host.removeprefix('www.')}")
+        for host in trusted
+        if host
+    )
 
 
 def extract_evidence(article: ParsedArticle) -> list[Evidence]:
     lines = article.body.splitlines()
+    body_sha256 = hashlib.sha256(article.body.encode()).hexdigest()
     current_section = "article body"
     zone = "general"
     results: list[Evidence] = []
 
     for index, line in enumerate(lines, start=1):
         stripped = line.strip()
-        if IOC_HEADING_RE.fullmatch(stripped):
-            current_section, zone = stripped, "ioc"
-            continue
-        if EXCLUDED_HEADING_RE.fullmatch(stripped):
-            current_section, zone = stripped, "excluded"
-            continue
-        if SECTION_END_RE.fullmatch(stripped):
-            current_section, zone = stripped, "general"
+        marked_heading = re.fullmatch(r"#{1,6}\s+(.+)", stripped)
+        heading = marked_heading.group(1).strip() if marked_heading else stripped
+        is_known_heading = any(
+            pattern.fullmatch(heading)
+            for pattern in (IOC_HEADING_RE, EXCLUDED_HEADING_RE, SECTION_END_RE)
+        )
+        if marked_heading or is_known_heading:
+            current_section, zone = heading, "general"
+            if IOC_HEADING_RE.fullmatch(heading):
+                zone = "ioc"
+            elif EXCLUDED_HEADING_RE.fullmatch(heading):
+                zone = "excluded"
             continue
 
         for generic_type, match in _line_matches(line):
             raw = match.group()
+            local_context = line[max(0, match.start() - 80) : match.end() + 80]
+            if generic_type == "domain" and FILE_CONTEXT_RE.search(local_context):
+                generic_type = "filename"
             indicator_type = _hash_type(raw) if generic_type == "hash" else generic_type
             normalized = _normalize(raw, generic_type)
             reasons: list[str]
@@ -169,7 +215,7 @@ def extract_evidence(article: ParsedArticle) -> list[Evidence]:
                 status = "rejected"
                 assertion = "machine_rejected"
                 reasons = ["excluded_editorial_section"]
-            elif _source_host_matches(normalized, article.url, generic_type):
+            elif _source_host_matches(normalized, article, generic_type):
                 status = "rejected"
                 assertion = "machine_rejected"
                 reasons = ["publisher_domain"]
@@ -177,12 +223,6 @@ def extract_evidence(article: ParsedArticle) -> list[Evidence]:
                 status = "confirmed"
                 assertion = "source_explicit"
                 reasons = ["explicit_ioc_section"]
-            elif generic_type != "filename" and EXPLICIT_MALICIOUS_RE.search(
-                line[max(0, match.start() - 100) : match.end() + 100]
-            ):
-                status = "confirmed"
-                assertion = "source_explicit"
-                reasons = ["explicit_malicious_relationship"]
             else:
                 status = "candidate"
                 assertion = "machine_candidate"
@@ -192,7 +232,8 @@ def extract_evidence(article: ParsedArticle) -> list[Evidence]:
             after = lines[index].strip() if index < len(lines) else ""
             context = "\n".join(part for part in (before, stripped, after) if part)
             evidence_id = hashlib.sha256(
-                f"{article.url}\n{index}\n{indicator_type}\n{normalized}".encode()
+                f"{body_sha256}\n{article.url}\n{index}\n{match.start()}\n"
+                f"{match.end()}\n{indicator_type}\n{normalized}".encode()
             ).hexdigest()[:20]
             results.append(
                 Evidence(
@@ -201,6 +242,8 @@ def extract_evidence(article: ParsedArticle) -> list[Evidence]:
                     raw_value=raw,
                     normalized_value=normalized,
                     line_number=index,
+                    column_start=match.start() + 1,
+                    column_end=match.end() + 1,
                     section=current_section,
                     context=context,
                     status=status,
@@ -219,14 +262,30 @@ def _package_version() -> str:
 
 
 def _git_revision() -> str | None:
+    package_path = Path(__file__).resolve()
     try:
-        return subprocess.run(
-            ["git", "rev-parse", "--short", "HEAD"],
+        root = subprocess.run(
+            ["git", "-C", str(package_path.parent), "rev-parse", "--show-toplevel"],
             check=True,
             capture_output=True,
             text=True,
             timeout=2,
         ).stdout.strip()
+        revision = subprocess.run(
+            ["git", "-C", root, "rev-parse", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=2,
+        ).stdout.strip()
+        dirty = subprocess.run(
+            ["git", "-C", root, "status", "--porcelain", "--untracked-files=no"],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=2,
+        ).stdout.strip()
+        return f"{revision}-dirty" if dirty else revision
     except (OSError, subprocess.SubprocessError):
         return None
 
@@ -275,8 +334,10 @@ def build_manifest(
         published_at=article.published_at,
         retrieved_at=retrieved.astimezone(timezone.utc).isoformat(),
         body_sha256=hashlib.sha256(article.body.encode()).hexdigest(),
+        canonical_body=article.body,
         body_characters=len(article.body),
         extraction_method=article.extraction_method,
+        extraction_warnings=article.warnings,
         parser_version=_package_version(),
         parser_revision=_git_revision(),
         confirmed_unique_iocs=unique_count("confirmed"),

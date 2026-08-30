@@ -1,20 +1,22 @@
 from __future__ import annotations
 
 import html
+import ipaddress
 import json
 import re
+import socket
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
-from typing import Any, Iterable
-from urllib.parse import urlparse
+from typing import Any, Callable, Iterable
+from urllib.parse import urljoin, urlparse
 
 import feedparser
 import httpx
 import trafilatura
 from bs4 import BeautifulSoup, Tag
 
-from .sources import Source
+from .sources import SOURCES, Source
 
 
 USER_AGENT = (
@@ -62,6 +64,7 @@ class ParsedArticle:
     body_characters: int
     warnings: list[str]
     feed_excerpt: str | None = None
+    publisher_hosts: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -77,7 +80,9 @@ def _clean_text(value: str) -> str:
 def _looks_like_body(text: str, expected_title: str = "") -> tuple[bool, list[str]]:
     warnings: list[str] = []
     lowered = text.lower()
-    if any(marker in lowered for marker in BLOCK_PAGE_MARKERS):
+    opening = lowered[:1500]
+    marker_count = sum(marker in opening for marker in BLOCK_PAGE_MARKERS)
+    if marker_count >= 2 or opening.lstrip().startswith("access denied"):
         return False, ["anti-bot or access-denied page detected"]
     if len(text) < 500:
         return False, [f"body too short ({len(text)} characters)"]
@@ -101,11 +106,52 @@ def _tag_text(tag: Tag) -> str:
         for node in clone.select(selector):
             node.decompose()
     blocks: list[str] = []
-    for node in clone.select("h1, h2, h3, h4, p, li, pre, blockquote, tr"):
+    for node in clone.select("h1, h2, h3, h4, h5, h6, p, li, pre, blockquote, tr"):
         text = " ".join(node.stripped_strings)
+        if node.name and re.fullmatch(r"h[1-6]", node.name):
+            text = f"## {text}"
         if text and (not blocks or blocks[-1] != text):
             blocks.append(text)
     return "\n".join(blocks) if blocks else _clean_text(clone.get_text("\n"))
+
+
+def _clean_body_text(value: str) -> str:
+    if re.search(r"<(?:article|main|h[1-6]|p|div|table|li)\b", value, re.I):
+        return _tag_text(BeautifulSoup(html.unescape(value), "lxml"))
+    return _clean_text(value)
+
+
+def _resolve_host(host: str) -> list[str]:
+    try:
+        return sorted(
+            {
+                item[4][0]
+                for item in socket.getaddrinfo(host, 443, type=socket.SOCK_STREAM)
+            }
+        )
+    except socket.gaierror as error:
+        raise ParseError(f"DNS resolution failed for {host}: {error}") from error
+
+
+def _is_public_address(value: str) -> bool:
+    address = ipaddress.ip_address(value)
+    return not (
+        address.is_private
+        or address.is_loopback
+        or address.is_link_local
+        or address.is_multicast
+        or address.is_reserved
+        or address.is_unspecified
+    )
+
+
+def _host_allowed(host: str, allowed_hosts: tuple[str, ...]) -> bool:
+    normalized = host.rstrip(".").lower()
+    return any(
+        normalized == allowed.rstrip(".").lower()
+        or normalized.endswith(f".{allowed.rstrip('.').lower()}")
+        for allowed in allowed_hosts
+    )
 
 
 def _json_ld_candidates(soup: BeautifulSoup) -> Iterable[str]:
@@ -124,9 +170,13 @@ def _json_ld_candidates(soup: BeautifulSoup) -> Iterable[str]:
 
 
 class NewsParser:
-    def __init__(self, timeout: float = 25.0) -> None:
+    def __init__(
+        self,
+        timeout: float = 25.0,
+        resolver: Callable[[str], list[str]] | None = None,
+    ) -> None:
         self.client = httpx.Client(
-            follow_redirects=True,
+            follow_redirects=False,
             timeout=timeout,
             headers={
                 "User-Agent": USER_AGENT,
@@ -135,6 +185,8 @@ class NewsParser:
                 "Accept-Language": "en-US,en;q=0.8,zh-TW;q=0.7",
             },
         )
+        self.resolver = resolver or _resolve_host
+        self.diagnostics: list[str] = []
 
     def close(self) -> None:
         self.client.close()
@@ -145,15 +197,61 @@ class NewsParser:
     def __exit__(self, *_: object) -> None:
         self.close()
 
-    def _get(self, url: str) -> httpx.Response:
+    def _validate_url(self, url: str, allowed_hosts: tuple[str, ...]) -> None:
+        parsed = urlparse(url)
+        if parsed.scheme != "https" or not parsed.hostname:
+            raise ParseError(f"only HTTPS URLs with a hostname are allowed: {url}")
+        host = parsed.hostname.rstrip(".").lower()
+        if not _host_allowed(host, allowed_hosts):
+            raise ParseError(f"host {host} is not allowed for this source")
         try:
-            response = self.client.get(url)
-            response.raise_for_status()
-        except httpx.HTTPError as error:
-            raise ParseError(f"HTTP fetch failed for {url}: {error}") from error
-        if len(response.content) > 12 * 1024 * 1024:
-            raise ParseError(f"response exceeds 12 MiB: {url}")
-        return response
+            addresses = [host] if ipaddress.ip_address(host) else []
+        except ValueError:
+            addresses = self.resolver(host)
+        if not addresses or any(not _is_public_address(address) for address in addresses):
+            raise ParseError(f"host {host} resolves to a non-public address")
+
+    def _get(
+        self, url: str, *, allowed_hosts: tuple[str, ...] | None = None
+    ) -> httpx.Response:
+        initial_host = urlparse(url).hostname
+        hosts = allowed_hosts or ((initial_host,) if initial_host else ())
+        current_url = url
+        maximum_bytes = 12 * 1024 * 1024
+        for _ in range(6):
+            self._validate_url(current_url, hosts)
+            try:
+                with self.client.stream("GET", current_url) as response:
+                    if response.is_redirect:
+                        location = response.headers.get("location")
+                        if not location:
+                            raise ParseError(
+                                f"redirect without Location header: {current_url}"
+                            )
+                        current_url = urljoin(current_url, location)
+                        continue
+                    response.raise_for_status()
+                    length = response.headers.get("content-length")
+                    if length and int(length) > maximum_bytes:
+                        raise ParseError(f"response exceeds 12 MiB: {current_url}")
+                    chunks: list[bytes] = []
+                    size = 0
+                    for chunk in response.iter_bytes():
+                        size += len(chunk)
+                        if size > maximum_bytes:
+                            raise ParseError(f"response exceeds 12 MiB: {current_url}")
+                        chunks.append(chunk)
+                    return httpx.Response(
+                        response.status_code,
+                        headers=response.headers,
+                        content=b"".join(chunks),
+                        request=response.request,
+                    )
+            except (httpx.HTTPError, ValueError) as error:
+                raise ParseError(
+                    f"HTTP fetch failed for {current_url}: {error}"
+                ) from error
+        raise ParseError(f"too many redirects while fetching {url}")
 
     def extract_html(
         self,
@@ -161,8 +259,9 @@ class NewsParser:
         *,
         expected_title: str = "",
         selectors: tuple[str, ...] = (),
+        allowed_hosts: tuple[str, ...] = (),
     ) -> tuple[str, str, list[str]]:
-        response = self._get(url)
+        response = self._get(url, allowed_hosts=allowed_hosts or None)
         page = response.text
         soup = BeautifulSoup(page, "lxml")
         attempts: list[tuple[str, str]] = []
@@ -181,6 +280,7 @@ class NewsParser:
             include_tables=True,
             include_links=False,
             favor_precision=True,
+            output_format="markdown",
         )
         if extracted:
             attempts.append(("trafilatura", extracted))
@@ -191,12 +291,30 @@ class NewsParser:
                 attempts.append((f"semantic-selector:{selector}", _tag_text(node)))
 
         failures: list[str] = []
+        valid_attempts: list[tuple[float, str, str, list[str]]] = []
         for method, candidate in attempts:
-            body = _clean_text(candidate)
+            body = _clean_body_text(candidate)
             valid, warnings = _looks_like_body(body, expected_title)
             if valid:
-                return body, method, warnings
+                title_terms = set(re.findall(r"[a-z0-9]{4,}", expected_title.lower()))
+                title_hits = sum(term in body[:4000].lower() for term in title_terms)
+                title_score = title_hits / max(1, len(title_terms))
+                method_score = (
+                    30
+                    if method.startswith("json-ld")
+                    else 25
+                    if method.startswith("site-selector")
+                    else 20
+                    if method == "trafilatura"
+                    else 10
+                )
+                score = method_score + title_score * 40 + min(len(body), 20_000) / 1000
+                valid_attempts.append((score, method, body, warnings))
+                continue
             failures.append(f"{method}: {', '.join(warnings)}")
+        if valid_attempts:
+            _, method, body, warnings = max(valid_attempts, key=lambda item: item[0])
+            return body, method, warnings
         detail = "; ".join(failures) if failures else "no extraction candidates"
         raise ParseError(f"could not extract a valid article body from {url}: {detail}")
 
@@ -208,25 +326,48 @@ class NewsParser:
         until: datetime,
         limit: int | None = None,
     ) -> list[ParsedArticle]:
-        response = self._get(source.feed_url)
+        self.diagnostics = []
+        feed_host = urlparse(source.feed_url).hostname or ""
+        response = self._get(
+            source.feed_url,
+            allowed_hosts=tuple(dict.fromkeys((feed_host, *source.article_hosts))),
+        )
         parsed = feedparser.parse(response.content)
-        if parsed.bozo and not parsed.entries:
-            raise ParseError(f"invalid feed {source.feed_url}: {parsed.bozo_exception}")
+        if parsed.bozo:
+            if not parsed.entries:
+                raise ParseError(
+                    f"invalid feed {source.feed_url}: {parsed.bozo_exception}"
+                )
+            self.diagnostics.append(
+                f"feed parser reported a recoverable error; results may be incomplete: "
+                f"{parsed.bozo_exception}"
+            )
 
         articles: list[ParsedArticle] = []
         for entry in parsed.entries:
             published = _entry_datetime(entry)
-            if published is None or not (since <= published < until):
+            if published is None:
+                self.diagnostics.append(
+                    f"skipped entry with missing or invalid publication date: "
+                    f"{_clean_text(entry.get('title', '(untitled)'))}"
+                )
+                continue
+            if not (since <= published < until):
                 continue
             title = _clean_text(entry.get("title", ""))
             url = entry.get("link", "")
             if not title or not url:
+                self.diagnostics.append("skipped entry with missing title or URL")
                 continue
 
             excerpt = _clean_text(entry.get("summary", "")) or None
             try:
                 body, method, warnings = self._entry_or_html_body(
-                    entry, url, title, source.article_selectors
+                    entry,
+                    url,
+                    title,
+                    source.article_selectors,
+                    source.article_hosts,
                 )
             except ParseError as error:
                 body = ""
@@ -246,6 +387,7 @@ class NewsParser:
                     body_characters=len(body),
                     warnings=warnings,
                     feed_excerpt=excerpt,
+                    publisher_hosts=source.article_hosts,
                 )
             )
             if limit is not None and len(articles) >= limit:
@@ -258,22 +400,49 @@ class NewsParser:
         url: str,
         title: str,
         selectors: tuple[str, ...],
+        allowed_hosts: tuple[str, ...],
     ) -> tuple[str, str, list[str]]:
         feed_candidates: list[tuple[str, str]] = []
         for item in entry.get("content", []):
             if item.get("value"):
-                feed_candidates.append(("feed:content", _clean_text(item["value"])))
+                feed_candidates.append(
+                    ("feed:content", _clean_body_text(item["value"]))
+                )
         if entry.get("summary"):
-            feed_candidates.append(("feed:summary", _clean_text(entry["summary"])))
+            feed_candidates.append(
+                ("feed:summary", _clean_body_text(entry["summary"]))
+            )
 
+        valid_feed_candidates: list[tuple[str, str, list[str]]] = []
         for method, body in feed_candidates:
             valid, warnings = _looks_like_body(body, title)
-            if valid and len(body) >= 1200:
-                return body, method, warnings
+            if valid:
+                valid_feed_candidates.append((method, body, warnings))
+        complete = [item for item in valid_feed_candidates if len(item[1]) >= 1200]
+        if complete:
+            return max(complete, key=lambda item: len(item[1]))
 
-        body, method, warnings = self.extract_html(
-            url, expected_title=title, selectors=selectors
-        )
+        try:
+            body, method, warnings = self.extract_html(
+                url,
+                expected_title=title,
+                selectors=selectors,
+                allowed_hosts=allowed_hosts,
+            )
+        except ParseError:
+            if valid_feed_candidates:
+                method, body, warnings = max(
+                    valid_feed_candidates, key=lambda item: len(item[1])
+                )
+                return (
+                    body,
+                    f"{method}:partial",
+                    [
+                        "raw HTML fallback failed; using validated but incomplete feed content",
+                        *warnings,
+                    ],
+                )
+            raise
         if feed_candidates:
             warnings.insert(0, "feed content was incomplete; raw HTML fallback used")
         return body, method, warnings
@@ -308,17 +477,8 @@ def default_window(hours: int, now: datetime | None = None) -> tuple[datetime, d
 
 
 def source_key_for_url(url: str) -> str:
-    host = urlparse(url).hostname or ""
-    aliases = {
-        "thehackernews.com": "the-hacker-news",
-        "www.bleepingcomputer.com": "bleepingcomputer",
-        "krebsonsecurity.com": "krebs",
-        "www.darkreading.com": "dark-reading",
-        "www.securityweek.com": "securityweek",
-        "therecord.media": "the-record",
-        "unit42.paloaltonetworks.com": "unit42",
-        "blog.talosintelligence.com": "cisco-talos",
-        "www.microsoft.com": "microsoft-security",
-        "cloud.google.com": "google-mandiant",
-    }
-    return aliases.get(host, "")
+    host = (urlparse(url).hostname or "").lower()
+    for key, source in SOURCES.items():
+        if _host_allowed(host, source.article_hosts):
+            return key
+    return ""

@@ -8,6 +8,7 @@ from soc_news_parser.parser import ParsedArticle
 def article_with_mixed_evidence() -> ParsedArticle:
     body = """Threat campaign report
 Researchers observed example.org in a screenshot, but did not characterize it.
+Publisher portal: hxxps://news.example.test/about.
 Command and Control to gitnow[.]dev; detection Trojan:Python/Indigo.SA.
 The signed trusted.exe loaded a malicious payload.
 Indicators of Compromise (IoCs)
@@ -33,6 +34,7 @@ Another report discusses unrelated.example.com and sample.exe.
         extraction_method="site-selector:article",
         body_characters=len(body),
         warnings=[],
+        publisher_hosts=("example.test",),
     )
 
 
@@ -47,6 +49,8 @@ def test_evidence_manifest_is_reproducible_and_challengeable() -> None:
     candidates = [item for item in manifest.evidence if item.status == "candidate"]
 
     assert manifest.body_sha256 == hashlib.sha256(article.body.encode()).hexdigest()
+    assert manifest.canonical_body == article.body
+    assert manifest.extraction_warnings == []
     assert manifest.retrieved_at == "2026-08-30T01:21:00+00:00"
     assert any(item.indicator_type == "sha256" for item in confirmed)
     assert any(item.normalized_value == "gitnow.dev" for item in confirmed)
@@ -70,9 +74,75 @@ def test_publisher_domain_is_rejected() -> None:
     publisher = [
         item
         for item in manifest.evidence
-        if item.normalized_value == "https://news.example.test/security"
+        if item.normalized_value == "https://news.example.test/about"
     ]
 
     assert len(publisher) == 1
     assert publisher[0].status == "rejected"
-    assert publisher[0].reason_codes == ["excluded_editorial_section"]
+    assert publisher[0].reason_codes == ["publisher_domain"]
+
+
+def test_heading_boundaries_reset_ioc_and_excluded_zones() -> None:
+    body = """## Indicators of Compromise
+evil[.]example
+## Analysis
+analysis.example
+## References
+reference.example
+## Technical details
+technical.example
+"""
+    article = article_with_mixed_evidence()
+    article.body = body
+    manifest = build_manifest(article)
+    statuses = {
+        item.normalized_value: item.status
+        for item in manifest.evidence
+        if item.indicator_type == "domain"
+    }
+
+    assert statuses == {
+        "evil.example": "confirmed",
+        "analysis.example": "candidate",
+        "reference.example": "rejected",
+        "technical.example": "candidate",
+    }
+
+
+def test_url_path_case_ipv6_and_occurrence_ids_are_preserved() -> None:
+    body = """## Indicators of Compromise
+hxxps://evil[.]example/CaseToken
+hxxps://evil[.]example/casetoken
+2001:4860:4860::8888
+repeat.example repeat.example
+"""
+    article = article_with_mixed_evidence()
+    article.body = body
+    manifest = build_manifest(article)
+    values = [item.normalized_value for item in manifest.evidence]
+    repeat_ids = [
+        item.evidence_id
+        for item in manifest.evidence
+        if item.normalized_value == "repeat.example"
+    ]
+
+    assert "https://evil.example/CaseToken" in values
+    assert "https://evil.example/casetoken" in values
+    assert "2001:4860:4860::8888" in values
+    assert len(repeat_ids) == 2
+    assert len(set(repeat_ids)) == 2
+
+
+def test_negated_inline_indicator_and_document_are_not_confirmed_domains() -> None:
+    body = """## Analysis
+This is not an IoC: benign.example.
+The malicious file is invoice.docx.
+"""
+    article = article_with_mixed_evidence()
+    article.body = body
+    manifest = build_manifest(article)
+    evidence = {item.normalized_value: item for item in manifest.evidence}
+
+    assert evidence["benign.example"].status == "candidate"
+    assert evidence["invoice.docx"].indicator_type == "filename"
+    assert evidence["invoice.docx"].status == "candidate"
