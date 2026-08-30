@@ -10,6 +10,8 @@ from soc_news_parser.analyst import (
     build_actions,
     build_brief,
     build_clusters,
+    is_official_brand_host,
+    is_short_parent_of_confirmed_host,
     load_previous_iocs,
     render_ioc_csv,
 )
@@ -119,6 +121,107 @@ def test_public_dns_stays_confirmed_but_is_hunt_not_block() -> None:
     brief = build_brief([manifest])
     assert brief.block_count == 0
     assert brief.hunt_count == 2
+
+
+def test_official_brand_host_stays_confirmed_but_is_hunt_not_block() -> None:
+    manifest = build_manifest(
+        _article(
+            "Fake Claude installer campaign",
+            "Researchers listed the lure domains.\n"
+            "Indicators of Compromise\n"
+            "claude.ai\n"
+            "code.claude.ai\n"
+            "https://claude.ai/download\n"
+            "claude.ai.download-app.us\n"
+            "claude-desktop.gitlab.io\n",
+        )
+    )
+    actions = build_actions(manifest)
+    by_target = {item.target: item for item in actions}
+    assert by_target["claude.ai"].action == "hunt"
+    assert "不建議直接封鎖" in by_target["claude.ai"].reason
+    assert by_target["code.claude.ai"].action == "hunt"
+    assert by_target["https://claude.ai/download"].action == "hunt"
+    assert by_target["claude.ai.download-app.us"].action == "block"
+    assert by_target["claude-desktop.gitlab.io"].action == "block"
+    assert all(
+        item.status == "confirmed"
+        for item in manifest.evidence
+        if item.normalized_value
+        in {
+            "claude.ai",
+            "code.claude.ai",
+            "https://claude.ai/download",
+            "claude.ai.download-app.us",
+            "claude-desktop.gitlab.io",
+        }
+    )
+    assert is_official_brand_host("domain", "claude.ai")
+    assert is_official_brand_host("domain", "code.claude.ai")
+    assert not is_official_brand_host("domain", "claude.ai.download-app.us")
+    assert not is_official_brand_host("domain", "claude-desktop.gitlab.io")
+    assert not is_official_brand_host("domain", "gitlab.io")
+    assert not is_official_brand_host("domain", "github.io")
+    assert not is_official_brand_host("domain", "it.com")
+
+
+def test_short_parent_domain_is_hunt_when_child_is_confirmed() -> None:
+    manifest = build_manifest(
+        _article(
+            "Fake Claude installer campaign",
+            "Researchers listed the lure domains.\n"
+            "Indicators of Compromise\n"
+            "it.com\n"
+            "downloading-api.it.com\n",
+        )
+    )
+    actions = build_actions(manifest)
+    by_target = {item.target: item for item in actions}
+    assert by_target["it.com"].action == "hunt"
+    assert "父網域過寬" in by_target["it.com"].reason
+    assert by_target["downloading-api.it.com"].action == "block"
+    assert all(
+        item.status == "confirmed"
+        for item in manifest.evidence
+        if item.normalized_value in {"it.com", "downloading-api.it.com"}
+    )
+    assert is_short_parent_of_confirmed_host(
+        "it.com", {"it.com", "downloading-api.it.com"}
+    )
+
+
+def test_long_parent_domain_stays_blocked_with_its_subdomain() -> None:
+    manifest = build_manifest(
+        _article(
+            "Fake Claude installer campaign",
+            "Researchers listed the lure domains.\n"
+            "Indicators of Compromise\n"
+            "download-app.us\n"
+            "claude.ai.download-app.us\n",
+        )
+    )
+    actions = build_actions(manifest)
+    by_target = {item.target: item for item in actions}
+    assert by_target["download-app.us"].action == "block"
+    assert by_target["claude.ai.download-app.us"].action == "block"
+    assert not is_short_parent_of_confirmed_host(
+        "download-app.us", {"download-app.us", "claude.ai.download-app.us"}
+    )
+
+
+def test_short_parent_alone_is_still_block() -> None:
+    actions = build_actions(
+        build_manifest(
+            _article(
+                "C2 infrastructure observed",
+                "The C2 server was observed contacting victims.\n"
+                "Indicators of Compromise\n"
+                "it.com\n",
+            )
+        )
+    )
+    assert [item.action for item in actions] == ["block"]
+    assert actions[0].target == "it.com"
 
 
 def test_topic_article_without_event_headline_stays_off_the_board() -> None:

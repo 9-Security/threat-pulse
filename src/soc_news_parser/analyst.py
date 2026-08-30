@@ -136,6 +136,62 @@ CSV_HEADER = [
     "reason",
 ]
 PUBLIC_DNS_REASON = "常見公共 DNS，不建議直接封鎖；改為連線／DNS hunt 複核"
+BRAND_REASON = (
+    "知名品牌官網或子網域，可能是偽裝頁或 hunting 路徑，不建議直接封鎖"
+)
+SHORT_PARENT_REASON = (
+    "同篇文章已有此短 apex 的子網域；父網域過寬，改為 hunt 複核，不建議直接封鎖"
+)
+# Official brand apexes only. Match host == apex or host.endswith("." + apex).
+# Do not list platform suffixes (gitlab.io, github.io, squarespace.com, it.com).
+BRAND_APEXES = frozenset(
+    {
+        "adobe.com",
+        "amazon.com",
+        "anthropic.com",
+        "apple.com",
+        "atlassian.com",
+        "brave.com",
+        "chatgpt.com",
+        "cisco.com",
+        "claude.ai",
+        "crowdstrike.com",
+        "docker.com",
+        "facebook.com",
+        "github.com",
+        "gitlab.com",
+        "gmail.com",
+        "google.com",
+        "ibm.com",
+        "icloud.com",
+        "intel.com",
+        "linkedin.com",
+        "live.com",
+        "meta.com",
+        "microsoft.com",
+        "microsoftonline.com",
+        "mozilla.org",
+        "nvidia.com",
+        "office.com",
+        "office365.com",
+        "openai.com",
+        "oracle.com",
+        "outlook.com",
+        "paloaltonetworks.com",
+        "paypal.com",
+        "redhat.com",
+        "salesforce.com",
+        "sentinelone.com",
+        "slack.com",
+        "twitter.com",
+        "ubuntu.com",
+        "vmware.com",
+        "windows.com",
+        "x.com",
+        "youtube.com",
+        "zoom.us",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -343,17 +399,39 @@ def _headline_events(manifest: EvidenceManifest) -> set[str]:
     return events
 
 
+def _network_host(target_type: str, target: str) -> str:
+    if target_type == "ip":
+        return ""
+    host = target
+    if target_type == "url":
+        host = urlsplit(target).hostname or ""
+    return host.lower().strip(".")
+
+
 def is_public_dns(target_type: str, target: str) -> bool:
     if target_type == "ip":
         try:
             return str(ipaddress.ip_address(target)) in PUBLIC_DNS_IPS
         except ValueError:
             return False
-    host = target
-    if target_type == "url":
-        host = urlsplit(target).hostname or ""
-    host = host.lower().rstrip(".").removeprefix("www.")
+    host = _network_host(target_type, target).removeprefix("www.")
     return any(host == item or host.endswith(f".{item}") for item in PUBLIC_DNS_HOSTS)
+
+
+def is_official_brand_host(target_type: str, target: str) -> bool:
+    host = _network_host(target_type, target)
+    if not host:
+        return False
+    return any(host == apex or host.endswith(f".{apex}") for apex in BRAND_APEXES)
+
+
+def is_short_parent_of_confirmed_host(host: str, article_hosts: set[str]) -> bool:
+    labels = host.split(".")
+    if len(labels) != 2 or len(labels[0]) > 3:
+        return False
+    return any(
+        other != host and other.endswith(f".{host}") for other in article_hosts
+    )
 
 
 def _make_action(
@@ -377,6 +455,11 @@ def _make_action(
 
 def build_actions(manifest: EvidenceManifest) -> list[AnalystAction]:
     confirmed = _confirmed(manifest)
+    article_hosts = {
+        host
+        for evidence in confirmed
+        if (host := _network_host(evidence.indicator_type, evidence.normalized_value))
+    }
     actions: list[AnalystAction] = []
     for evidence in confirmed:
         local_impacts, cvss = _evidence_impacts_and_cvss(manifest, evidence)
@@ -395,6 +478,7 @@ def build_actions(manifest: EvidenceManifest) -> list[AnalystAction]:
                 )
             )
         elif evidence.indicator_type in NETWORK_TYPES:
+            host = _network_host(evidence.indicator_type, evidence.normalized_value)
             if is_public_dns(evidence.indicator_type, evidence.normalized_value):
                 actions.append(
                     _make_action(
@@ -403,6 +487,30 @@ def build_actions(manifest: EvidenceManifest) -> list[AnalystAction]:
                         evidence.indicator_type,
                         evidence.normalized_value,
                         PUBLIC_DNS_REASON,
+                        manifest,
+                    )
+                )
+            elif is_official_brand_host(
+                evidence.indicator_type, evidence.normalized_value
+            ):
+                actions.append(
+                    _make_action(
+                        "hunt",
+                        "low",
+                        evidence.indicator_type,
+                        evidence.normalized_value,
+                        BRAND_REASON,
+                        manifest,
+                    )
+                )
+            elif host and is_short_parent_of_confirmed_host(host, article_hosts):
+                actions.append(
+                    _make_action(
+                        "hunt",
+                        "low",
+                        evidence.indicator_type,
+                        evidence.normalized_value,
+                        SHORT_PARENT_REASON,
                         manifest,
                     )
                 )
@@ -583,7 +691,7 @@ def _priority_line(actions: list[AnalystAction]) -> str:
     if counts["block"]:
         extras.append(f"{counts['block']} 個網路指標")
     if counts["hunt"]:
-        extras.append(f"{counts['hunt']} 個端點指標")
+        extras.append(f"{counts['hunt']} 個 hunt 指標")
     suffix = f"（{'、'.join(extras)}）" if extras else ""
     return f"今日優先：{verb} {focus.target}{suffix}"
 

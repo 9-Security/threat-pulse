@@ -89,7 +89,7 @@ uv run soc-news-parser report \
 
 郵件主旨改為值班可掃描的處置數字：待修 CVE、待封鎖網路指標、待 hunt 端點指標、相關文章數。這三個處置數字與 IoC 總數一樣採全報告唯一值；同一 CVE 被兩家媒體寫到只計一次，清單仍保留各來源列供對照。文章數只計標題或來源摘要具有明確資安主題訊號的文章；不相關文章仍保留在 JSON 的 `excluded_articles` 供稽核。IoC 總數僅計 `confirmed` 的 MD5、SHA-1、SHA-256、IPv4/IPv6、domain、URL 與 CVE，檔名與原文指稱另行統計。
 
-Markdown 是給 SOC／威脅分析師閱讀的值班報告：開頭是今日優先處置一句話，接著是修補、封鎖、Hunt、監控、觀察清單。每個 CVE 的 CVSS 與影響只取該指標所在文句，不會把同篇最高分套到全部漏洞。事件叢集只在同一 CVE 出現於兩篇以上來源時列出。監控／觀察只在標題或來源摘要寫成外洩、釣魚活動或勒索事件時列出；產品文正文帶過 phishing／個資不會進處置清單，文章仍留在報告後半。公共遞迴 DNS（例如 `8.8.8.8`、`1.1.1.1`、`dns.google`）若出現在 IoC 章節仍記成 confirmed，但降為 hunt 複核，不列入待封鎖；不會把 AWS／CDN／GitHub 整段降級。清單只根據原文明確的 CVE、IoC 章節指標與原文影響用語產生，不把 candidate 升成 confirmed。Report ID、parser 版本、正文 hash、warnings、candidate/rejected、排除文章及來源錯誤只保留於 JSON 稽核檔。CSV 是一列一個可操作指標。JSON 會寫入 `reader_digest`（Markdown 的 SHA-256），寄送前用它核對兩份檔案仍成對，並拒絕相同輸出路徑。
+Markdown 是給 SOC／威脅分析師閱讀的值班報告：開頭是今日優先處置一句話，接著是修補、封鎖、Hunt、監控、觀察清單。每個 CVE 的 CVSS 與影響只取該指標所在文句，不會把同篇最高分套到全部漏洞。事件叢集只在同一 CVE 出現於兩篇以上來源時列出。監控／觀察只在標題或來源摘要寫成外洩、釣魚活動或勒索事件時列出；產品文正文帶過 phishing／個資不會進處置清單，文章仍留在報告後半。公共遞迴 DNS（例如 `8.8.8.8`、`1.1.1.1`、`dns.google`）與靜態清單中的品牌官網／子網域（例如 `claude.ai`、`code.claude.ai`、`microsoft.com`）若出現在 IoC 章節仍記成 confirmed，但降為 hunt 複核，不列入待封鎖。不會用「主機名含品牌字」或平台後綴（`gitlab.io`、`github.io`、`squarespace.com`、`it.com`）做白名單；`claude.ai.download-app.us`、`claude-desktop.gitlab.io` 仍待封鎖。同篇文章若已有較長子網域，兩標籤且左標籤長度 ≤ 3 的父網域（例如 `it.com` 對 `downloading-api.it.com`）改為 hunt；`download-app.us` 這類長左標籤父網域仍與子網域一併封鎖。清單只根據原文明確的 CVE、IoC 章節指標與原文影響用語產生，不把 candidate 升成 confirmed。Report ID、parser 版本、正文 hash、warnings、candidate/rejected、排除文章及來源錯誤只保留於 JSON 稽核檔。CSV 是一列一個可操作指標。JSON 會寫入 `reader_digest`（Markdown 的 SHA-256），寄送前用它核對兩份檔案仍成對，並拒絕相同輸出路徑。
 
 ### 使用 Resend 寄送報告
 
