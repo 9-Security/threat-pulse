@@ -18,6 +18,7 @@ from .parser import (
     source_key_for_url,
 )
 from .report import collect_report, render_markdown
+from .resend import ResendClient, ResendError, build_report_email
 from .sources import SOURCES
 
 
@@ -69,6 +70,27 @@ def _arguments() -> argparse.Namespace:
     )
     report.add_argument("--json-output", required=True)
     report.add_argument("--markdown-output", required=True)
+
+    send_report = subcommands.add_parser(
+        "send-report", help="send a verified JSON/Markdown report pair using Resend"
+    )
+    send_report.add_argument("--json-report", required=True)
+    send_report.add_argument("--markdown-report", required=True)
+    send_report.add_argument(
+        "--to",
+        action="append",
+        help="recipient; repeat as needed (defaults to comma-separated RESEND_TO)",
+    )
+    send_report.add_argument(
+        "--from",
+        dest="sender",
+        help="verified sender (defaults to RESEND_FROM)",
+    )
+    send_report.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="validate and summarize without calling Resend",
+    )
     return parser.parse_args()
 
 
@@ -146,6 +168,44 @@ def main() -> None:
                 indent=2,
             )
         )
+        return
+    if args.command == "send-report":
+        recipients = args.to or [
+            value.strip()
+            for value in os.environ.get("RESEND_TO", "").split(",")
+            if value.strip()
+        ]
+        sender = args.sender or os.environ.get("RESEND_FROM", "")
+        try:
+            email = build_report_email(
+                json_path=args.json_report,
+                markdown_path=args.markdown_report,
+                sender=sender,
+                recipients=recipients,
+            )
+            if args.dry_run:
+                result = {
+                    "dry_run": True,
+                    "report_id": email.report_id,
+                    "subject": email.payload["subject"],
+                    "sender": email.payload["from"],
+                    "recipients": email.payload["to"],
+                    "attachment_count": len(email.payload["attachments"]),
+                    "idempotency_key": email.idempotency_key,
+                }
+            else:
+                with ResendClient.from_environment() as resend:
+                    sent = resend.send(email)
+                result = {
+                    "dry_run": False,
+                    "email_id": sent.email_id,
+                    "report_id": sent.report_id,
+                    "idempotency_key": sent.idempotency_key,
+                }
+        except ResendError as error:
+            print(f"error: {error}", file=sys.stderr)
+            raise SystemExit(1) from error
+        print(json.dumps(result, ensure_ascii=False, indent=2))
         return
 
     try:

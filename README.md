@@ -86,6 +86,37 @@ uv run soc-news-parser report \
 
 報告主旨的 IoC 總數採全報告唯一值，僅計 `confirmed` 的 MD5、SHA-1、SHA-256、IPv4/IPv6、domain 與 URL；檔名另行統計。Markdown 只列 confirmed 指標與證據，candidate／rejected 的逐筆紀錄保留在 JSON。兩份輸出具有相同 Report ID，會拒絕相同輸出路徑並先完成暫存寫入再替換。
 
+### 使用 Resend 寄送報告
+
+先在 Resend 驗證寄件網域，並以環境變數提供憑證。程式不會從命令列參數接受或輸出 API key：
+
+```bash
+export RESEND_API_KEY="re_..."
+export RESEND_FROM="SOC Reports <reports@your-verified-domain.example>"
+export RESEND_TO="solar324yao@gmail.com"
+```
+
+先執行不會寄信的驗證：
+
+```bash
+uv run soc-news-parser send-report \
+  --json-report daily-evidence.json \
+  --markdown-report daily-report.md \
+  --dry-run
+```
+
+確認後發送：
+
+```bash
+uv run soc-news-parser send-report \
+  --json-report daily-evidence.json \
+  --markdown-report daily-report.md
+```
+
+也可重複使用 `--to analyst@example.com` 指定收件人，並以 `--from` 覆寫寄件者。寄送前會確認 JSON 與 Markdown 的 Report ID 一致，兩份檔案都會以附件寄出。Resend `POST /emails` 請求使用由 Report ID 與收件人衍生的 `Idempotency-Key`；24 小時內重試相同 payload 不會重複寄送。
+
+附件原始總大小限制為 28 MiB，保留 Base64 後低於 Resend 每封 40 MB 的上限。遇到網路錯誤、HTTP 429 或 5xx 最多重試三次；其他 API 拒絕會立即回報且不宣稱寄送成功。
+
 ### 驗證
 
 ```bash
