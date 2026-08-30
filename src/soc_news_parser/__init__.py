@@ -259,6 +259,8 @@ def main() -> None:
                             "excluded_article_count": report.excluded_article_count,
                             "confirmed_ioc_count": report.confirmed_ioc_count,
                             "confirmed_filename_count": report.confirmed_filename_count,
+                            "confirmed_claim_count": report.confirmed_claim_count,
+                            "active_source_count": report.active_source_count,
                             "source_failures": len(report.source_failures),
                             "source_warnings": len(report.source_warnings),
                             "json_output": json_output,

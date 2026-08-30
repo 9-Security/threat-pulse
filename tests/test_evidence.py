@@ -133,6 +133,45 @@ repeat.example repeat.example
     assert len(set(repeat_ids)) == 2
 
 
+def test_explicit_cves_and_quoted_claims_are_confirmed() -> None:
+    body = """Vulnerability analysis
+Researchers tracked the malware family named LockBit and the LockBit ransomware.
+Operators used MITRE ATT&CK technique T1059.001.
+Standalone T1027 should not count.
+A feature called Email Aliases is not malware.
+CVE-2026-76581 and cve-2026-18431 are listed.
+(Affects all versions up to, and including, 4.16.7.1)
+The C2 server 185.199.108.153 remains unconfirmed.
+Related Articles
+CVE-2024-0001 is only in an editorial list.
+"""
+    article = article_with_mixed_evidence()
+    article.body = body
+    manifest = build_manifest(article)
+    confirmed = {
+        (item.indicator_type, item.normalized_value)
+        for item in manifest.evidence
+        if item.status == "confirmed"
+    }
+    rejected = {
+        item.normalized_value
+        for item in manifest.evidence
+        if item.status == "rejected"
+    }
+    values = {item.normalized_value for item in manifest.evidence}
+
+    assert ("cve", "CVE-2026-76581") in confirmed
+    assert ("cve", "CVE-2026-18431") in confirmed
+    assert ("malware_family", "LockBit") in confirmed
+    assert ("attack_technique", "T1059.001") in confirmed
+    assert "T1027" not in values
+    assert "Email Aliases" not in values
+    assert "4.16.7.1" not in values
+    assert "CVE-2024-0001" in rejected
+    ip = next(item for item in manifest.evidence if item.normalized_value == "185.199.108.153")
+    assert ip.status == "candidate"
+
+
 def test_negated_inline_indicator_and_document_are_not_confirmed_domains() -> None:
     body = """## Analysis
 This is not an IoC: benign.example.

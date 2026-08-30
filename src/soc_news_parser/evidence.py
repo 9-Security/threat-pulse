@@ -14,7 +14,7 @@ from urllib.parse import urlsplit, urlunsplit
 from .parser import ParsedArticle
 
 
-MANIFEST_VERSION = "1.1"
+MANIFEST_VERSION = "1.2"
 HASH_RE = re.compile(
     r"(?<![0-9a-f])(?:[0-9a-f]{64}|[0-9a-f]{40}|[0-9a-f]{32})(?![0-9a-f])",
     re.IGNORECASE,
@@ -24,6 +24,57 @@ IP_RE = re.compile(r"(?<!\d)(?:\d{1,3}(?:\.|\[\.\]|\(\.\))){3}\d{1,3}(?!\d)")
 IPV6_RE = re.compile(
     r"(?<![0-9a-f:])(?:[0-9a-f]{0,4}:){2,7}[0-9a-f]{0,4}(?![0-9a-f:])",
     re.IGNORECASE,
+)
+CVE_RE = re.compile(r"\bCVE-\d{4}-\d{4,7}\b", re.IGNORECASE)
+IP_VERSION_CONTEXT_RE = re.compile(
+    r"(?:versions?\s+up\s+to(?:\s*,\s*and\s+including)?|\band\s+including|\bversions?\b)\s*,?\s*$",
+    re.IGNORECASE,
+)
+FAMILY_RE = re.compile(
+    r"""(?ix)
+    (?:
+        (?:malware(?:\s+family)?|ransomware(?:\s+family)?|backdoor|trojan|
+           botnet|wiper|stealer|rat|implant|loader|toolset|
+           threat\s+(?:group|actor)|apt(?:\s+group)?)
+        \s+(?:family\s+)?(?:known\s+as|named|called|tracked\s+as|dubbed)\s+
+        ["']?(?P<named>[A-Z][A-Za-z0-9][\w+.-]{2,40})
+    )
+    |
+    (?:
+        ["']?(?P<role_name>[A-Z][A-Za-z0-9][\w+.-]{2,40})["']?
+        \s+(?:ransomware|backdoor|stealer|wiper|botnet)\b
+    )
+    |
+    (?:
+        (?:惡意程式|勒索軟體|後門|木馬|間諜軟體|攻擊組織)
+        \s*(?:家族)?(?:稱為|名為|即)\s*
+        ["']?(?P<zh_name>[A-Za-z0-9][\w+.-]{2,40})
+    )
+    """
+)
+ATTACK_RE = re.compile(
+    r"(?:ATT(?:&|＆)CK|MITRE|technique)\s+(?:technique\s+)?(?:ID\s*)?(T\d{4}(?:\.\d{3})?)"
+    r"|"
+    r"(T\d{4}(?:\.\d{3})?)\s*(?:ATT(?:&|＆)CK|technique)",
+    re.IGNORECASE,
+)
+GENERIC_CLAIM_NAMES = frozenset(
+    {
+        "windows",
+        "linux",
+        "macos",
+        "android",
+        "python",
+        "java",
+        "unknown",
+        "generic",
+        "custom",
+        "malicious",
+        "new",
+        "this",
+        "that",
+        "their",
+    }
 )
 FILE_RE = re.compile(
     r"(?<![\w.-])[\w@+-][\w@().+-]*\."
@@ -121,6 +172,10 @@ def _normalize(value: str, indicator_type: str) -> str:
         return urlunsplit(
             (parts.scheme.lower(), netloc, parts.path, parts.query, parts.fragment)
         )
+    if indicator_type == "cve":
+        return normalized.upper()
+    if indicator_type == "attack_technique":
+        return normalized.upper()
     return normalized.lower() if indicator_type in {"hash", "domain"} else normalized
 
 
@@ -131,6 +186,7 @@ def _hash_type(value: str) -> str:
 def _line_matches(line: str) -> Iterable[tuple[str, re.Match[str]]]:
     occupied: list[tuple[int, int]] = []
     patterns = (
+        ("cve", CVE_RE),
         ("hash", HASH_RE),
         ("url", URL_RE),
         ("ip", IP_RE),
@@ -156,12 +212,34 @@ def _line_matches(line: str) -> Iterable[tuple[str, re.Match[str]]]:
                 ):
                     continue
             if indicator_type == "ip":
+                prefix = line[: span[0]]
+                if IP_VERSION_CONTEXT_RE.search(prefix):
+                    continue
                 try:
                     ipaddress.ip_address(_normalize(match.group(), "ip"))
                 except ValueError:
                     continue
             occupied.append(span)
             yield indicator_type, match
+
+
+def _claim_matches(line: str) -> Iterable[tuple[str, str, re.Match[str]]]:
+    for match in FAMILY_RE.finditer(line):
+        name = next(
+            value
+            for value in (
+                match.group("named"),
+                match.group("role_name"),
+                match.group("zh_name"),
+            )
+            if value
+        )
+        if name.lower() in GENERIC_CLAIM_NAMES:
+            continue
+        yield "malware_family", name, match
+    for match in ATTACK_RE.finditer(line):
+        technique = next(value for value in match.groups() if value)
+        yield "attack_technique", technique, match
 
 
 def _source_host_matches(
@@ -179,6 +257,61 @@ def _source_host_matches(
         or candidate.endswith(f".{host.removeprefix('www.')}")
         for host in trusted
         if host
+    )
+
+
+def _classify(
+    *,
+    zone: str,
+    article: ParsedArticle,
+    generic_type: str,
+    normalized: str,
+) -> tuple[str, str, list[str]]:
+    if zone == "excluded":
+        return "rejected", "machine_rejected", ["excluded_editorial_section"]
+    if _source_host_matches(normalized, article, generic_type):
+        return "rejected", "machine_rejected", ["publisher_domain"]
+    if generic_type == "cve":
+        return "confirmed", "source_explicit", ["explicit_cve_identifier"]
+    if generic_type in {"malware_family", "attack_technique"}:
+        return "confirmed", "source_explicit", ["explicit_source_label"]
+    if zone == "ioc":
+        return "confirmed", "source_explicit", ["explicit_ioc_section"]
+    return "candidate", "machine_candidate", ["context_requires_human_review"]
+
+
+def _evidence_item(
+    *,
+    article: ParsedArticle,
+    body_sha256: str,
+    indicator_type: str,
+    raw: str,
+    normalized: str,
+    line_number: int,
+    match: re.Match[str],
+    section: str,
+    context: str,
+    status: str,
+    assertion: str,
+    reasons: list[str],
+) -> Evidence:
+    evidence_id = hashlib.sha256(
+        f"{body_sha256}\n{article.url}\n{line_number}\n{match.start()}\n"
+        f"{match.end()}\n{indicator_type}\n{normalized}".encode()
+    ).hexdigest()[:20]
+    return Evidence(
+        evidence_id=evidence_id,
+        indicator_type=indicator_type,
+        raw_value=raw,
+        normalized_value=normalized,
+        line_number=line_number,
+        column_start=match.start() + 1,
+        column_end=match.end() + 1,
+        section=section,
+        context=context,
+        status=status,
+        assertion_kind=assertion,
+        reason_codes=reasons,
     )
 
 
@@ -205,52 +338,40 @@ def extract_evidence(article: ParsedArticle) -> list[Evidence]:
                 zone = "excluded"
             continue
 
-        for generic_type, match in _line_matches(line):
-            raw = match.group()
+        before = lines[index - 2].strip() if index > 1 else ""
+        after = lines[index].strip() if index < len(lines) else ""
+        context = "\n".join(part for part in (before, stripped, after) if part)
+        found: list[tuple[str, str, re.Match[str]]] = [
+            (generic_type, match.group(), match)
+            for generic_type, match in _line_matches(line)
+        ]
+        found.extend(_claim_matches(line))
+        for generic_type, raw, match in found:
             prefix = line[max(0, match.start() - 80) : match.start()]
             if generic_type == "domain" and FILE_CONTEXT_RE.search(prefix):
                 generic_type = "filename"
             indicator_type = _hash_type(raw) if generic_type == "hash" else generic_type
             normalized = _normalize(raw, generic_type)
-            reasons: list[str]
-            if zone == "excluded":
-                status = "rejected"
-                assertion = "machine_rejected"
-                reasons = ["excluded_editorial_section"]
-            elif _source_host_matches(normalized, article, generic_type):
-                status = "rejected"
-                assertion = "machine_rejected"
-                reasons = ["publisher_domain"]
-            elif zone == "ioc":
-                status = "confirmed"
-                assertion = "source_explicit"
-                reasons = ["explicit_ioc_section"]
-            else:
-                status = "candidate"
-                assertion = "machine_candidate"
-                reasons = ["context_requires_human_review"]
-
-            before = lines[index - 2].strip() if index > 1 else ""
-            after = lines[index].strip() if index < len(lines) else ""
-            context = "\n".join(part for part in (before, stripped, after) if part)
-            evidence_id = hashlib.sha256(
-                f"{body_sha256}\n{article.url}\n{index}\n{match.start()}\n"
-                f"{match.end()}\n{indicator_type}\n{normalized}".encode()
-            ).hexdigest()[:20]
+            status, assertion, reasons = _classify(
+                zone=zone,
+                article=article,
+                generic_type=generic_type,
+                normalized=normalized,
+            )
             results.append(
-                Evidence(
-                    evidence_id=evidence_id,
+                _evidence_item(
+                    article=article,
+                    body_sha256=body_sha256,
                     indicator_type=indicator_type,
-                    raw_value=raw,
-                    normalized_value=normalized,
+                    raw=raw,
+                    normalized=normalized,
                     line_number=index,
-                    column_start=match.start() + 1,
-                    column_end=match.end() + 1,
+                    match=match,
                     section=current_section,
                     context=context,
                     status=status,
-                    assertion_kind=assertion,
-                    reason_codes=reasons,
+                    assertion=assertion,
+                    reasons=reasons,
                 )
             )
     return results
@@ -321,9 +442,11 @@ def build_manifest(
 
     limitations = [
         "Only deterministic indicator patterns are extracted; malware-family and ATT&CK "
-        "claims require separate source quotations.",
+        "labels are recorded only when the source names them in-sentence.",
         "Confirmed means the source text explicitly labels the value or relationship; "
         "it does not independently prove that the indicator is malicious or currently active.",
+        "CVE identifiers are confirmed from explicit CVE IDs; software version strings "
+        "that look like IPv4 addresses are not treated as network indicators.",
     ]
     if article.extraction_method == "failed":
         limitations.insert(0, "Full article body was unavailable; no IoC decision was made.")

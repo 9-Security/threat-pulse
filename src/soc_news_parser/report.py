@@ -14,8 +14,13 @@ from .parser import NewsParser, ParseError
 from .sources import SOURCES
 
 
-REPORT_SCHEMA_VERSION = "1.1"
-COUNTED_IOC_TYPES = frozenset({"md5", "sha1", "sha256", "ip", "domain", "url"})
+REPORT_SCHEMA_VERSION = "1.2"
+COUNTED_IOC_TYPES = frozenset({"md5", "sha1", "sha256", "ip", "domain", "url", "cve"})
+CLAIM_TYPES = frozenset({"malware_family", "attack_technique"})
+CLAIM_LABELS = {
+    "malware_family": "惡意程式家族",
+    "attack_technique": "攻擊技術",
+}
 TOPIC_RE = re.compile(
     r"\b(?:cyber|security|malware|ransomware|phishing|vulnerability|cve-\d|"
     r"exploit|attack|breach|threat|apt|backdoor|botnet|zero-day|0-day|"
@@ -53,6 +58,8 @@ class DailyReport:
     excluded_article_count: int
     confirmed_ioc_count: int
     confirmed_filename_count: int
+    confirmed_claim_count: int
+    active_source_count: int
     count_policy: str
     articles: list[EvidenceManifest]
     excluded_articles: list[EvidenceManifest]
@@ -173,6 +180,8 @@ def collect_report(
 
     confirmed_iocs = _unique_confirmed(manifests, COUNTED_IOC_TYPES)
     confirmed_filenames = _unique_confirmed(manifests, frozenset({"filename"}))
+    confirmed_claims = _unique_confirmed(manifests, CLAIM_TYPES)
+    active_sources = {item.source for item in all_manifests}
     identity = {
         "schema": REPORT_SCHEMA_VERSION,
         "window_start": since.astimezone(timezone.utc).isoformat(),
@@ -205,9 +214,12 @@ def collect_report(
         excluded_article_count=len(excluded_articles),
         confirmed_ioc_count=len(confirmed_iocs),
         confirmed_filename_count=len(confirmed_filenames),
+        confirmed_claim_count=len(confirmed_claims),
+        active_source_count=len(active_sources),
         count_policy=(
             "IoC total counts globally unique confirmed MD5/SHA1/SHA256, IP, domain, "
-            "and URL values. Confirmed filenames are reported separately."
+            "URL, and CVE values. Confirmed filenames and source-quoted malware-family "
+            "or ATT&CK labels are reported separately."
         ),
         articles=manifests,
         excluded_articles=excluded_articles,
@@ -227,6 +239,10 @@ def _canonical_article_url(value: str) -> str:
 def _markdown_escape(value: str) -> str:
     escaped = html.escape(value, quote=False)
     return re.sub(r"([\\`*_\[\]{}()#+.!|])", r"\\\1", escaped)
+
+
+def _markdown_code(value: str) -> str:
+    return html.escape(value, quote=False).replace("`", "'")
 
 
 def _markdown_url(value: str) -> str:
@@ -257,9 +273,11 @@ def render_markdown(report: DailyReport) -> str:
         "",
         f"- 查核期間：{start:%Y-%m-%d %H:%M} ～ {end:%Y-%m-%d %H:%M} UTC",
         f"- 查核來源：{len(report.sources_checked)} 個",
+        f"- 期間內有新文來源：{report.active_source_count} 個",
         f"- 相關文章：{report.article_count} 篇",
         f"- 明確 IoC：{report.confirmed_ioc_count} 個",
         f"- 可疑檔名：{report.confirmed_filename_count} 個",
+        f"- 原文指稱：{report.confirmed_claim_count} 項",
         "",
     ]
 
@@ -274,6 +292,11 @@ def render_markdown(report: DailyReport) -> str:
             evidence
             for evidence in confirmed
             if evidence.indicator_type == "filename"
+        ]
+        claims = [
+            evidence
+            for evidence in confirmed
+            if evidence.indicator_type in CLAIM_TYPES
         ]
         published = (
             datetime.fromisoformat(manifest.published_at).astimezone(timezone.utc)
@@ -297,7 +320,7 @@ def render_markdown(report: DailyReport) -> str:
                 lines.extend(
                     [
                         f"- **{evidence.indicator_type.upper()}**："
-                        f"`{_markdown_escape(evidence.normalized_value)}`",
+                        f"`{_markdown_code(evidence.normalized_value)}`",
                         f"  - 上下文：{_markdown_escape(evidence.context).replace(chr(10), ' / ')}",
                     ]
                 )
@@ -308,7 +331,17 @@ def render_markdown(report: DailyReport) -> str:
             for evidence in filenames:
                 lines.extend(
                     [
-                        f"- `{_markdown_escape(evidence.normalized_value)}`",
+                        f"- `{_markdown_code(evidence.normalized_value)}`",
+                        f"  - 上下文：{_markdown_escape(evidence.context).replace(chr(10), ' / ')}",
+                    ]
+                )
+        if claims:
+            lines.extend(["", "### 原文指稱", ""])
+            for evidence in claims:
+                label = CLAIM_LABELS[evidence.indicator_type]
+                lines.extend(
+                    [
+                        f"- **{label}**：`{_markdown_code(evidence.normalized_value)}`",
                         f"  - 上下文：{_markdown_escape(evidence.context).replace(chr(10), ' / ')}",
                     ]
                 )
@@ -319,7 +352,8 @@ def render_markdown(report: DailyReport) -> str:
             "## 報告說明",
             "",
             "- 僅收錄標題或來源摘要與資安主題明確相關的文章。",
-            "- IoC 僅計原文明確列於 IoC 章節的 hash、IP、domain 與 URL；相同值跨文章只計一次。",
+            "- IoC 計原文明確的 CVE，以及 IoC 章節中的 hash、IP、domain 與 URL；相同值跨文章只計一次。",
+            "- 惡意程式家族與 ATT&CK 技術只在原文明確命名時列出，並附原文句子，不計入 IoC 總數。",
             "- 完整證據、候選值、排除理由與程式診斷位於隨附 JSON 稽核檔。",
             "",
         ]

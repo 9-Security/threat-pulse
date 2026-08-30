@@ -85,6 +85,8 @@ def test_report_counts_unique_confirmed_values_and_failures() -> None:
     assert report.report_id not in markdown
     assert "完整證據、候選值、排除理由與程式診斷" in markdown
     assert "查核來源：2 個" in markdown
+    assert "期間內有新文來源：1 個" in markdown
+    assert "原文指稱：0 項" in markdown
 
 
 def test_report_outputs_must_use_different_paths(tmp_path: Path) -> None:
@@ -206,6 +208,42 @@ def test_topic_filter_keeps_security_articles_without_iocs() -> None:
     assert "Hospitals hit by ransomware campaign" in markdown
     assert "Quarterly earnings" not in markdown
     assert "IoC：原文未提供明確指標。" in markdown
+
+
+def test_reader_report_includes_explicit_cves_and_quoted_claims() -> None:
+    class ClaimParser:
+        def parse_feed(self, source: object, **_: object) -> list[ParsedArticle]:
+            return [
+                parsed_article(
+                    getattr(source, "name"),
+                    "Campaign analysis",
+                    """Researchers tracked the malware family named LockBit.
+The operators used ATT&CK technique T1059.001 during execution.
+CVE-2026-76581 allows unauthenticated takeover.
+A feature called Email Aliases is unrelated.
+(Affects all versions up to, and including, 4.16.7.1)
+""",
+                )
+            ]
+
+    generated = datetime(2026, 8, 30, 1, 21, tzinfo=timezone.utc)
+    report = collect_report(
+        ClaimParser(),  # type: ignore[arg-type]
+        ["the-hacker-news"],
+        since=datetime(2026, 8, 29, 1, 21, tzinfo=timezone.utc),
+        until=generated,
+        generated_at=generated,
+    )
+    markdown = render_markdown(report)
+
+    assert report.confirmed_ioc_count == 1
+    assert report.confirmed_claim_count == 2
+    assert report.subject.endswith("文章數 1 / IoC數 1")
+    assert "**CVE**：`CVE-2026-76581`" in markdown
+    assert "**惡意程式家族**：`LockBit`" in markdown
+    assert "**攻擊技術**：`T1059.001`" in markdown
+    assert "**惡意程式家族**：`Email Aliases`" not in markdown
+    assert "4.16.7.1" not in markdown
 
 
 def test_serialize_report_pairs_json_to_reader_digest() -> None:
