@@ -67,6 +67,20 @@ Manifest 保存正文 SHA-256、擷取方法、parser 版本／Git revision、�
 `confirmed` 代表「來源明確聲稱」，不是 parser 對惡意性的獨立背書。惡意工具家族及 ATT&CK 對映不做猜測，必須另外保存原文引句。
 `unique_counts_by_status_and_type` 會公開各狀態及類型的唯一值計數；報告若決定不把檔名納入主旨的 IoC 總數，必須明示該計數政策，不能只呈現一個無法重算的總數。
 
+產生多來源每日報告與完整稽核 JSON：
+
+```bash
+uv run soc-news-parser report \
+  --hours 24 \
+  --now 2026-08-30T01:21:00Z \
+  --json-output daily-evidence.json \
+  --markdown-output daily-report.md
+```
+
+預設處理所有內建來源；可重複使用 `--source microsoft-security --source the-hacker-news` 限定來源。單一來源或文章失敗不會中止整批報告，錯誤會保存在 `source_failures` 或文章的 `extraction_method: "failed"`。
+
+報告主旨的 IoC 總數採全報告唯一值，僅計 `confirmed` 的 MD5、SHA-1、SHA-256、IP、domain 與 URL；檔名另行統計。Markdown 只列 confirmed 指標與證據，candidate／rejected 的逐筆紀錄保留在 JSON。
+
 ### 驗證
 
 ```bash

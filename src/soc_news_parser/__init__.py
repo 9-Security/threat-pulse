@@ -14,6 +14,7 @@ from .parser import (
     parse_utc,
     source_key_for_url,
 )
+from .report import collect_report, render_markdown
 from .sources import SOURCES
 
 
@@ -47,6 +48,20 @@ def _arguments() -> argparse.Namespace:
     feed.add_argument("--now", help="ISO-8601 UTC window end; defaults to current time")
     feed.add_argument("--limit", type=int)
     feed.add_argument("--output", help="write JSON to this path")
+
+    report = subcommands.add_parser(
+        "report", help="collect sources and write auditable JSON and Markdown reports"
+    )
+    report.add_argument(
+        "--source",
+        action="append",
+        choices=sorted(SOURCES),
+        help="source to include; repeat as needed (defaults to all)",
+    )
+    report.add_argument("--hours", type=int, default=24)
+    report.add_argument("--now", help="ISO-8601 UTC window end; defaults to current time")
+    report.add_argument("--json-output", required=True)
+    report.add_argument("--markdown-output", required=True)
     return parser.parse_args()
 
 
@@ -67,6 +82,38 @@ def main() -> None:
 
     try:
         with NewsParser() as news_parser:
+            if args.command == "report":
+                if args.hours <= 0:
+                    raise ValueError("--hours must be greater than zero")
+                now = parse_utc(args.now) if args.now else None
+                since, until = default_window(args.hours, now)
+                report = collect_report(
+                    news_parser,
+                    args.source or list(SOURCES),
+                    since=since,
+                    until=until,
+                )
+                rendered = json.dumps(report.to_dict(), ensure_ascii=False, indent=2)
+                with open(args.json_output, "w", encoding="utf-8") as output:
+                    output.write(rendered + "\n")
+                with open(args.markdown_output, "w", encoding="utf-8") as output:
+                    output.write(render_markdown(report))
+                print(
+                    json.dumps(
+                        {
+                            "subject": report.subject,
+                            "article_count": report.article_count,
+                            "confirmed_ioc_count": report.confirmed_ioc_count,
+                            "confirmed_filename_count": report.confirmed_filename_count,
+                            "source_failures": len(report.source_failures),
+                            "json_output": args.json_output,
+                            "markdown_output": args.markdown_output,
+                        },
+                        ensure_ascii=False,
+                        indent=2,
+                    )
+                )
+                return
             if args.command in {"article", "audit"}:
                 source_key = args.source or source_key_for_url(args.url)
                 selectors = SOURCES[source_key].article_selectors if source_key else ()
