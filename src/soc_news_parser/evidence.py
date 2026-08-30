@@ -29,12 +29,12 @@ FILE_RE = re.compile(
     r"(?<![\w.-])[\w@+-][\w@().+-]*\."
     r"(?:exe|dll|sys|ps1|bat|cmd|vbs|js|jar|py|zip|rar|7z|hta|msi|scr|"
     r"elf|bin|dat|pem|lnk|iso|img|doc|docx|xls|xlsx|ppt|pptx|pdf)"
-    r"(?![\w.-])",
+    r"(?![\w-]|\.[a-z0-9])",
     re.IGNORECASE,
 )
 DOMAIN_RE = re.compile(
     r"(?<![\w@.-])(?:[a-z0-9-]{1,63}(?:\.|\[\.\]|\(\.\))){1,}"
-    r"[a-z]{2,63}(?![\w.-])",
+    r"[a-z]{2,63}(?![\w-]|\.[a-z0-9])",
     re.IGNORECASE,
 )
 IOC_HEADING_RE = re.compile(
