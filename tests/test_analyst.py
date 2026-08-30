@@ -108,6 +108,21 @@ def test_topic_article_without_confirmed_iocs_is_observe() -> None:
     assert [item.action for item in actions] == ["observe"]
 
 
+def test_related_news_does_not_invent_rce_or_ransomware() -> None:
+    manifest = build_manifest(
+        _article(
+            "Hasbro Data Breach Exposed Employee Personal Information",
+            "The company is now disclosing a data breach of personal information.\n"
+            "## Latest News\n"
+            "In Other News: Log4j RCE Scare\n"
+            "Related : ATF Confirms Cyber Incident After Ransomware Group Claims Attack\n",
+        )
+    )
+    keys = {key for key, _ in article_impacts(manifest)}
+    assert keys == {"data_breach"}
+    assert [item.action for item in build_actions(manifest)] == ["monitor"]
+
+
 def test_data_breach_without_iocs_is_monitor() -> None:
     actions = build_actions(
         build_manifest(

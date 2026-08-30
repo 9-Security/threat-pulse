@@ -10,7 +10,15 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterable
 
-from .evidence import COUNTED_IOC_TYPES, Evidence, EvidenceManifest
+from .evidence import (
+    COUNTED_IOC_TYPES,
+    EXCLUDED_HEADING_RE,
+    IOC_HEADING_RE,
+    RELATED_LINE_RE,
+    SECTION_END_RE,
+    Evidence,
+    EvidenceManifest,
+)
 
 
 IMPACT_PATTERNS: tuple[tuple[str, str, re.Pattern[str]], ...] = (
@@ -126,13 +134,33 @@ class AnalystBrief:
         }
 
 
+def _body_for_impacts(body: str) -> str:
+    kept: list[str] = []
+    zone = "general"
+    for line in body.splitlines():
+        stripped = line.strip()
+        marked = re.fullmatch(r"#{1,6}\s+(.+)", stripped)
+        heading = marked.group(1).strip() if marked else stripped
+        is_known = any(
+            pattern.fullmatch(heading)
+            for pattern in (IOC_HEADING_RE, EXCLUDED_HEADING_RE, SECTION_END_RE)
+        )
+        if marked or is_known:
+            zone = "excluded" if EXCLUDED_HEADING_RE.fullmatch(heading) else "general"
+            continue
+        if zone == "excluded" or RELATED_LINE_RE.match(stripped):
+            continue
+        kept.append(stripped)
+    return "\n".join(kept)
+
+
 def _article_text(manifest: EvidenceManifest) -> str:
     return "\n".join(
         part
         for part in (
             manifest.article_title,
             manifest.source_summary or "",
-            manifest.canonical_body,
+            _body_for_impacts(manifest.canonical_body),
         )
         if part
     )
