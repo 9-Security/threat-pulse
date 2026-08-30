@@ -1,0 +1,89 @@
+name: Daily Taipei SOC report
+
+on:
+  schedule:
+    # 22:00 UTC is 06:00 Asia/Taipei. GitHub cron is UTC-only and may run late.
+    - cron: "0 22 * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Write the report without calling Resend
+        type: boolean
+        default: false
+
+concurrency:
+  group: daily-soc-deliver
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deliver:
+    name: Deliver last 24 hours
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+      RESEND_FROM: ${{ secrets.RESEND_FROM }}
+      RESEND_TO: ${{ secrets.RESEND_TO }}
+    steps:
+      - name: Check Resend secrets
+        run: |
+          missing=0
+          for name in RESEND_FROM RESEND_TO; do
+            if [ -z "${!name}" ]; then
+              echo "Missing GitHub Actions secret: ${name}" >&2
+              missing=1
+            fi
+          done
+          if [ "${DRY_RUN}" != "true" ] && [ -z "${RESEND_API_KEY}" ]; then
+            echo "Missing GitHub Actions secret: RESEND_API_KEY" >&2
+            missing=1
+          fi
+          if [ "${missing}" -ne 0 ]; then
+            exit 1
+          fi
+        env:
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || false }}
+
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+
+      - name: Restore previous reports
+        uses: actions/cache@v4
+        with:
+          path: reports
+          key: soc-reports-${{ runner.os }}-${{ github.run_id }}
+          restore-keys: |
+            soc-reports-${{ runner.os }}-
+
+      - name: Install package
+        run: uv sync --frozen
+
+      - name: Deliver SOC report
+        run: |
+          extra=()
+          if [ "${DRY_RUN}" = "true" ]; then
+            extra+=(--dry-run)
+          fi
+          uv run soc-news-parser deliver \
+            --hours 24 \
+            --at 06:00 \
+            --timezone Asia/Taipei \
+            --output-dir reports \
+            "${extra[@]}"
+        env:
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || false }}
+
+      - name: Upload report artifacts
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: soc-reports-${{ github.run_id }}
+          path: reports
+          if-no-files-found: error
+          retention-days: 14

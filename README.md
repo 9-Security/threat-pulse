@@ -132,7 +132,15 @@ uv run soc-news-parser send-report \
 uv run soc-news-parser deliver --dry-run
 ```
 
-在會長駐的機器上用 cron（建議做法）：
+沒有會長駐的主機時，用 GitHub Actions 跑同一支 `deliver`。工作流程在 `.github/workflows/daily-deliver.yml`：UTC 22:00（台北 06:00）排程，也可用 Actions 介面手動觸發。把倉庫推到 GitHub 的預設分支，並設定這三個 Repository secrets：
+
+- `RESEND_API_KEY`
+- `RESEND_FROM`（已驗證寄件者，例如 `IOC Reports <reports@your-verified-domain.example>`）
+- `RESEND_TO`
+
+排程只在 GitHub 預設分支生效；Cursor Cloud Agent 或尚未推到 GitHub 的遠端不會跑 Actions。GitHub 的 cron 可能延遲數分鐘到數小時，免費倉庫若 60 天沒有新 commit，排程會被停用。昨日對照靠 Actions cache 帶回 `reports/`，cache 未命中時仍會出報，只是沒有較昨日新增的統計。報告會當 artifact 保留 14 天，不會 commit 進 git。
+
+在會長駐的機器上也可以繼續用 cron：
 
 ```bash
 ./deploy/install-taipei-cron.sh
@@ -145,13 +153,13 @@ CRON_TZ=Asia/Taipei
 0 6 * * * cd /path/to/soc-news-parser && /path/to/uv run soc-news-parser deliver --hours 24 --at 06:00 --timezone Asia/Taipei --output-dir /path/to/soc-news-parser/reports >> /path/to/soc-news-parser/reports/deliver.log 2>&1
 ```
 
-沒有 cron 時可讓程式自己等到下一班 06:00：
+沒有 cron、也還沒接 GitHub Actions 時，可讓程式自己等到下一班 06:00：
 
 ```bash
 uv run soc-news-parser schedule --at 06:00 --timezone Asia/Taipei
 ```
 
-此命令只在程序持續執行時有效。雲端工作階段或筆電休眠後不會繼續寄信，請把 cron 裝在會一直開著的主機或 NAS 上。
+此命令只在程序持續執行時有效。雲端工作階段或筆電休眠後不會繼續寄信。
 
 ### 驗證
 
