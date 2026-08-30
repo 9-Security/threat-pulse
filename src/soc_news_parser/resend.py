@@ -16,6 +16,7 @@ import httpx
 
 RESEND_ENDPOINT = "https://api.resend.com/emails"
 MAX_RAW_ATTACHMENT_BYTES = 28 * 1024 * 1024
+MAX_REQUEST_BYTES = 38 * 1024 * 1024
 
 
 class ResendError(RuntimeError):
@@ -121,6 +122,11 @@ def build_report_email(
         ],
         "tags": [{"name": "report_id", "value": report_id}],
     }
+    request_size = len(
+        json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    )
+    if request_size > MAX_REQUEST_BYTES:
+        raise ResendError("encoded email request exceeds the safe 38 MiB limit")
     return ReportEmail(payload, idempotency_key, report_id)
 
 
