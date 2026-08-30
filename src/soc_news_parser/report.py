@@ -39,6 +39,7 @@ class DailyReport:
     window_start: str
     window_end: str
     generated_at: str
+    sources_checked: list[str]
     article_count: int
     confirmed_ioc_count: int
     confirmed_filename_count: int
@@ -85,7 +86,8 @@ def collect_report(
     source_warnings: list[SourceWarning] = []
     retrieved_at = generated_at or datetime.now(timezone.utc)
 
-    for source_key in dict.fromkeys(source_keys):
+    checked_keys = list(dict.fromkeys(source_keys))
+    for source_key in checked_keys:
         source = SOURCES[source_key]
         try:
             articles = parser.parse_feed(source, since=since, until=until)
@@ -115,6 +117,7 @@ def collect_report(
         "window_start": since.astimezone(timezone.utc).isoformat(),
         "window_end": until.astimezone(timezone.utc).isoformat(),
         "generated_at": retrieved_at.astimezone(timezone.utc).isoformat(),
+        "sources_checked": checked_keys,
         "articles": [
             (manifest.article_url, manifest.body_sha256) for manifest in manifests
         ],
@@ -130,6 +133,7 @@ def collect_report(
         window_start=since.astimezone(timezone.utc).isoformat(),
         window_end=until.astimezone(timezone.utc).isoformat(),
         generated_at=retrieved_at.astimezone(timezone.utc).isoformat(),
+        sources_checked=checked_keys,
         article_count=len(manifests),
         confirmed_ioc_count=len(confirmed_iocs),
         confirmed_filename_count=len(confirmed_filenames),
@@ -184,6 +188,8 @@ def render_markdown(report: DailyReport) -> str:
         f"- 郵件主旨：`{report.subject}`",
         f"- 查核區間：{report.window_start} ～ {report.window_end}",
         f"- 產生時間：{report.generated_at}",
+        f"- 已查核來源數：{len(report.sources_checked)}",
+        f"- 已查核來源：{', '.join(_markdown_escape(key) for key in report.sources_checked)}",
         f"- 文章數：{report.article_count}",
         f"- Confirmed IoC 數：{report.confirmed_ioc_count}",
         f"- Confirmed 可疑檔名數：{report.confirmed_filename_count}",

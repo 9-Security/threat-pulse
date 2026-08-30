@@ -60,6 +60,7 @@ def test_report_counts_unique_confirmed_values_and_failures() -> None:
     )
 
     assert report.article_count == 2
+    assert report.sources_checked == ["the-hacker-news", "bleepingcomputer"]
     assert report.confirmed_ioc_count == 2
     assert report.confirmed_filename_count == 1
     assert report.subject.endswith("文章數 2 / IoC數 2")
@@ -72,6 +73,7 @@ def test_report_counts_unique_confirmed_values_and_failures() -> None:
     assert "正文 SHA-256" in markdown
     assert "不納入主旨統計" in markdown
     assert report.report_id in markdown
+    assert "已查核來源數：2" in markdown
 
 
 def test_report_outputs_must_use_different_paths(tmp_path: Path) -> None:

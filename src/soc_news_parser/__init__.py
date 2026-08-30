@@ -177,6 +177,7 @@ def main() -> None:
                         {
                             "subject": report.subject,
                             "report_id": report.report_id,
+                            "sources_checked": len(report.sources_checked),
                             "article_count": report.article_count,
                             "confirmed_ioc_count": report.confirmed_ioc_count,
                             "confirmed_filename_count": report.confirmed_filename_count,
