@@ -17,7 +17,7 @@ from .parser import (
     parse_utc,
     source_key_for_url,
 )
-from .report import collect_report, render_markdown
+from .report import collect_report, serialize_report
 from .resend import ResendClient, ResendError, build_report_email
 from .sources import SOURCES
 
@@ -94,6 +94,21 @@ def _arguments() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def _load_workspace_env() -> None:
+    env_path = Path.cwd() / ".env"
+    if not env_path.is_file():
+        return
+    for line in env_path.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
+            continue
+        key, value = stripped.split("=", 1)
+        key = key.strip()
+        value = value.strip().strip("'\"")
+        if key and key not in os.environ:
+            os.environ[key] = value
+
+
 def _atomic_write(path: str, content: str) -> str:
     destination = Path(path).expanduser().resolve()
     if not destination.parent.is_dir():
@@ -157,6 +172,7 @@ def _write_report_pair(
 
 def main() -> None:
     args = _arguments()
+    _load_workspace_env()
     if args.command == "sources":
         print(
             json.dumps(
@@ -225,12 +241,12 @@ def main() -> None:
                     until=until,
                     generated_at=generated_at,
                 )
-                rendered = json.dumps(report.to_dict(), ensure_ascii=False, indent=2)
+                json_content, markdown_content = serialize_report(report)
                 json_output, markdown_output = _write_report_pair(
                     args.json_output,
                     args.markdown_output,
-                    rendered + "\n",
-                    render_markdown(report),
+                    json_content,
+                    markdown_content,
                 )
                 print(
                     json.dumps(

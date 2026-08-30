@@ -81,11 +81,16 @@ def _load_report_pair(
 
     report_id = report.get("report_id")
     subject = report.get("subject")
+    reader_digest = report.get("reader_digest")
     if not isinstance(report_id, str) or len(report_id) != 64:
         raise ResendError("JSON report has no valid report_id")
     if not isinstance(subject, str) or not subject.startswith("[SOC]"):
         raise ResendError("JSON report has no valid SOC subject")
-    if report_id not in markdown:
+    actual_digest = hashlib.sha256(markdown.encode("utf-8")).hexdigest()
+    if isinstance(reader_digest, str):
+        if reader_digest != actual_digest:
+            raise ResendError("JSON and Markdown reader digest do not match")
+    elif report_id not in markdown:
         raise ResendError("JSON and Markdown Report IDs do not match")
     if len(json_bytes) + len(markdown_bytes) > MAX_RAW_ATTACHMENT_BYTES:
         raise ResendError("report attachments exceed the safe 28 MiB raw-size limit")

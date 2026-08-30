@@ -84,10 +84,15 @@ def _unique_confirmed(
     }
 
 
+_SENTENCE_ENDINGS = ".!?。！？"
+
+
 def _source_summary(manifest: EvidenceManifest) -> str:
     summary = (manifest.source_summary or "").strip()
-    summary = re.split(r"\bThe post\b.+\bappeared first on\b", summary, maxsplit=1)[0]
     summary = re.sub(r"\s+", " ", summary).strip()
+    summary = re.split(
+        r"\bThe post\b.+\bappeared first on\b", summary, maxsplit=1
+    )[0].strip()
     if not summary:
         paragraphs = [
             line.strip()
@@ -95,6 +100,11 @@ def _source_summary(manifest: EvidenceManifest) -> str:
             if line.strip() and not line.startswith("##")
         ]
         summary = paragraphs[0] if paragraphs else ""
+    if summary and summary[-1] not in _SENTENCE_ENDINGS + "]":
+        complete = max(summary.rfind(mark) for mark in _SENTENCE_ENDINGS)
+        ending = summary[complete] if complete >= 0 else ""
+        if complete >= 30 or (ending in "。！？" and complete >= 8):
+            summary = summary[: complete + 1]
     return summary[:800].rstrip()
 
 
@@ -304,3 +314,10 @@ def render_markdown(report: DailyReport) -> str:
 
 def report_digest(report: DailyReport) -> str:
     return hashlib.sha256(render_markdown(report).encode()).hexdigest()
+
+
+def serialize_report(report: DailyReport) -> tuple[str, str]:
+    markdown = render_markdown(report)
+    payload = report.to_dict()
+    payload["reader_digest"] = hashlib.sha256(markdown.encode()).hexdigest()
+    return json.dumps(payload, ensure_ascii=False, indent=2) + "\n", markdown

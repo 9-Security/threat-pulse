@@ -86,11 +86,11 @@ uv run soc-news-parser report \
 
 報告主旨的文章數只計標題或來源摘要具有明確資安主題訊號的文章；不相關文章仍保留在 JSON 的 `excluded_articles` 供稽核。IoC 總數採全報告唯一值，僅計 `confirmed` 的 MD5、SHA-1、SHA-256、IPv4/IPv6、domain 與 URL，檔名另行統計。
 
-Markdown 是給收件者閱讀的標準報告，只呈現查核期間、相關文章、來源摘要、明確 IoC、相關檔名和必要方法說明。Report ID、parser 版本、正文 hash、warnings、candidate/rejected、排除文章及來源錯誤只保留於 JSON 稽核檔。兩份輸出在寄送前仍會驗證 Report ID 配對，並拒絕相同輸出路徑。
+Markdown 是給收件者閱讀的標準報告，只呈現查核期間、相關文章、來源摘要、明確 IoC、相關檔名和必要方法說明。Report ID、parser 版本、正文 hash、warnings、candidate/rejected、排除文章及來源錯誤只保留於 JSON 稽核檔。JSON 會寫入 `reader_digest`（Markdown 的 SHA-256），寄送前用它核對兩份檔案仍成對，並拒絕相同輸出路徑。
 
 ### 使用 Resend 寄送報告
 
-先在 Resend 驗證寄件網域，並以環境變數提供憑證。程式不會從命令列參數接受或輸出 API key：
+先在 Resend 驗證寄件網域，並以環境變數提供憑證。工作目錄的 `.env` 會在變數尚未設定時自動載入。程式不會從命令列參數接受或輸出 API key：
 
 ```bash
 export RESEND_API_KEY="re_..."
