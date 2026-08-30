@@ -18,6 +18,7 @@ from .parser import (
     parse_utc,
     source_key_for_url,
 )
+from .analyst import load_previous_iocs, render_ioc_csv
 from .report import collect_report, serialize_report
 from .resend import ResendClient, ResendError, build_report_email
 from .sources import SOURCES
@@ -71,6 +72,14 @@ def _arguments() -> argparse.Namespace:
     )
     report.add_argument("--json-output", required=True)
     report.add_argument("--markdown-output", required=True)
+    report.add_argument(
+        "--csv-output",
+        help="optional confirmed IoC CSV for SIEM or block-list import",
+    )
+    report.add_argument(
+        "--previous-json",
+        help="yesterday's report JSON; marks new IoCs and adds a day-over-day delta",
+    )
 
     send_report = subcommands.add_parser(
         "send-report", help="send a verified JSON/Markdown report pair using Resend"
@@ -274,12 +283,18 @@ def main() -> None:
                 generated_at = (
                     parse_utc(args.generated_at) if args.generated_at else None
                 )
+                previous_iocs = (
+                    load_previous_iocs(args.previous_json)
+                    if args.previous_json
+                    else None
+                )
                 report = collect_report(
                     news_parser,
                     args.source or list(SOURCES),
                     since=since,
                     until=until,
                     generated_at=generated_at,
+                    previous_iocs=previous_iocs,
                 )
                 json_content, markdown_content = serialize_report(report)
                 json_output, markdown_output = _write_report_pair(
@@ -288,6 +303,12 @@ def main() -> None:
                     json_content,
                     markdown_content,
                 )
+                csv_output = None
+                if args.csv_output:
+                    csv_output = _atomic_write(
+                        args.csv_output,
+                        render_ioc_csv(report.articles, previous_iocs=previous_iocs),
+                    )
                 print(
                     json.dumps(
                         {
@@ -301,10 +322,15 @@ def main() -> None:
                             "confirmed_filename_count": report.confirmed_filename_count,
                             "confirmed_claim_count": report.confirmed_claim_count,
                             "active_source_count": report.active_source_count,
+                            "patch_count": report.analyst_brief.patch_count,
+                            "block_count": report.analyst_brief.block_count,
+                            "hunt_count": report.analyst_brief.hunt_count,
+                            "new_ioc_count": report.analyst_brief.new_ioc_count,
                             "source_failures": len(report.source_failures),
                             "source_warnings": len(report.source_warnings),
                             "json_output": json_output,
                             "markdown_output": markdown_output,
+                            "csv_output": csv_output,
                         },
                         ensure_ascii=False,
                         indent=2,

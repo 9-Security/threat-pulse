@@ -24,7 +24,7 @@ def _package_version() -> str:
     try:
         return version("soc-news-parser")
     except PackageNotFoundError:
-        return "0.10.1"
+        return "0.11.0"
 
 
 USER_AGENT = (

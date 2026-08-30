@@ -10,6 +10,7 @@ from typing import Any, Iterable
 
 from urllib.parse import parse_qsl, quote, urlencode, urlsplit, urlunsplit
 
+from .analyst import AnalystBrief, article_impacts, article_sort_key, build_brief
 from .evidence import (
     CLAIM_TYPES,
     COUNTED_IOC_TYPES,
@@ -21,7 +22,7 @@ from .parser import NewsParser, ParseError
 from .sources import SOURCES
 
 
-REPORT_SCHEMA_VERSION = "1.3"
+REPORT_SCHEMA_VERSION = "1.4"
 CLAIM_LABELS = {
     "malware_family": "惡意程式家族",
     "attack_technique": "攻擊技術",
@@ -70,12 +71,16 @@ class DailyReport:
     excluded_articles: list[EvidenceManifest]
     source_failures: list[SourceFailure]
     source_warnings: list[SourceWarning]
+    analyst_brief: AnalystBrief
 
     @property
     def subject(self) -> str:
         return (
             "[SOC] 每日資安新聞 IoC 彙整報告 - "
-            f"文章數 {self.article_count} / IoC數 {self.confirmed_ioc_count}"
+            f"待修 {self.analyst_brief.patch_count} / "
+            f"待封鎖 {self.analyst_brief.block_count} / "
+            f"待hunt {self.analyst_brief.hunt_count} / "
+            f"文章數 {self.article_count}"
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -149,6 +154,7 @@ def collect_report(
     since: datetime,
     until: datetime,
     generated_at: datetime | None = None,
+    previous_iocs: set[tuple[str, str]] | None = None,
 ) -> DailyReport:
     manifests: list[EvidenceManifest] = []
     failures: list[SourceFailure] = []
@@ -178,10 +184,14 @@ def collect_report(
         key=lambda item: (item.published_at or "", item.article_url),
         reverse=True,
     )
-    manifests = [item for item in all_manifests if _is_topic_relevant(item)]
+    manifests = sorted(
+        [item for item in all_manifests if _is_topic_relevant(item)],
+        key=article_sort_key,
+    )
     excluded_articles = [
         item for item in all_manifests if not _is_topic_relevant(item)
     ]
+    brief = build_brief(manifests, previous_iocs=previous_iocs)
 
     confirmed_iocs = _unique_confirmed(manifests, COUNTED_IOC_TYPES)
     confirmed_filenames = _unique_confirmed(manifests, frozenset({"filename"}))
@@ -230,6 +240,7 @@ def collect_report(
         excluded_articles=excluded_articles,
         source_failures=failures,
         source_warnings=source_warnings,
+        analyst_brief=brief,
     )
 
 
@@ -288,6 +299,62 @@ def _reader_context(evidence: Evidence) -> str:
     return f"{truncated}…"
 
 
+ACTION_HEADINGS = {
+    "patch": "修補",
+    "block": "封鎖",
+    "hunt": "Hunt",
+    "monitor": "監控",
+    "observe": "觀察",
+}
+
+
+def _render_analyst_board(report: DailyReport) -> list[str]:
+    brief = report.analyst_brief
+    if not report.articles:
+        return [
+            "## 今日處置清單",
+            "",
+            "期間內沒有主題相關新文；無需立即修補、封鎖或 hunt。",
+            "",
+        ]
+    lines = ["## 今日處置清單", "", f"{_markdown_escape(brief.priority_line)}", ""]
+    grouped: dict[str, list] = {}
+    for action in brief.actions:
+        heading = ACTION_HEADINGS[action.action]
+        grouped.setdefault(heading, []).append(action)
+    for heading in ("修補", "封鎖", "Hunt", "監控", "觀察"):
+        items = grouped.get(heading)
+        if not items:
+            continue
+        lines.extend([f"### {heading}", ""])
+        for action in items:
+            target = (
+                f"`{_markdown_code(action.target)}`"
+                if action.target_type != "article"
+                else _markdown_escape(action.target)
+            )
+            marker = " 【新增】" if action.is_new else ""
+            lines.append(
+                f"- **{action.priority.upper()}** {target}{marker}"
+                f" — {_markdown_escape(action.reason)}"
+                f" — {_markdown_escape(action.article_title)}"
+            )
+        lines.append("")
+    if brief.clusters:
+        lines.extend(["### 事件叢集", ""])
+        for cluster in brief.clusters:
+            cve_note = f"；CVE：{'、'.join(cluster.cves)}" if cluster.cves else ""
+            impact_note = (
+                f"；影響：{'、'.join(cluster.impacts)}" if cluster.impacts else ""
+            )
+            lines.append(
+                f"- {_markdown_escape(cluster.label)}"
+                f"（{len(cluster.article_urls)} 篇{cve_note}{impact_note}）"
+            )
+        lines.append("")
+    return lines
+
+
 def _unique_article_evidence(
     manifest: EvidenceManifest, status: str
 ) -> list[Evidence]:
@@ -314,8 +381,20 @@ def render_markdown(report: DailyReport) -> str:
         f"- 明確 IoC：{report.confirmed_ioc_count} 個",
         f"- 可疑檔名：{report.confirmed_filename_count} 個",
         f"- 原文指稱：{report.confirmed_claim_count} 項",
-        "",
+        f"- 待修 CVE：{report.analyst_brief.patch_count} 個",
+        f"- 待封鎖：{report.analyst_brief.block_count} 個",
+        f"- 待hunt：{report.analyst_brief.hunt_count} 個",
     ]
+    if report.analyst_brief.new_ioc_count is not None:
+        lines.extend(
+            [
+                f"- 較昨日新增 IoC：{report.analyst_brief.new_ioc_count} 個",
+                f"- 與昨日重複：{report.analyst_brief.repeat_ioc_count} 個",
+                f"- 昨日有、今日未再出現：{report.analyst_brief.gone_ioc_count} 個",
+            ]
+        )
+    lines.append("")
+    lines.extend(_render_analyst_board(report))
 
     for number, manifest in enumerate(report.articles, start=1):
         confirmed = _unique_article_evidence(manifest, "confirmed")
@@ -347,9 +426,26 @@ def render_markdown(report: DailyReport) -> str:
                 f"({_markdown_url(manifest.article_url)})",
                 f"- 發布時間：{published.strftime('%Y-%m-%d %H:%M UTC') if published else '來源未提供'}",
                 f"- 重點：{_markdown_escape(_source_summary(manifest))}",
-                "",
             ]
         )
+        impacts = article_impacts(manifest)
+        if impacts:
+            lines.append(
+                f"- 影響：{_markdown_escape('、'.join(label for _, label in impacts))}"
+            )
+        article_actions = [
+            action
+            for action in report.analyst_brief.actions
+            if action.article_url == manifest.article_url
+            and action.action in {"patch", "block", "hunt", "monitor"}
+        ]
+        if article_actions:
+            first = article_actions[0]
+            lines.append(
+                f"- 建議：{_markdown_escape(ACTION_HEADINGS[first.action])} — "
+                f"{_markdown_escape(first.reason)}"
+            )
+        lines.append("")
         if iocs:
             lines.extend(["### 明確 IoC", ""])
             for evidence in iocs:
@@ -388,9 +484,11 @@ def render_markdown(report: DailyReport) -> str:
             "## 報告說明",
             "",
             "- 僅收錄標題或來源摘要與資安主題明確相關的文章。",
+            "- 處置清單只根據原文明確的 CVE、IoC 章節指標與影響用語，不額外猜測。",
+            "- 較昨日新增／重複僅在提供前一日 JSON 時計算，方便值勤交接。",
             "- IoC 計原文明確的 CVE，以及 IoC 章節中的 hash、IP、domain 與 URL；相同值跨文章只計一次。",
             "- 惡意程式家族與 ATT&CK 技術只在原文明確命名時列出，並附原文句子，不計入 IoC 總數。",
-            "- 完整證據、候選值、排除理由與程式診斷位於隨附 JSON 稽核檔。",
+            "- 完整證據、候選值、排除理由與程式診斷位於隨附 JSON 稽核檔；CSV 供 SIEM／封鎖清單匯入。",
             "",
         ]
     )

@@ -10,7 +10,7 @@
 4. 使用 Trafilatura 做通用正文抽取。
 5. 最後嘗試 `article`、`main` 等語意標籤。
 
-解析結果會記錄 `extraction_method`、字元數及 warnings。Cloudflare 驗證頁、Access Denied、過短內容不會被當成文章正文。若完整 HTML 受阻但 RSS 有通過品質檢查的部分正文，會標成 `feed:*:partial`；兩者皆不可用時才標成 `extraction_method: "failed"`、`body` 留空。JSON-LD `@graph` 最多走 64 個節點，避免環狀或過深結構拖垮�走 64 個節點，避免環狀或過深結構拖垮擷取。沒有時區的 feed 日期會當成 UTC，並寫入來源診斷。
+解析結果會記錄 `extraction_method`、字元數及 warnings。Cloudflare 驗證頁、Access Denied、過短內容不會被當成文章正文。若完整 HTML 受阻但 RSS 有通過品質檢查的部分正文，會標成 `feed:*:partial`；兩者皆不可用時才標成 `extraction_method: "failed"`、`body` 留空。JSON-LD `@graph` 最多走 64 個節點，避免環狀或過深結構拖垮擷取。沒有時區的 feed 日期會當成 UTC，並寫入來源診斷。
 
 所有 feed 與文章請求只允許 HTTPS、來源設定中的文章網域及公開 IP；每次 redirect 都會重新驗證，並以串流方式在解壓後 12 MiB 上限立即中止，避免 feed 連結造成 SSRF 或無界下載。
 
@@ -79,14 +79,17 @@ uv run soc-news-parser report \
   --now 2026-08-30T01:21:00Z \
   --generated-at 2026-08-30T01:30:00Z \
   --json-output daily-evidence.json \
-  --markdown-output daily-report.md
+  --markdown-output daily-report.md \
+  --csv-output daily-iocs.csv
 ```
+
+若有前一日的稽核 JSON，加上 `--previous-json yesterday-evidence.json`，報告會標出較昨日新增的 IoC，並統計新增／重複／今日未再出現的數量，方便值勤交接。沒有前一日檔案時不會猜測差異。
 
 預設處理所有內建來源；可重複使用 `--source microsoft-security --source the-hacker-news` 限定來源。同一來源在時間窗內的多篇文章會各自擷取與抽 IoC，只依正規化 URL 去重（去掉 `utm_*`／點擊追蹤參數；非法 port 不會中斷整份報告），不會每站只留一篇。單一來源或文章失敗不會中止整批報告，錯誤會保存在 `source_failures` 或文章的 `extraction_method: "failed"`。同一 IoC 出現在多篇文章時，主旨總數只計一次。
 
-報告主旨的文章數只計標題或來源摘要具有明確資安主題訊號的文章；不相關文章仍保留在 JSON 的 `excluded_articles` 供稽核。IoC 總數採全報告唯一值，僅計 `confirmed` 的 MD5、SHA-1、SHA-256、IPv4/IPv6、domain、URL 與 CVE，檔名與原文指稱另行統計。
+郵件主旨改為值班可掃描的處置數字：待修 CVE、待封鎖網路指標、待 hunt 端點指標、相關文章數。文章數只計標題或來源摘要具有明確資安主題訊號的文章；不相關文章仍保留在 JSON 的 `excluded_articles` 供稽核。IoC 總數採全報告唯一值，僅計 `confirmed` 的 MD5、SHA-1、SHA-256、IPv4/IPv6、domain、URL 與 CVE，檔名與原文指稱另行統計。
 
-Markdown 是給收件者閱讀的標準報告，只呈現查核期間、相關文章、來源摘要、明確 IoC、相關檔名和必要方法說明。Report ID、parser 版本、正文 hash、warnings、candidate/rejected、排除文章及來源錯誤只保留於 JSON 稽核檔。JSON 會寫入 `reader_digest`（Markdown 的 SHA-256），寄送前用它核對兩份檔案仍成對，並拒絕相同輸出路徑。
+Markdown 是給 SOC／威脅分析師閱讀的值班報告：開頭是今日優先處置一句話，接著是修補、封鎖、Hunt、監控、觀察清單，以及同一 CVE 跨來源的事件叢集。每篇文章會標影響類型（例如 RCE、C2）與建議動作。清單只根據原文明確的 CVE、IoC 章節指標與原文影響用語產生，不把 candidate 升成 confirmed。Report ID、parser 版本、正文 hash、warnings、candidate/rejected、排除文章及來源錯誤只保留於 JSON 稽核檔。CSV 是一列一個可操作指標，方便匯入 SIEM 或封鎖清單。JSON 會寫入 `reader_digest`（Markdown 的 SHA-256），寄送前用它核對兩份檔案仍成對，並拒絕相同輸出路徑。
 
 ### 使用 Resend 寄送報告
 

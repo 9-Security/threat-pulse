@@ -75,7 +75,7 @@ def test_report_counts_unique_confirmed_values_and_failures() -> None:
     assert report.sources_checked == ["the-hacker-news", "bleepingcomputer"]
     assert report.confirmed_ioc_count == 2
     assert report.confirmed_filename_count == 1
-    assert report.subject.endswith("文章數 1 / IoC數 2")
+    assert report.subject.endswith("待修 0 / 待封鎖 1 / 待hunt 2 / 文章數 1")
     assert len(report.source_failures) == 1
     assert len(report.report_id) == 64
 
@@ -89,6 +89,9 @@ def test_report_counts_unique_confirmed_values_and_failures() -> None:
     assert "查核來源：2 個" in markdown
     assert "期間內有新文來源：1 個" in markdown
     assert "原文指稱：0 項" in markdown
+    assert "今日處置清單" in markdown
+    assert "### 封鎖" in markdown
+    assert "### Hunt" in markdown
 
 
 def test_report_outputs_must_use_different_paths(tmp_path: Path) -> None:
@@ -252,6 +255,7 @@ def test_topic_filter_keeps_security_articles_without_iocs() -> None:
     assert "Hospitals hit by ransomware campaign" in markdown
     assert "Quarterly earnings" not in markdown
     assert "IoC：原文未提供明確指標。" in markdown
+    assert "今日沒有可立即修補、封鎖或 hunt 的明確指標。" in markdown
 
 
 def test_same_source_keeps_every_same_day_article_with_iocs() -> None:
@@ -337,7 +341,7 @@ CVE-2026-76581 allows unauthenticated takeover.
 
     assert report.confirmed_ioc_count == 1
     assert report.confirmed_claim_count == 2
-    assert report.subject.endswith("文章數 1 / IoC數 1")
+    assert report.subject.endswith("待修 1 / 待封鎖 0 / 待hunt 0 / 文章數 1")
     assert "**CVE**：`CVE-2026-76581`" in markdown
     assert "**惡意程式家族**：`LockBit`" in markdown
     assert "**攻擊技術**：`T1059.001`" in markdown
