@@ -186,9 +186,21 @@ def _arguments() -> argparse.Namespace:
         action="store_true",
         help="write and validate each slot without calling Resend",
     )
-    subcommands.add_parser(
+    mcp = subcommands.add_parser(
         "mcp",
-        help="run the IoC MCP server over stdio for Cursor",
+        help="run the IoC MCP server (stdio or Streamable HTTP for external agents)",
+    )
+    mcp.add_argument(
+        "--http",
+        action="store_true",
+        help="serve Streamable HTTP for external LLM / agent clients",
+    )
+    mcp.add_argument("--host", default="127.0.0.1")
+    mcp.add_argument("--port", type=int, default=43124)
+    mcp.add_argument("--path", default="/mcp")
+    mcp.add_argument(
+        "--token",
+        help="Bearer token for HTTP mode (defaults to SOC_IOC_MCP_TOKEN)",
     )
     return parser.parse_args()
 
@@ -506,7 +518,7 @@ def main() -> None:
     if args.command == "mcp":
         from .mcp_server import main as run_mcp
 
-        run_mcp()
+        run_mcp(args)
         return
 
     try:

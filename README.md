@@ -161,24 +161,52 @@ uv run soc-news-parser schedule --at 06:00 --timezone Asia/Taipei
 
 此命令只在程序持續執行時有效。雲端工作階段或筆電休眠後不會繼續寄信。
 
-### IoCs MCP（給 Cursor 查詢）
+### IoCs MCP（給 Cursor 與外部 LLM／Agent）
 
-每日 `deliver` 寫進 `reports/YYYY-MM-DD/daily-evidence.json` 的確認 IoC，可透過 MCP 讓 Cursor 直接查，不必開 JSON。MCP **不會**自己爬網；先有報告檔才有資料。
+每日 `deliver` 把確認 IoC 寫進 `reports/YYYY-MM-DD/daily-evidence.json`。MCP 只讀這些檔，**不會**自己爬網。要給外部模型用，請開 **Streamable HTTP**，不要只用 Cursor 本機 stdio。
 
-在專案根目錄啟動：
+工具相同：`list_reports`、`get_report_summary`、`search_confirmed_iocs`、`lookup_ioc`。
+
+**1. 本機 Cursor（stdio）**
 
 ```bash
 uv run soc-news-parser mcp
 ```
 
-Cursor 已可讀 `.cursor/mcp.json`。在桌面 Cursor 開啟這個倉庫後，到 **Settings → MCP** 確認 `iocs` 已連線（必要時 Allow）。工具包括：
+專案裡的 `.cursor/mcp.json` 會啟動這個程序。Settings → MCP 允許 `iocs` 即可。
 
-- `list_reports`：列出本機報告日期
-- `get_report_summary`：主旨、時間窗、待修／待封鎖／待hunt 數量
-- `search_confirmed_iocs`：依關鍵字、action、`indicator_type` 搜尋
-- `lookup_ioc`：用正規化或原文值精確查找
+**2. 外部 LLM／Agent（HTTP，需要 Bearer token）**
 
-報告目錄預設 `reports/`，可用環境變數 `SOC_IOC_REPORTS_DIR` 覆寫。
+在會長駐、能讀到 `reports/` 的機器上：
+
+```bash
+export SOC_IOC_REPORTS_DIR=/path/to/soc-news-parser/reports
+export SOC_IOC_MCP_TOKEN="$(openssl rand -hex 32)"
+uv run soc-news-parser mcp --http --host 0.0.0.0 --port 43124
+```
+
+- `GET /health` 不需 token（探活）
+- `POST /mcp` 必須帶 `Authorization: Bearer <SOC_IOC_MCP_TOKEN>`
+- 沒有 token 會拒絕啟動
+
+對外匯出時請用 HTTPS 反代（Caddy／nginx），不要把 HTTP 裸掛在公網。Cloud Agent 會收工，不適合當這台 MCP 主機。
+
+外部 Cursor／Claude／自建 agent 的設定例：
+
+```json
+{
+  "mcpServers": {
+    "iocs": {
+      "url": "https://mcp.example.com/mcp",
+      "headers": {
+        "Authorization": "Bearer ${env:SOC_IOC_MCP_TOKEN}"
+      }
+    }
+  }
+}
+```
+
+報告目錄預設 `reports/`，可用 `SOC_IOC_REPORTS_DIR` 覆寫。
 
 ### 驗證
 
