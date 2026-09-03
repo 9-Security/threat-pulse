@@ -186,6 +186,10 @@ def _arguments() -> argparse.Namespace:
         action="store_true",
         help="write and validate each slot without calling Resend",
     )
+    subcommands.add_parser(
+        "mcp",
+        help="run the IoC MCP server over stdio for Cursor",
+    )
     return parser.parse_args()
 
 
@@ -498,6 +502,11 @@ def main() -> None:
                 raise SystemExit(130) from error
             print(f"error: {error}", file=sys.stderr)
             raise SystemExit(1) from error
+        return
+    if args.command == "mcp":
+        from .mcp_server import main as run_mcp
+
+        run_mcp()
         return
 
     try:

@@ -161,6 +161,25 @@ uv run soc-news-parser schedule --at 06:00 --timezone Asia/Taipei
 
 此命令只在程序持續執行時有效。雲端工作階段或筆電休眠後不會繼續寄信。
 
+### IoCs MCP（給 Cursor 查詢）
+
+每日 `deliver` 寫進 `reports/YYYY-MM-DD/daily-evidence.json` 的確認 IoC，可透過 MCP 讓 Cursor 直接查，不必開 JSON。MCP **不會**自己爬網；先有報告檔才有資料。
+
+在專案根目錄啟動：
+
+```bash
+uv run soc-news-parser mcp
+```
+
+Cursor 已可讀 `.cursor/mcp.json`。在桌面 Cursor 開啟這個倉庫後，到 **Settings → MCP** 確認 `iocs` 已連線（必要時 Allow）。工具包括：
+
+- `list_reports`：列出本機報告日期
+- `get_report_summary`：主旨、時間窗、待修／待封鎖／待hunt 數量
+- `search_confirmed_iocs`：依關鍵字、action、`indicator_type` 搜尋
+- `lookup_ioc`：用正規化或原文值精確查找
+
+報告目錄預設 `reports/`，可用環境變數 `SOC_IOC_REPORTS_DIR` 覆寫。
+
 ### 驗證
 
 ```bash

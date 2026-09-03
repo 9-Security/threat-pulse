@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "iocs": {
+      "type": "stdio",
+      "command": "uv",
+      "args": ["run", "soc-news-parser", "mcp"],
+      "env": {
+        "SOC_IOC_REPORTS_DIR": "reports"
+      }
+    }
+  }
+}

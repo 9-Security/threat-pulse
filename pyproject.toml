@@ -1,6 +1,6 @@
 [project]
 name = "soc-news-parser"
-version = "0.15.0"
+version = "0.16.0"
 description = "Validated RSS and raw-HTML parser for SOC security-news collection"
 readme = "README.md"
 authors = [
@@ -13,11 +13,13 @@ dependencies = [
     "httpx>=0.28.1",
     "lxml>=6.1.2",
     "markdown>=3.10.3",
+    "mcp>=2.1.1",
     "trafilatura>=2.2.0",
 ]
 
 [project.scripts]
 soc-news-parser = "soc_news_parser:main"
+soc-iocs-mcp = "soc_news_parser.mcp_server:main"
 
 [build-system]
 requires = ["uv_build>=0.12.7,<0.13.0"]
