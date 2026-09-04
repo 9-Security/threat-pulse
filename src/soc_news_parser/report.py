@@ -571,6 +571,15 @@ def render_markdown(report: DailyReport) -> str:
                 f"- IoC：**未能取得全文**（{_markdown_escape(unavailable_reason(manifest))}）；"
                 "本篇是否含指標尚未確認，請人工開啟原文複核。"
             )
+        elif filenames or claims:
+            kinds = "、".join(
+                label
+                for present, label in ((filenames, "可疑檔名"), (claims, "原文指稱"))
+                if present
+            )
+            lines.append(
+                f"- IoC：無 hash／IP／網域／URL／CVE 類指標；本篇只有{kinds}，見下方。"
+            )
         else:
             lines.append("- IoC：原文未提供明確指標。")
         if filenames:

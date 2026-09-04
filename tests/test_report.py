@@ -700,3 +700,36 @@ def test_context_is_dropped_when_it_only_repeats_the_indicator() -> None:
     host = next(i for i, line in enumerate(lines) if line.startswith("- **DOMAIN**："))
     assert lines[host + 1].startswith("  - 上下文：")
     assert "C2 server for the second-stage implant" in lines[host + 1]
+
+
+def test_an_article_with_only_claims_says_which_kind_it_has() -> None:
+    class ClaimParser:
+        def parse_feed(self, source: object, **_: object) -> list[ParsedArticle]:
+            if getattr(source, "name") != "The Hacker News":
+                return []
+            return [
+                parsed_article(
+                    "The Hacker News",
+                    "Malware campaign spreads through fake installers",
+                    "Researchers tracked the loader as BraZetsu ransomware, "
+                    "but published no indicators.\n",
+                )
+            ]
+
+    generated = datetime(2026, 9, 4, 6, 0, tzinfo=timezone.utc)
+    report = collect_report(
+        ClaimParser(),  # type: ignore[arg-type]
+        ["the-hacker-news"],
+        since=datetime(2026, 9, 3, 6, 0, tzinfo=timezone.utc),
+        until=generated,
+        generated_at=generated,
+    )
+    markdown = render_markdown(report)
+
+    assert report.confirmed_claim_count == 1
+    # It keeps a full section because 原文指稱 has something to show, so the
+    # line above that section must not read as "nothing here".
+    assert "## 1. Malware campaign spreads through fake installers" in markdown
+    assert "- IoC：原文未提供明確指標。" not in markdown
+    assert "無 hash／IP／網域／URL／CVE 類指標；本篇只有原文指稱，見下方。" in markdown
+    assert "### 原文指稱" in markdown
