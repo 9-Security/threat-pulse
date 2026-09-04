@@ -33,17 +33,23 @@ jobs:
     steps:
       - name: Check Resend secrets
         run: |
+          # A dry run never contacts Resend, so it needs no credentials: it can
+          # verify the whole pipeline on a repository with nothing configured.
+          if [ "${DRY_RUN}" = "true" ]; then
+            for name in RESEND_FROM RESEND_TO RESEND_API_KEY; do
+              if [ -z "${!name}" ]; then
+                echo "::notice::${name} is not set; the dry run will stand in for it"
+              fi
+            done
+            exit 0
+          fi
           missing=0
-          for name in RESEND_FROM RESEND_TO; do
+          for name in RESEND_FROM RESEND_TO RESEND_API_KEY; do
             if [ -z "${!name}" ]; then
               echo "Missing GitHub Actions secret: ${name}" >&2
               missing=1
             fi
           done
-          if [ "${DRY_RUN}" != "true" ] && [ -z "${RESEND_API_KEY}" ]; then
-            echo "Missing GitHub Actions secret: RESEND_API_KEY" >&2
-            missing=1
-          fi
           if [ "${missing}" -ne 0 ]; then
             exit 1
           fi
@@ -74,6 +80,14 @@ jobs:
           extra=()
           if [ "${DRY_RUN}" = "true" ]; then
             extra+=(--dry-run)
+            # .invalid can never resolve, so a stand-in cannot reach anyone even
+            # if the dry-run guard were ever removed.
+            if [ -z "${RESEND_FROM}" ]; then
+              extra+=(--from "SOC dry run <dry-run@dry-run.invalid>")
+            fi
+            if [ -z "${RESEND_TO}" ]; then
+              extra+=(--to "dry-run@dry-run.invalid")
+            fi
           fi
           uv run soc-news-parser deliver \
             --hours 24 \
