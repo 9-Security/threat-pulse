@@ -262,7 +262,7 @@ uv run soc-news-parser mcp --http --host 0.0.0.0 --port 43124
 }
 ```
 
-報告目錄預設 `reports/`，可用 `SOC_IOC_REPORTS_DIR` 覆寫。
+報告目錄預設 `reports/`，可用 `SOC_IOC_REPORTS_DIR` 覆寫。MCP 的 `date` 參數只接受 `YYYY-MM-DD` 且必須是真實日期；解析後的路徑會再確認仍位於報告根目錄內，因此帶 `..`、斜線或指向外部的符號連結都會被拒絕，不會讀到根目錄以外的檔案。`list_reports` 也只列出符合日期格式的資料夾。
 
 ### 驗證
 

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import os
+import re
+from datetime import date as date_type
 from pathlib import Path
 from typing import Any
 
@@ -9,6 +11,26 @@ from typing import Any
 REPORT_FILENAME = "daily-evidence.json"
 DEFAULT_LIMIT = 40
 MAX_LIMIT = 100
+REPORT_DATE_RE = re.compile(r"\A\d{4}-\d{2}-\d{2}\Z")
+
+
+def _report_directory(base: Path, date: str) -> Path:
+    """Resolve one dated report directory, refusing anything outside the root.
+
+    `date` arrives from an MCP client, so it is not joined to the root until it
+    has been proved to be a plain YYYY-MM-DD key, and the resolved path is
+    checked against the root again in case a symlink points away.
+    """
+    if not REPORT_DATE_RE.match(date):
+        raise ValueError("report date must be a plain YYYY-MM-DD key")
+    try:
+        date_type.fromisoformat(date)
+    except ValueError:
+        raise ValueError("report date must be a plain YYYY-MM-DD key") from None
+    folder = (base / date).resolve()
+    if base != folder and base not in folder.parents:
+        raise ValueError("report date resolves outside the reports directory")
+    return folder
 
 
 def reports_root(path: str | Path | None = None) -> Path:
@@ -24,6 +46,8 @@ def list_report_dates(root: str | Path | None = None) -> list[dict[str, Any]]:
         return []
     results: list[dict[str, Any]] = []
     for folder in sorted(base.iterdir(), reverse=True):
+        if not REPORT_DATE_RE.match(folder.name):
+            continue
         evidence = folder / REPORT_FILENAME
         if not folder.is_dir() or not evidence.is_file():
             continue
@@ -55,7 +79,7 @@ def load_report(
 ) -> tuple[str, dict[str, Any]]:
     base = reports_root(root)
     if date:
-        evidence = base / date / REPORT_FILENAME
+        evidence = _report_directory(base, date) / REPORT_FILENAME
         if not evidence.is_file():
             raise FileNotFoundError(f"no report JSON for {date}")
         payload = json.loads(evidence.read_text(encoding="utf-8"))
