@@ -44,7 +44,7 @@ class FakeParser:
                     "First report",
                     """Indicators of Compromise
 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
-evil[.]example
+evil[.]example.com
 payload.exe
 """,
                 ),
@@ -52,7 +52,7 @@ payload.exe
                     name,
                     "Second report",
                     """Security analysis
-The report mentions evil[.]example without characterizing it.
+The report mentions evil[.]example.com without characterizing it.
 """,
                 ),
             ]
@@ -153,7 +153,7 @@ def test_markdown_escapes_untrusted_title() -> None:
     )
     report.articles[0] = replace(
         report.articles[0],
-        article_title="Report ![tracker](https://evil.example/x.png)",
+        article_title="Report ![tracker](https://evil.example.com/x.png)",
     )
 
     markdown = render_markdown(report)
@@ -268,12 +268,12 @@ def test_same_source_keeps_every_same_day_article_with_iocs() -> None:
                 "Morning ransomware note",
                 "Indicators of Compromise\n"
                 "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"
-                "shared[.]example\n",
+                "shared[.]example.com\n",
             )
             afternoon = parsed_article(
                 name,
                 "Afternoon phishing wave",
-                "Indicators of Compromise\nshared[.]example\nphish[.]example\n",
+                "Indicators of Compromise\nshared[.]example.com\nphish[.]example.com\n",
             )
             evening = parsed_article(
                 name,
@@ -308,8 +308,8 @@ def test_same_source_keeps_every_same_day_article_with_iocs() -> None:
     assert "Afternoon phishing wave" in markdown
     assert "Evening CVE advisory" in markdown
     assert markdown.count("### 明確 IoC") == 3
-    assert "`shared.example`" in markdown
-    assert "`phish.example`" in markdown
+    assert "`shared.example.com`" in markdown
+    assert "`phish.example.com`" in markdown
     assert "`CVE-2026-76581`" in markdown
 
 
@@ -376,12 +376,12 @@ def test_tracking_query_and_invalid_port_do_not_break_dedup() -> None:
             first = parsed_article(
                 name,
                 "Shared story",
-                "Indicators of Compromise\nevil[.]example\n",
+                "Indicators of Compromise\nevil[.]example.com\n",
             )
             second = parsed_article(
                 name,
                 "Shared story copy",
-                "Indicators of Compromise\nevil[.]example\nextra[.]example\n",
+                "Indicators of Compromise\nevil[.]example.com\nextra[.]example.com\n",
             )
             broken = parsed_article(
                 name,

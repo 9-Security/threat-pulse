@@ -6,6 +6,7 @@ import re
 import subprocess
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
+from importlib import resources
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Any, Iterable
@@ -14,9 +15,28 @@ from urllib.parse import urlsplit, urlunsplit
 from .parser import ParsedArticle, _is_public_address
 
 
-MANIFEST_VERSION = "1.3"
+MANIFEST_VERSION = "1.4"
 COUNTED_IOC_TYPES = frozenset({"md5", "sha1", "sha256", "ip", "domain", "url", "cve"})
 CLAIM_TYPES = frozenset({"malware_family", "attack_technique"})
+
+
+def _load_known_tlds() -> frozenset[str]:
+    """Delegated TLDs from the bundled IANA root zone list."""
+    text = (
+        resources.files(__package__)
+        .joinpath("data/iana_tlds.txt")
+        .read_text(encoding="utf-8")
+    )
+    return frozenset(
+        stripped
+        for line in text.splitlines()
+        if (stripped := line.strip()) and not stripped.startswith("#")
+    )
+
+
+KNOWN_TLDS = _load_known_tlds()
+
+
 HASH_RE = re.compile(
     r"(?<![0-9a-f])(?:[0-9a-f]{64}|[0-9a-f]{40}|[0-9a-f]{32})(?![0-9a-f])",
     re.IGNORECASE,
@@ -108,7 +128,8 @@ RELATED_LINE_RE = re.compile(r"^related(?:\s+articles?)?\s*[:：-]", re.IGNORECA
 FILE_RE = re.compile(
     r"(?<![\w.-])[\w@+-][\w@().+-]*\."
     r"(?:exe|dll|sys|ps1|bat|cmd|vbs|js|jar|py|zip|rar|7z|hta|msi|scr|"
-    r"elf|bin|dat|pem|lnk|iso|img|doc|docx|xls|xlsx|ppt|pptx|pdf)"
+    r"elf|bin|dat|pem|lnk|iso|img|doc|docx|xls|xlsx|ppt|pptx|pdf|"
+    r"tmp|enc|dmp|bak|log|apk|jse|wsf|pif)"
     r"(?![\w-]|\.[a-z0-9])",
     re.IGNORECASE,
 )
@@ -138,8 +159,8 @@ SECTION_END_RE = re.compile(
     re.IGNORECASE,
 )
 FILE_CONTEXT_RE = re.compile(
-    r"\b(?:file(?:name)?|attachment|document|payload)\s+"
-    r"(?:is|named|called)?\s*[:=]?\s*$",
+    r"\b(?:file\s*names?|attachments?|documents?|payloads?|files?)\s+"
+    r"(?:is|are|named|called)?\s*[:=]?\s*$",
     re.IGNORECASE,
 )
 def normalize_heading(line: str) -> str:
@@ -246,8 +267,9 @@ def _line_matches(line: str) -> Iterable[tuple[str, re.Match[str]]]:
         ("filename", FILE_RE),
         ("domain", DOMAIN_RE),
     )
-    for indicator_type, pattern in patterns:
+    for pattern_type, pattern in patterns:
         for match in pattern.finditer(line):
+            indicator_type = pattern_type
             span = match.span()
             if any(span[0] < end and start < span[1] for start, end in occupied):
                 continue
@@ -255,7 +277,13 @@ def _line_matches(line: str) -> Iterable[tuple[str, re.Match[str]]]:
                 continue
             if indicator_type == "domain":
                 labels = _normalize(match.group(), "domain").split(".")
-                if any(
+                if labels[-1] not in KNOWN_TLDS:
+                    # Not a delegated TLD, so this is a dotted artefact rather than
+                    # a host. Keep it only when the line names it as a file.
+                    if not FILE_CONTEXT_RE.search(line[max(0, span[0] - 80) : span[0]]):
+                        continue
+                    indicator_type = "filename"
+                elif any(
                     not label
                     or len(label) > 63
                     or label.startswith("-")
