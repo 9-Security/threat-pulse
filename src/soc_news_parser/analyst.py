@@ -9,9 +9,10 @@ import re
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, Mapping
 from urllib.parse import urlsplit
 
+from .enrich import CveIntel
 from .evidence import (
     COUNTED_IOC_TYPES,
     CVE_RE,
@@ -134,6 +135,10 @@ CSV_HEADER = [
     "article_title",
     "article_url",
     "reason",
+    "kev",
+    "kev_due_date",
+    "cvss_score",
+    "cvss_severity",
 ]
 PUBLIC_DNS_REASON = "常見公共 DNS，不建議直接封鎖；改為連線／DNS hunt 複核"
 BRAND_REASON = (
@@ -204,6 +209,14 @@ class AnalystAction:
     article_title: str
     article_url: str
     is_new: bool | None = None
+    # Third-party enrichment, never the article's own claim.
+    kev: bool | None = None
+    kev_due_date: str | None = None
+    cvss_score: float | None = None
+    cvss_severity: str | None = None
+    # What the article itself printed, kept so ranking does not read a missing
+    # NVD score as zero and sink an un-enriched critical CVE to the bottom.
+    article_cvss_score: float | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -229,6 +242,7 @@ class AnalystBrief:
     block_count: int
     hunt_count: int
     monitor_count: int
+    unavailable_count: int
     new_ioc_count: int | None
     repeat_ioc_count: int | None
     gone_ioc_count: int | None
@@ -242,6 +256,7 @@ class AnalystBrief:
             "block_count": self.block_count,
             "hunt_count": self.hunt_count,
             "monitor_count": self.monitor_count,
+            "unavailable_count": self.unavailable_count,
             "new_ioc_count": self.new_ioc_count,
             "repeat_ioc_count": self.repeat_ioc_count,
             "gone_ioc_count": self.gone_ioc_count,
@@ -441,6 +456,8 @@ def _make_action(
     target: str,
     reason: str,
     manifest: EvidenceManifest,
+    intel: CveIntel | None = None,
+    article_cvss: float | None = None,
 ) -> AnalystAction:
     return AnalystAction(
         action,
@@ -450,10 +467,116 @@ def _make_action(
         reason,
         manifest.article_title,
         manifest.article_url,
+        kev=intel.kev if intel else None,
+        kev_due_date=intel.kev_due_date if intel else None,
+        cvss_score=intel.cvss_score if intel else None,
+        cvss_severity=intel.cvss_severity if intel else None,
+        article_cvss_score=article_cvss,
     )
 
 
-def build_actions(manifest: EvidenceManifest) -> list[AnalystAction]:
+def effective_cvss(action: AnalystAction) -> float | None:
+    """The higher of the NVD and article scores, for ranking and priority.
+
+    NVD is authoritative for the published score, but a provisional or missing
+    NVD entry must never quietly downgrade a CVE the article scored higher.
+    """
+    scores = [item for item in (action.cvss_score, action.article_cvss_score) if item is not None]
+    return max(scores) if scores else None
+
+
+def _cve_priority(
+    impacts: list[tuple[str, str]],
+    article_cvss: float | None,
+    intel: CveIntel | None,
+) -> str:
+    """KEV outranks every text signal: it is confirmed in-the-wild exploitation."""
+    if intel and intel.kev:
+        return "high"
+    scores = [
+        item
+        for item in (intel.cvss_score if intel else None, article_cvss)
+        if item is not None
+    ]
+    score = max(scores) if scores else None
+    if score is not None and score >= 9.0:
+        return "high"
+    if _priority(impacts, score) == "high":
+        return "high"
+    return "medium"
+
+
+def _cve_reason(
+    local_labels: str, article_cvss: float | None, intel: CveIntel | None
+) -> str:
+    parts: list[str] = []
+    if intel and intel.kev:
+        kev_note = "KEV 已知遭利用"
+        if intel.kev_due_date:
+            kev_note += f"，CISA 修補期限 {intel.kev_due_date}"
+        if intel.kev_known_ransomware:
+            kev_note += "，已用於勒索攻擊"
+        parts.append(kev_note)
+    if intel and intel.cvss_score is not None:
+        label = f"CVSS {intel.cvss_score:g}"
+        if intel.cvss_severity:
+            label += f" {intel.cvss_severity}"
+        parts.append(f"{label}（NVD）")
+    elif article_cvss is not None:
+        parts.append(f"CVSS {article_cvss:g}（原文）")
+    elif intel and intel.nvd_status and intel.nvd_status != "Unknown":
+        parts.append(f"NVD {intel.nvd_status}")
+    else:
+        parts.append("未寫 CVSS")
+    parts.append(local_labels)
+    return "；".join(parts)
+
+
+HTTP_STATUS_RE = re.compile(r"\b(\d{3})\s+(?:Forbidden|Unauthorized|Not Found|"
+                            r"Too Many Requests|Service Unavailable|error)", re.IGNORECASE)
+
+
+def body_unavailable(manifest: EvidenceManifest) -> bool:
+    """True when no article body was retrieved, so its content is unknown."""
+    return manifest.extraction_method == "failed" or not manifest.canonical_body.strip()
+
+
+def unavailable_reason(manifest: EvidenceManifest) -> str:
+    """A short, honest cause taken from the extraction warnings."""
+    joined = " ".join(manifest.extraction_warnings or ())
+    status = HTTP_STATUS_RE.search(joined)
+    if status:
+        code = status.group(1)
+        if code == "403":
+            return "來源回應 HTTP 403，疑似反機器人阻擋"
+        if code == "429":
+            return "來源回應 HTTP 429，請求過於頻繁"
+        return f"來源回應 HTTP {code}"
+    if "no extraction candidates" in joined:
+        return "頁面沒有可解析的正文結構"
+    if joined:
+        return "全文擷取失敗"
+    return "全文未取得"
+
+
+def build_actions(
+    manifest: EvidenceManifest,
+    intel: Mapping[str, CveIntel] | None = None,
+) -> list[AnalystAction]:
+    if body_unavailable(manifest):
+        # The body was never read, so nothing may be asserted about its
+        # contents - not even that it carried no indicators.
+        return [
+            _make_action(
+                "review",
+                "medium",
+                "article",
+                manifest.article_title,
+                f"{unavailable_reason(manifest)}；未讀到正文，無法判斷是否含指標，"
+                "請人工開啟原文複核",
+                manifest,
+            )
+        ]
     confirmed = _confirmed(manifest)
     article_hosts = {
         host
@@ -466,15 +589,17 @@ def build_actions(manifest: EvidenceManifest) -> list[AnalystAction]:
         local_labels = "、".join(label for _, label in local_impacts) or "原文明確記載"
         priority = _priority(local_impacts, cvss)
         if evidence.indicator_type == "cve":
-            score = f"CVSS {cvss:g}" if cvss is not None else "未寫 CVSS"
+            cve_intel = (intel or {}).get(evidence.normalized_value.upper())
             actions.append(
                 _make_action(
                     "patch",
-                    "high" if priority == "high" or (cvss or 0) >= 9 else "medium",
+                    _cve_priority(local_impacts, cvss, cve_intel),
                     "cve",
                     evidence.normalized_value,
-                    f"{score}；{local_labels}",
+                    _cve_reason(local_labels, cvss, cve_intel),
                     manifest,
+                    cve_intel,
+                    cvss,
                 )
             )
         elif evidence.indicator_type in NETWORK_TYPES:
@@ -673,12 +798,17 @@ def _unique_action_targets(
     }
 
 
+def kev_targets(actions: Iterable[AnalystAction]) -> set[str]:
+    return {item.target for item in actions if item.action == "patch" and item.kev}
+
+
 def _priority_line(actions: list[AnalystAction]) -> str:
     ranked = [item for item in actions if item.action in ACTIONABLE]
     if not ranked:
         return "今日沒有可立即修補、封鎖或 hunt 的明確指標。"
+    kev = [item for item in ranked if item.action == "patch" and item.kev]
     high = [item for item in ranked if item.priority == "high"]
-    focus = high[0] if high else ranked[0]
+    focus = kev[0] if kev else (high[0] if high else ranked[0])
     verb = ACTION_VERBS[focus.action]
     counts = {
         "patch": len(_unique_action_targets(ranked, "patch")),
@@ -686,6 +816,9 @@ def _priority_line(actions: list[AnalystAction]) -> str:
         "hunt": len(_unique_action_targets(ranked, "hunt")),
     }
     extras = []
+    kev_count = len(kev_targets(ranked))
+    if kev_count:
+        extras.append(f"{kev_count} 個已知遭利用")
     if counts["patch"] > 1:
         extras.append(f"{counts['patch']} 個 CVE")
     if counts["block"]:
@@ -693,15 +826,43 @@ def _priority_line(actions: list[AnalystAction]) -> str:
     if counts["hunt"]:
         extras.append(f"{counts['hunt']} 個 hunt 指標")
     suffix = f"（{'、'.join(extras)}）" if extras else ""
-    return f"今日優先：{verb} {focus.target}{suffix}"
+    lead = "今日優先：KEV " if kev else "今日優先："
+    return f"{lead}{verb} {focus.target}{suffix}"
+
+
+def _kev_first(actions: list[AnalystAction]) -> list[AnalystAction]:
+    """Keep every list in source order except patch, where KEV leads."""
+    patch = [item for item in actions if item.action == "patch"]
+    if not any(item.kev for item in patch):
+        return actions
+    ranked = sorted(
+        patch,
+        key=lambda item: (
+            not item.kev,
+            # Severity leads inside KEV: a long-overdue low-scoring entry is
+            # background, not the thing to open the duty report with. Priority
+            # comes before the score so a CVE nobody scored, whose article
+            # states remote code execution, is not ranked below a known 3.1.
+            0 if item.priority == "high" else 1,
+            -(effective_cvss(item) or 0.0),
+            item.kev_due_date or "9999-99-99",
+            item.target,
+        ),
+    )
+    stream = iter(ranked)
+    return [next(stream) if item.action == "patch" else item for item in actions]
 
 
 def build_brief(
     manifests: list[EvidenceManifest],
     previous_iocs: set[tuple[str, str]] | None = None,
+    intel: Mapping[str, CveIntel] | None = None,
 ) -> AnalystBrief:
     ordered = sorted(manifests, key=article_sort_key)
-    actions = [action for manifest in ordered for action in build_actions(manifest)]
+    actions = [
+        action for manifest in ordered for action in build_actions(manifest, intel)
+    ]
+    actions = _kev_first(actions)
     current = confirmed_ioc_keys(ordered)
     if previous_iocs is None:
         marked = actions
@@ -732,6 +893,9 @@ def build_brief(
                 if item.action in {"monitor", "observe"}
             }
         ),
+        unavailable_count=len(
+            {item.article_url for item in marked if item.action == "review"}
+        ),
         new_ioc_count=new_count,
         repeat_ioc_count=repeat_count,
         gone_ioc_count=gone_count,
@@ -741,6 +905,10 @@ def build_brief(
 
 def _csv_is_new(value: bool | None) -> str:
     return "" if value is None else str(value).lower()
+
+
+def _csv_score(value: Any) -> str:
+    return f"{value:g}" if isinstance(value, (int, float)) else ""
 
 
 def render_ioc_csv_from_actions(actions: Iterable[AnalystAction | dict[str, Any]]) -> str:
@@ -761,6 +929,10 @@ def render_ioc_csv_from_actions(actions: Iterable[AnalystAction | dict[str, Any]
                     action.article_title,
                     action.article_url,
                     action.reason,
+                    _csv_is_new(action.kev),
+                    action.kev_due_date or "",
+                    _csv_score(action.cvss_score),
+                    action.cvss_severity or "",
                 ]
             )
             continue
@@ -777,6 +949,10 @@ def render_ioc_csv_from_actions(actions: Iterable[AnalystAction | dict[str, Any]
                 action.get("article_title", ""),
                 action.get("article_url", ""),
                 action.get("reason", ""),
+                _csv_is_new(action.get("kev") if isinstance(action.get("kev"), bool) else None),
+                action.get("kev_due_date") or "",
+                _csv_score(action.get("cvss_score")),
+                action.get("cvss_severity") or "",
             ]
         )
     return output.getvalue()
@@ -795,7 +971,8 @@ def render_ioc_csv_from_report_dict(payload: dict[str, Any]) -> str:
 def render_ioc_csv(
     manifests: list[EvidenceManifest],
     previous_iocs: set[tuple[str, str]] | None = None,
+    intel: Mapping[str, CveIntel] | None = None,
 ) -> str:
     return render_ioc_csv_from_actions(
-        build_brief(manifests, previous_iocs=previous_iocs).actions
+        build_brief(manifests, previous_iocs=previous_iocs, intel=intel).actions
     )

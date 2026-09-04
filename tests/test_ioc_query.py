@@ -3,8 +3,11 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from soc_news_parser.ioc_query import (
     list_report_dates,
+    load_report,
     lookup_indicator,
     report_summary,
     search_iocs,
@@ -120,3 +123,73 @@ def test_lookup_matches_defanged_raw_value(tmp_path: Path) -> None:
     assert found["count"] == 1
     assert found["items"][0]["status"] == "confirmed"
     assert found["items"][0]["action"] == "block"
+
+
+def test_a_report_date_cannot_escape_the_reports_root(tmp_path: Path) -> None:
+    # A file with the expected name, but outside the configured root.
+    outside = tmp_path / "private"
+    outside.mkdir()
+    (outside / "daily-evidence.json").write_text(
+        json.dumps({"subject": "secret", "analyst_brief": {}}), encoding="utf-8"
+    )
+    root = tmp_path / "reports"
+    _write_report(root / "2026-09-03")
+
+    for probe in (
+        "../private",
+        "..",
+        "../../etc",
+        "2026-09-03/../../private",
+        "./2026-09-03",
+        "2026-13-45",
+        "2026-02-30",
+    ):
+        with pytest.raises(ValueError, match="report date"):
+            load_report(probe, root)
+
+    # The legitimate key still resolves.
+    chosen, payload = load_report("2026-09-03", root)
+    assert chosen == "2026-09-03"
+    assert payload["article_count"] == 1
+
+
+def test_a_symlinked_date_pointing_outside_the_root_is_refused(tmp_path: Path) -> None:
+    outside = tmp_path / "private"
+    outside.mkdir()
+    (outside / "daily-evidence.json").write_text(
+        json.dumps({"subject": "secret", "analyst_brief": {}}), encoding="utf-8"
+    )
+    root = tmp_path / "reports"
+    root.mkdir()
+    try:
+        (root / "2026-01-01").symlink_to(outside, target_is_directory=True)
+    except OSError:  # pragma: no cover - unprivileged Windows hosts
+        pytest.skip("creating symlinks is not permitted on this host")
+
+    with pytest.raises(ValueError, match="outside the reports directory"):
+        load_report("2026-01-01", root)
+
+
+def test_listing_ignores_folders_that_are_not_date_keys(tmp_path: Path) -> None:
+    _write_report(tmp_path / "2026-09-03")
+    _write_report(tmp_path / "staging")
+
+    assert [item["date"] for item in list_report_dates(tmp_path)] == ["2026-09-03"]
+
+
+def test_a_symlinked_report_file_inside_a_valid_folder_is_refused(
+    tmp_path: Path,
+) -> None:
+    secret = tmp_path / "secret.json"
+    secret.write_text(
+        json.dumps({"subject": "secret", "analyst_brief": {}}), encoding="utf-8"
+    )
+    root = tmp_path / "reports"
+    (root / "2026-09-03").mkdir(parents=True)
+    try:
+        (root / "2026-09-03" / "daily-evidence.json").symlink_to(secret)
+    except OSError:  # pragma: no cover - unprivileged Windows hosts
+        pytest.skip("creating symlinks is not permitted on this host")
+
+    with pytest.raises(ValueError, match="outside the reports directory"):
+        load_report("2026-09-03", root)

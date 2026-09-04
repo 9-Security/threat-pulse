@@ -4,13 +4,22 @@ import hashlib
 import html
 import json
 import re
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable, Mapping
 
 from urllib.parse import parse_qsl, quote, urlencode, urlsplit, urlunsplit
 
-from .analyst import AnalystBrief, article_impacts, article_sort_key, build_brief
+from .analyst import (
+    AnalystBrief,
+    article_impacts,
+    article_sort_key,
+    body_unavailable,
+    build_brief,
+    kev_targets,
+    unavailable_reason,
+)
+from .enrich import CveIntel, EnrichmentReport, disabled_report
 from .evidence import (
     CLAIM_TYPES,
     COUNTED_IOC_TYPES,
@@ -22,7 +31,11 @@ from .parser import NewsParser, ParseError
 from .sources import SOURCES
 
 
-REPORT_SCHEMA_VERSION = "1.4"
+Enricher = Callable[
+    [list[EvidenceManifest]], tuple[Mapping[str, CveIntel], EnrichmentReport]
+]
+
+REPORT_SCHEMA_VERSION = "1.5"
 CLAIM_LABELS = {
     "malware_family": "惡意程式家族",
     "attack_technique": "攻擊技術",
@@ -72,12 +85,22 @@ class DailyReport:
     source_failures: list[SourceFailure]
     source_warnings: list[SourceWarning]
     analyst_brief: AnalystBrief
+    cve_intel: dict[str, dict[str, Any]] = field(default_factory=dict)
+    enrichment: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def kev_count(self) -> int:
+        return len(kev_targets(self.analyst_brief.actions))
 
     @property
     def subject(self) -> str:
+        kev = self.kev_count
+        patch = f"待修 {self.analyst_brief.patch_count}"
+        if kev:
+            patch += f"（KEV {kev}）"
         return (
             "[SOC] 每日資安新聞 IoC 彙整報告 - "
-            f"待修 {self.analyst_brief.patch_count} / "
+            f"{patch} / "
             f"待封鎖 {self.analyst_brief.block_count} / "
             f"待hunt {self.analyst_brief.hunt_count} / "
             f"文章數 {self.article_count}"
@@ -155,6 +178,7 @@ def collect_report(
     until: datetime,
     generated_at: datetime | None = None,
     previous_iocs: set[tuple[str, str]] | None = None,
+    enricher: Enricher | None = None,
 ) -> DailyReport:
     manifests: list[EvidenceManifest] = []
     failures: list[SourceFailure] = []
@@ -191,7 +215,10 @@ def collect_report(
     excluded_articles = [
         item for item in all_manifests if not _is_topic_relevant(item)
     ]
-    brief = build_brief(manifests, previous_iocs=previous_iocs)
+    intel, enrichment_report = (
+        enricher(manifests) if enricher else ({}, disabled_report())
+    )
+    brief = build_brief(manifests, previous_iocs=previous_iocs, intel=intel)
 
     confirmed_iocs = _unique_confirmed(manifests, COUNTED_IOC_TYPES)
     confirmed_filenames = _unique_confirmed(manifests, frozenset({"filename"}))
@@ -206,13 +233,24 @@ def collect_report(
         "articles": [
             (
                 manifest.article_url,
-                manifest.body_sha256,
+                _findings_digest(manifest),
                 _is_topic_relevant(manifest),
             )
             for manifest in all_manifests
         ],
         "failures": [asdict(failure) for failure in failures],
         "warnings": [asdict(warning) for warning in source_warnings],
+        # Enrichment shapes the board, so it belongs in the identity - but the
+        # lookup timestamp does not, or a rerun of the same window would mint a
+        # new report_id and Resend would send the report twice.
+        "cve_intel": {
+            key: {
+                field: item
+                for field, item in value.to_dict().items()
+                if field != "retrieved_at"
+            }
+            for key, value in sorted(intel.items())
+        },
     }
     report_id = hashlib.sha256(
         json.dumps(identity, sort_keys=True, ensure_ascii=False).encode()
@@ -241,6 +279,8 @@ def collect_report(
         source_failures=failures,
         source_warnings=source_warnings,
         analyst_brief=brief,
+        cve_intel={key: value.to_dict() for key, value in sorted(intel.items())},
+        enrichment=enrichment_report.to_dict(),
     )
 
 
@@ -299,12 +339,27 @@ def _reader_context(evidence: Evidence) -> str:
     return f"{truncated}…"
 
 
+def _context_line(evidence: Evidence) -> str | None:
+    """The context line, unless it only repeats the indicator back."""
+    context = _reader_context(evidence)
+    if not context:
+        return None
+    flattened = re.sub(r"\s+", " ", context).strip().lower()
+    if flattened in {
+        evidence.normalized_value.strip().lower(),
+        evidence.raw_value.strip().lower(),
+    }:
+        return None
+    return f"  - 上下文：{_markdown_escape(context)}"
+
+
 ACTION_HEADINGS = {
     "patch": "修補",
     "block": "封鎖",
     "hunt": "Hunt",
     "monitor": "監控",
     "observe": "觀察",
+    "review": "人工複核",
 }
 
 
@@ -322,7 +377,7 @@ def _render_analyst_board(report: DailyReport) -> list[str]:
     for action in brief.actions:
         heading = ACTION_HEADINGS[action.action]
         grouped.setdefault(heading, []).append(action)
-    for heading in ("修補", "封鎖", "Hunt", "監控", "觀察"):
+    for heading in ("修補", "封鎖", "Hunt", "監控", "觀察", "人工複核"):
         items = grouped.get(heading)
         if not items:
             continue
@@ -333,7 +388,8 @@ def _render_analyst_board(report: DailyReport) -> list[str]:
                 if action.target_type != "article"
                 else _markdown_escape(action.target)
             )
-            marker = " 【新增】" if action.is_new else ""
+            marker = " 【KEV】" if action.kev else ""
+            marker += " 【新增】" if action.is_new else ""
             lines.append(
                 f"- **{action.priority.upper()}** {target}{marker}"
                 f" — {_markdown_escape(action.reason)}"
@@ -368,6 +424,104 @@ def _unique_article_evidence(
     return results
 
 
+def _kev_was_consulted(report: DailyReport) -> bool:
+    """True only when the KEV catalogue was actually loaded for this report.
+
+    Without this the header would print "known-exploited: 0" on a run where
+    enrichment was off or the catalogue fetch failed - stating a fact nobody
+    checked, which is exactly what this report refuses to do elsewhere.
+    """
+    data = report.enrichment or {}
+    if not data.get("enabled"):
+        return False
+    # Either field proves the catalogue parsed; a failed fetch leaves both unset.
+    return bool(data.get("kev_catalog_version") or data.get("kev_catalog_released"))
+
+
+def _render_enrichment_note(report: DailyReport) -> list[str]:
+    """Say plainly how much of the CVE column is third-party, and how fresh."""
+    data = report.enrichment or {}
+    if not data.get("enabled"):
+        return ["- CVE 加值：未啟用，CVSS 僅取自原文，未比對 CISA KEV"]
+    lines: list[str] = []
+    released = data.get("kev_catalog_released")
+    scored = data.get("cvss_count") or 0
+    requested = data.get("requested_cve_count") or 0
+    errors = data.get("errors") or []
+    if not requested:
+        note = ["- CVE 加值：已啟用；今日沒有明確 CVE 需要查詢"]
+        if errors:
+            note.append(
+                f"- CVE 加值有 {len(errors)} 項查詢失敗，KEV／CVSS 欄位今日可能不完整"
+                "（明細見 JSON 稽核檔）"
+            )
+        return note
+    detail = f"CISA KEV 與 NVD；{scored}/{requested} 個 CVE 取得 NVD CVSS"
+    if released:
+        detail += f"；KEV 目錄發布於 {released}"
+    lines.append(f"- CVE 加值：{detail}")
+    if errors:
+        lines.append(
+            f"- CVE 加值有 {len(errors)} 項查詢失敗，KEV／CVSS 欄位今日可能不完整"
+            "（明細見 JSON 稽核檔）"
+        )
+    return lines
+
+
+def _compact_summary(manifest: EvidenceManifest, limit: int = 160) -> str:
+    """A gist for the one-line list; the full summary stays in the JSON."""
+    summary = _source_summary(manifest)
+    if len(summary) <= limit:
+        return summary
+    head = summary[:limit]
+    for ending in _SENTENCE_ENDINGS:
+        cut = head.rfind(ending)
+        if cut >= limit // 2:
+            return head[: cut + 1]
+    # Only trim back to a word boundary when one is near the end. CJK text has
+    # no spaces, so an early space would otherwise cut the gist down to a stub.
+    spaced = head.rsplit(" ", 1)[0].rstrip(" ,;:-")
+    if len(spaced) >= limit // 2:
+        return f"{spaced}…"
+    return f"{head.rstrip(' ,;:-')}…"
+
+
+def _findings_digest(manifest: EvidenceManifest) -> str:
+    """A fingerprint of what the parser found, not of the bytes it read.
+
+    The raw body hash cannot serve as report identity: view counters and
+    rotating sidebars change it between two fetches of an unchanged article, so
+    a retry of the same slot would mint a new report_id, the Resend idempotency
+    key would change with it, and the report would be delivered twice. What the
+    report actually says is its findings, and those are stable.
+    """
+    rows = sorted(
+        f"{item.status}\t{item.indicator_type}\t{item.normalized_value}"
+        for item in manifest.evidence
+    )
+    payload = "\n".join([str(body_unavailable(manifest)), *rows])
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _split_articles(
+    report: DailyReport,
+) -> tuple[list[EvidenceManifest], list[EvidenceManifest]]:
+    """Full sections for articles with something to show or explain.
+
+    An article that was read and simply held no indicator needs a line, not a
+    section; keeping it as one buried the duty board under filler.
+    """
+    detailed: list[EvidenceManifest] = []
+    listed: list[EvidenceManifest] = []
+    for manifest in report.articles:
+        confirmed = _unique_article_evidence(manifest, "confirmed")
+        if confirmed or body_unavailable(manifest):
+            detailed.append(manifest)
+        else:
+            listed.append(manifest)
+    return detailed, listed
+
+
 def render_markdown(report: DailyReport) -> str:
     start = datetime.fromisoformat(report.window_start).astimezone(timezone.utc)
     end = datetime.fromisoformat(report.window_end).astimezone(timezone.utc)
@@ -382,9 +536,19 @@ def render_markdown(report: DailyReport) -> str:
         f"- 可疑檔名：{report.confirmed_filename_count} 個",
         f"- 原文指稱：{report.confirmed_claim_count} 項",
         f"- 待修 CVE：{report.analyst_brief.patch_count} 個",
-        f"- 待封鎖：{report.analyst_brief.block_count} 個",
-        f"- 待hunt：{report.analyst_brief.hunt_count} 個",
     ]
+    if _kev_was_consulted(report):
+        lines.append(f"- 其中已知遭利用（CISA KEV）：{report.kev_count} 個")
+    lines.extend(
+        [
+            f"- 待封鎖：{report.analyst_brief.block_count} 個",
+            f"- 待hunt：{report.analyst_brief.hunt_count} 個",
+        ]
+    )
+    if report.analyst_brief.unavailable_count:
+        lines.append(
+            f"- 未能取得全文：{report.analyst_brief.unavailable_count} 篇（需人工複核）"
+        )
     if report.analyst_brief.new_ioc_count is not None:
         lines.extend(
             [
@@ -393,10 +557,12 @@ def render_markdown(report: DailyReport) -> str:
                 f"- 昨日有、今日未再出現：{report.analyst_brief.gone_ioc_count} 個",
             ]
         )
+    lines.extend(_render_enrichment_note(report))
     lines.append("")
     lines.extend(_render_analyst_board(report))
 
-    for number, manifest in enumerate(report.articles, start=1):
+    detailed, listed = _split_articles(report)
+    for number, manifest in enumerate(detailed, start=1):
         confirmed = _unique_article_evidence(manifest, "confirmed")
         iocs = [
             evidence
@@ -437,7 +603,7 @@ def render_markdown(report: DailyReport) -> str:
             action
             for action in report.analyst_brief.actions
             if action.article_url == manifest.article_url
-            and action.action in {"patch", "block", "hunt", "monitor"}
+            and action.action in {"patch", "block", "hunt", "monitor", "review"}
         ]
         if article_actions:
             first = article_actions[0]
@@ -449,34 +615,68 @@ def render_markdown(report: DailyReport) -> str:
         if iocs:
             lines.extend(["### 明確 IoC", ""])
             for evidence in iocs:
-                lines.extend(
-                    [
-                        f"- **{evidence.indicator_type.upper()}**："
-                        f"`{_markdown_code(evidence.normalized_value)}`",
-                        f"  - 上下文：{_markdown_escape(_reader_context(evidence))}",
-                    ]
+                lines.append(
+                    f"- **{evidence.indicator_type.upper()}**："
+                    f"`{_markdown_code(evidence.normalized_value)}`"
                 )
+                if (context := _context_line(evidence)) is not None:
+                    lines.append(context)
+        elif body_unavailable(manifest):
+            lines.append(
+                f"- IoC：**未能取得全文**（{_markdown_escape(unavailable_reason(manifest))}）；"
+                "本篇是否含指標尚未確認，請人工開啟原文複核。"
+            )
+        elif filenames or claims:
+            kinds = "、".join(
+                label
+                for present, label in ((filenames, "可疑檔名"), (claims, "原文指稱"))
+                if present
+            )
+            lines.append(
+                f"- IoC：無 hash／IP／網域／URL／CVE 類指標；本篇只有{kinds}，見下方。"
+            )
         else:
             lines.append("- IoC：原文未提供明確指標。")
         if filenames:
             lines.extend(["", "### 相關檔案", ""])
             for evidence in filenames:
-                lines.extend(
-                    [
-                        f"- `{_markdown_code(evidence.normalized_value)}`",
-                        f"  - 上下文：{_markdown_escape(_reader_context(evidence))}",
-                    ]
-                )
+                lines.append(f"- `{_markdown_code(evidence.normalized_value)}`")
+                if (context := _context_line(evidence)) is not None:
+                    lines.append(context)
         if claims:
             lines.extend(["", "### 原文指稱", ""])
             for evidence in claims:
                 label = CLAIM_LABELS[evidence.indicator_type]
-                lines.extend(
-                    [
-                        f"- **{label}**：`{_markdown_code(evidence.normalized_value)}`",
-                        f"  - 上下文：{_markdown_escape(_reader_context(evidence))}",
-                    ]
+                lines.append(
+                    f"- **{label}**：`{_markdown_code(evidence.normalized_value)}`"
                 )
+                if (context := _context_line(evidence)) is not None:
+                    lines.append(context)
+        lines.append("")
+
+    if listed:
+        lines.extend(
+            [
+                "## 其他相關文章",
+                "",
+                f"以下 {len(listed)} 篇已擷取全文但未出現明確指標，僅列標題供情勢掌握；"
+                "完整正文與候選值見 JSON 稽核檔。",
+                "",
+            ]
+        )
+        for manifest in listed:
+            published = (
+                datetime.fromisoformat(manifest.published_at).astimezone(timezone.utc)
+                if manifest.published_at
+                else None
+            )
+            stamp = published.strftime("%m-%d %H:%M") if published else "時間未提供"
+            lines.append(
+                f"- [{_markdown_escape(manifest.article_title)}]"
+                f"({_markdown_url(manifest.article_url)})"
+                f" — {_markdown_escape(manifest.source)}"
+                f"（{stamp} UTC）— {_markdown_escape(_compact_summary(manifest))}"
+            )
         lines.append("")
 
     lines.extend(

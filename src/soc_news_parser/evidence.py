@@ -6,6 +6,7 @@ import re
 import subprocess
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
+from importlib import resources
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Any, Iterable
@@ -14,9 +15,32 @@ from urllib.parse import urlsplit, urlunsplit
 from .parser import ParsedArticle, _is_public_address
 
 
-MANIFEST_VERSION = "1.3"
+MANIFEST_VERSION = "1.4"
 COUNTED_IOC_TYPES = frozenset({"md5", "sha1", "sha256", "ip", "domain", "url", "cve"})
 CLAIM_TYPES = frozenset({"malware_family", "attack_technique"})
+
+
+def _load_known_tlds() -> frozenset[str]:
+    """Delegated TLDs from the bundled IANA root zone list."""
+    text = (
+        resources.files(__package__)
+        .joinpath("data/iana_tlds.txt")
+        .read_text(encoding="utf-8")
+    )
+    return frozenset(
+        stripped
+        for line in text.splitlines()
+        if (stripped := line.strip()) and not stripped.startswith("#")
+    )
+
+
+# Never delegated in the root zone, but they name real hosts that show up in
+# IoC tables. Documentation and private-use reserves (example, test, invalid,
+# localhost, local) stay out: those are noise, not infrastructure.
+SPECIAL_USE_TLDS = frozenset({"onion", "i2p", "bit"})
+KNOWN_TLDS = _load_known_tlds() | SPECIAL_USE_TLDS
+
+
 HASH_RE = re.compile(
     r"(?<![0-9a-f])(?:[0-9a-f]{64}|[0-9a-f]{40}|[0-9a-f]{32})(?![0-9a-f])",
     re.IGNORECASE,
@@ -108,13 +132,14 @@ RELATED_LINE_RE = re.compile(r"^related(?:\s+articles?)?\s*[:：-]", re.IGNORECA
 FILE_RE = re.compile(
     r"(?<![\w.-])[\w@+-][\w@().+-]*\."
     r"(?:exe|dll|sys|ps1|bat|cmd|vbs|js|jar|py|zip|rar|7z|hta|msi|scr|"
-    r"elf|bin|dat|pem|lnk|iso|img|doc|docx|xls|xlsx|ppt|pptx|pdf)"
+    r"elf|bin|dat|pem|lnk|iso|img|doc|docx|xls|xlsx|ppt|pptx|pdf|"
+    r"tmp|enc|dmp|bak|log|apk|jse|wsf|pif|mov)"
     r"(?![\w-]|\.[a-z0-9])",
     re.IGNORECASE,
 )
 DOMAIN_RE = re.compile(
     r"(?<![\w@.-])(?:[a-z0-9-]{1,63}(?:\.|\[\.\]|\(\.\))){1,}"
-    r"(?:[a-z]{2,63}|xn--[a-z0-9-]{2,59})(?![\w-]|\.[a-z0-9])",
+    r"(?:[a-z]{2,63}|xn--[a-z0-9-]{2,59}|i2p)(?![\w-]|\.[a-z0-9])",
     re.IGNORECASE,
 )
 IOC_HEADING_RE = re.compile(
@@ -138,8 +163,8 @@ SECTION_END_RE = re.compile(
     re.IGNORECASE,
 )
 FILE_CONTEXT_RE = re.compile(
-    r"\b(?:file(?:name)?|attachment|document|payload)\s+"
-    r"(?:is|named|called)?\s*[:=]?\s*$",
+    r"\b(?:file\s*names?(?:\(s\))?|attachments?|documents?|payloads?|files?)"
+    r"\s*(?:is|are|named|called)?\s*[:=]?\s*$",
     re.IGNORECASE,
 )
 def normalize_heading(line: str) -> str:
@@ -246,23 +271,32 @@ def _line_matches(line: str) -> Iterable[tuple[str, re.Match[str]]]:
         ("filename", FILE_RE),
         ("domain", DOMAIN_RE),
     )
-    for indicator_type, pattern in patterns:
+    for pattern_type, pattern in patterns:
         for match in pattern.finditer(line):
+            indicator_type = pattern_type
             span = match.span()
             if any(span[0] < end and start < span[1] for start, end in occupied):
                 continue
             if indicator_type == "domain" and span[0] > 0 and line[span[0] - 1] in "/\\":
                 continue
             if indicator_type == "domain":
-                labels = _normalize(match.group(), "domain").split(".")
-                if any(
-                    not label
-                    or len(label) > 63
-                    or label.startswith("-")
-                    or label.endswith("-")
-                    for label in labels
-                ):
-                    continue
+                # One decision for every dotted token: if the line names it as a
+                # file it is a filename, otherwise it has to look like a real
+                # host. Doing this here keeps the rule in a single place.
+                if FILE_CONTEXT_RE.search(line[max(0, span[0] - 80) : span[0]]):
+                    indicator_type = "filename"
+                else:
+                    labels = _normalize(match.group(), "domain").split(".")
+                    if labels[-1] not in KNOWN_TLDS:
+                        continue
+                    if any(
+                        not label
+                        or len(label) > 63
+                        or label.startswith("-")
+                        or label.endswith("-")
+                        for label in labels
+                    ):
+                        continue
             if indicator_type == "ip":
                 prefix = line[: span[0]]
                 if IP_VERSION_CONTEXT_RE.search(prefix):
@@ -402,9 +436,6 @@ def extract_evidence(article: ParsedArticle) -> list[Evidence]:
         ]
         found.extend(_claim_matches(line))
         for generic_type, raw, match in found:
-            prefix = line[max(0, match.start() - 80) : match.start()]
-            if generic_type == "domain" and FILE_CONTEXT_RE.search(prefix):
-                generic_type = "filename"
             indicator_type = _hash_type(raw) if generic_type == "hash" else generic_type
             normalized = _normalize(raw, generic_type)
             status, assertion, reasons = _classify(

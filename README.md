@@ -10,13 +10,15 @@
 4. 使用 Trafilatura 做通用正文抽取。
 5. 最後嘗試 `article`、`main` 等語意標籤。
 
-解析結果會記錄 `extraction_method`、字元數及 warnings。Cloudflare 驗證頁、Access Denied、過短內容不會被當成文章正文。若完整 HTML 受阻但 RSS 有通過品質檢查的部分正文，會標成 `feed:*:partial`；兩者皆不可用時才標成 `extraction_method: "failed"`、`body` 留空。JSON-LD `@graph` 最多走 64 個節點，避免環狀或過深結構拖垮擷取。沒有時區的 feed 日期會當成 UTC，並寫入來源診斷。
+擷取前會先剝除頁面裝飾：`script`、`nav`、`footer`、`aside`、廣告與社群分享區塊之外，另含側欄（`side-widget`、`sidebar`）、上下篇導覽與瀏覽計數器等每次載入都會變動的區域。來源可用 `exclude_selectors` 再補自己的選擇器（例如 SecurityWeek 的 `div.zox-side-widget`、HKCERT 的 `div.page-date--btm`）；選擇器寫錯不會讓整篇文章擷取失敗。解析結果會記錄 `extraction_method`、字元數及 warnings。Cloudflare 驗證頁、Access Denied、過短內容不會被當成文章正文。若完整 HTML 受阻但 RSS 有通過品質檢查的部分正文，會標成 `feed:*:partial`；兩者皆不可用時才標成 `extraction_method: "failed"`、`body` 留空。正文未取得的文章**不會**被寫成「原文未提供明確指標」——沒讀到的內容不能下任何斷言。它會列入處置清單的「人工複核」，並標明原因（例如「來源回應 HTTP 403，疑似反機器人阻擋」「頁面沒有可解析的正文結構」），報告表頭也會出現「未能取得全文：N 篇（需人工複核）」。複核項不計入待修／待封鎖／待 hunt，也不進 CSV，因為它沒有可操作的指標。JSON-LD `@graph` 最多走 64 個節點，避免環狀或過深結構拖垮擷取。沒有時區的 feed 日期會當成 UTC，並寫入來源診斷。
 
 所有 feed 與文章請求只允許 HTTPS、來源設定中的文章網域及公開 IP；每次 redirect 都會重新驗證，並以串流方式在解壓後 12 MiB 上限立即中止，避免 feed 連結造成 SSRF 或無界下載。
 
 目前內建 26 個來源。除原始十個來源外，高技術密度來源包括 ESET WeLiveSecurity、Securelist、SentinelLABS、Proofpoint Threat Insight、Recorded Future Insikt Group、SANS ISC、The DFIR Report、Elastic Security Labs、Check Point Research、CISA Advisories、watchTowr Labs、CERT/CC、TWCERT/CC TVN、NICS、HKCERT 與 Cyber Security News。
 
 TWCERT/CC 等來源可能限制內容重製與公開散布；本工具預設用途是組織內部 SOC 分析。部署者仍須依自身使用方式確認授權，不應把抓取到的全文直接公開再發布。
+
+部分來源（例如 Dark Reading）對文章頁回 HTTP 403 反機器人阻擋，且其 RSS 只有約 180 字摘要、沒有 `content:encoded`。本工具不會嘗試繞過，這些文章一律走人工複核。要取得全文請改用該來源的授權 API 或訂閱。
 
 ### 安裝
 
@@ -69,6 +71,16 @@ Manifest 保存 canonical body、正文 SHA-256、擷取 warnings、parser 版�
 - `rejected`：出版者網域、非公開 IP，或位於 Related、Latest News、References、相關文章等編輯區塊。
 
 `confirmed` 代表「來源明確聲稱」，不是 parser 對惡意性的獨立背書。惡意工具家族只在原文明確命名時入列；ATT&CK 技術必須同行出現 `ATT&CK` 或 `MITRE`。軟體版本號（如 `4.16.7.1`）與私有／迴環 IP 不會當成可操作 IoC。中文「妥協指標」「惡意網域」等標題與英文 IoC 章節同等效力。Markdown 雜訊（例如 `**Indicators of compromise (IoCs):-**`）會先正規化再比對，不會因為加粗或行尾符號就把整張表降成 candidate；內文句子提到 “indicators of compromise” 仍不當標題。IDN 網域的 `xn--` TLD 可抽取；不會只因為有 `[.]` 就把內文敘事升成 confirmed。
+
+網域的最後一段必須是 IANA root zone 實際委派的 TLD，清單以 `src/soc_news_parser/data/iana_tlds.txt` 隨套件封存（含 `xn--` punycode），不在執行期連外查詢，確保同一份正文永遠得到同一份 manifest。因此 `out.tmp`、`user.enc`、`system.drawing`、`robots.txt` 這類帶點號的檔案／識別字不會被誤判成網域而混進待封鎖清單。若該行以 `File name(s)`、`payload`、`attachment` 等字樣引導，值仍會保留並改記成 `filename` 進 hunt 清單，不會整個丟掉。更新 TLD 清單：
+
+```bash
+curl -s https://data.iana.org/TLD/tlds-alpha-by-domain.txt \
+  | tr 'A-Z' 'a-z' | sort > src/soc_news_parser/data/iana_tlds.txt
+```
+
+副檔名比對排在網域之前，所以 `.zip`、`.py`、`.mov` 這些同時是合法 TLD 的字尾會先判成檔名。`.onion`、`.i2p`、`.bit` 雖未在 root zone 委派，但它們指向真實的攻擊基礎設施，因此明確納入；`.local`、`.localhost`、`.invalid`、`.example` 這類文件／私網保留字仍排除。
+
 `confirmed_unique_iocs` 與報告主旨只計 hash、IP、domain、URL 與 CVE；檔名與原文指稱另行統計。`unique_counts_by_status_and_type` 仍列出各類型完整細項。
 
 產生多來源每日報告與完整稽核 JSON：
@@ -89,7 +101,54 @@ uv run soc-news-parser report \
 
 郵件主旨改為值班可掃描的處置數字：待修 CVE、待封鎖網路指標、待 hunt 端點指標、相關文章數。這三個處置數字與 IoC 總數一樣採全報告唯一值；同一 CVE 被兩家媒體寫到只計一次，清單仍保留各來源列供對照。文章數只計標題或來源摘要具有明確資安主題訊號的文章；不相關文章仍保留在 JSON 的 `excluded_articles` 供稽核。IoC 總數僅計 `confirmed` 的 MD5、SHA-1、SHA-256、IPv4/IPv6、domain、URL 與 CVE，檔名與原文指稱另行統計。
 
-Markdown 是給 SOC／威脅分析師閱讀的值班報告：開頭是今日優先處置一句話，接著是修補、封鎖、Hunt、監控、觀察清單。每個 CVE 的 CVSS 與影響只取該指標所在文句，不會把同篇最高分套到全部漏洞。事件叢集只在同一 CVE 出現於兩篇以上來源時列出。監控／觀察只在標題或來源摘要寫成外洩、釣魚活動或勒索事件時列出；產品文正文帶過 phishing／個資不會進處置清單，文章仍留在報告後半。公共遞迴 DNS（例如 `8.8.8.8`、`1.1.1.1`、`dns.google`）與靜態清單中的品牌官網／子網域（例如 `claude.ai`、`code.claude.ai`、`microsoft.com`）若出現在 IoC 章節仍記成 confirmed，但降為 hunt 複核，不列入待封鎖。不會用「主機名含品牌字」或平台後綴（`gitlab.io`、`github.io`、`squarespace.com`、`it.com`）做白名單；`claude.ai.download-app.us`、`claude-desktop.gitlab.io` 仍待封鎖。同篇文章若已有較長子網域，兩標籤且左標籤長度 ≤ 3 的父網域（例如 `it.com` 對 `downloading-api.it.com`）改為 hunt；`download-app.us` 這類長左標籤父網域仍與子網域一併封鎖。清單只根據原文明確的 CVE、IoC 章節指標與原文影響用語產生，不把 candidate 升成 confirmed。Report ID、parser 版本、正文 hash、warnings、candidate/rejected、排除文章及來源錯誤只保留於 JSON 稽核檔。CSV 是一列一個可操作指標。JSON 會寫入 `reader_digest`（Markdown 的 SHA-256），寄送前用它核對兩份檔案仍成對，並拒絕相同輸出路徑。
+Markdown 是給 SOC／威脅分析師閱讀的值班報告：開頭是今日優先處置一句話，接著是修補、封鎖、Hunt、監控、觀察清單。每個 CVE 的 CVSS 與影響只取該指標所在文句，不會把同篇最高分套到全部漏洞。事件叢集只在同一 CVE 出現於兩篇以上來源時列出。監控／觀察只在標題或來源摘要寫成外洩、釣魚活動或勒索事件時列出；產品文正文帶過 phishing／個資不會進處置清單，文章仍留在報告後半。公共遞迴 DNS（例如 `8.8.8.8`、`1.1.1.1`、`dns.google`）與靜態清單中的品牌官網／子網域（例如 `claude.ai`、`code.claude.ai`、`microsoft.com`）若出現在 IoC 章節仍記成 confirmed，但降為 hunt 複核，不列入待封鎖。不會用「主機名含品牌字」或平台後綴（`gitlab.io`、`github.io`、`squarespace.com`、`it.com`）做白名單；`claude.ai.download-app.us`、`claude-desktop.gitlab.io` 仍待封鎖。同篇文章若已有較長子網域，兩標籤且左標籤長度 ≤ 3 的父網域（例如 `it.com` 對 `downloading-api.it.com`）改為 hunt；`download-app.us` 這類長左標籤父網域仍與子網域一併封鎖。清單只根據原文明確的 CVE、IoC 章節指標與原文影響用語產生，不把 candidate 升成 confirmed。報告後半只給有明確指標、或未能取得全文的文章完整區塊；已讀到全文但沒有指標的文章集中在「其他相關文章」，一篇一行（標題連結、來源、時間、摘要摘要至 160 字），情勢掌握仍在，但不再淹沒處置清單。所有文章都保留在報告中，完整正文與候選值見 JSON。指標的「上下文」行只在原文句子確實多於指標本身時才列出；像 CVE 條列那種上下文等於指標值的情況會省略，不重複同一個字串。Report ID、parser 版本、正文 hash、warnings、candidate/rejected、排除文章及來源錯誤只保留於 JSON 稽核檔。CSV 是一列一個可操作指標。JSON 會寫入 `reader_digest`（Markdown 的 SHA-256），寄送前用它核對兩份檔案仍成對，並拒絕相同輸出路徑。
+
+### CVE 加值：CISA KEV 與 NVD
+
+原文常只寫 CVE 編號，不寫 CVSS，也不會說這個漏洞是否正在被攻擊。`report` 與 `deliver`
+預設會把當日所有 `confirmed` CVE 拿去比對 CISA KEV 目錄與 NVD，讓「73 個待修 CVE」變成
+「其中 3 個已知遭利用，今天就要修」。
+
+加值資料是**第三方主張，不是原文說的**，所以與 evidence manifest 完全分開存放：
+manifest 仍然只記錄原文明確寫了什麼，加值結果放在 JSON 的 `cve_intel`，每筆帶自己的
+`sources` 與 `retrieved_at`。`candidate` 不會因為加值而升成 `confirmed`。
+
+處置清單的變化：
+
+- KEV 一律升為 HIGH。已確認在野利用，優先於任何文字訊號。
+- CVSS 取 NVD 與原文兩者較高者判定優先級；NVD 若只有暫定低分，不會把原文標為高分的漏洞悄悄降級。
+- 修補清單排序為 KEV → 優先級 → CVSS → CISA 修補期限；沒有任何分數但原文寫明 RCE 的 CVE 不會被排到已知低分項之後。KEV 項目標上 `【KEV】`。
+- 理由欄寫明來源，例如 `KEV 已知遭利用，CISA 修補期限 2026-09-18；CVSS 9.8 CRITICAL（NVD）`。
+  原文自己寫的分數會標成 `（原文）`，兩者不會混淆。
+- 郵件主旨變成 `待修 73（KEV 3）`；報告表頭多一行「其中已知遭利用（CISA KEV）」。**該行只在 KEV 目錄確實載入成功時出現** —— 沒查到就不會寫「0 個」，因為那等於對沒檢查過的事下斷言。
+- CSV 多四欄：`kev`、`kev_due_date`、`cvss_score`、`cvss_severity`。
+
+查詢全部走與抓新聞相同的加固通道（HTTPS、主機白名單、公開 IP、redirect 重新驗證、
+12 MiB 上限）。**任何加值失敗都不會中斷報告**：錯誤記在 JSON 的 `enrichment.errors`，
+Markdown 會標「CVE 加值有 N 項查詢失敗」，報告照常寄出，只是 KEV／CVSS 欄位不完整。
+
+同一時間窗重跑會得到相同的 Report ID。識別碼取自**抽取到的證據**，不是原始正文雜湊 —— 瀏覽計數器、輪播側欄這類頁面裝飾會讓同一篇未變動文章的 `body_sha256` 每次抓取都不同（實測 46 篇中有 7 篇如此），若用它當識別碼，重試就會產生新 ID、讓 Resend 的冪等鍵失效而重複寄出。加值的實質內容（KEV、CVSS）計入識別碼，查詢時戳不計入。指標若真的增減，ID 仍會改變。
+
+結果會快取在 `--cache-dir`（預設 `.cache/enrichment`）。同一天重跑不會再發任何請求；
+隔天只查沒看過的 CVE。已有分數的 CVE 快取 7 天，NVD 尚未評分的每天重查一次。
+
+NVD 未帶 API key 時限制每 30 秒 5 次請求，73 個新 CVE 大約要 9 分鐘。申請免費 key 後
+放進環境變數可提高到每 30 秒 50 次：
+
+```bash
+export NVD_API_KEY="..."
+```
+
+API key 只會送往 `services.nvd.nist.gov`；若 redirect 離開該主機，header 會被丟掉。
+
+要完全關掉加值（離線環境、或只想要原文事實）：
+
+```bash
+uv run soc-news-parser report --no-enrich ...
+uv run soc-news-parser deliver --no-enrich
+```
+
+關掉時報告會明講「CVE 加值：未啟用，CVSS 僅取自原文，未比對 CISA KEV」。
 
 ### 使用 Resend 寄送報告
 
@@ -206,7 +265,7 @@ uv run soc-news-parser mcp --http --host 0.0.0.0 --port 43124
 }
 ```
 
-報告目錄預設 `reports/`，可用 `SOC_IOC_REPORTS_DIR` 覆寫。
+報告目錄預設 `reports/`，可用 `SOC_IOC_REPORTS_DIR` 覆寫。MCP 的 `date` 參數只接受 `YYYY-MM-DD` 且必須是真實日期；解析後的路徑會再確認仍位於報告根目錄內，因此帶 `..`、斜線或指向外部的符號連結都會被拒絕，不會讀到根目錄以外的檔案。`list_reports` 也只列出符合日期格式的資料夾。
 
 ### 驗證
 

@@ -55,6 +55,16 @@ UNWANTED_SELECTORS = (
     ".social-share",
     ".author-bio",
     ".comments",
+    # Sidebars and prev/next rails are furniture wherever they appear, and some
+    # of them rotate or count on every load, which would otherwise make the
+    # canonical body of an unchanged article differ between two fetches.
+    "[class*='side-widget']",
+    "[class*='sidebar']",
+    "[class*='nav-article']",
+    "[class*='people-on-the-move']",
+    "[class*='industry-moves']",
+    "[class*='view-count']",
+    "[class*='viewcount']",
 )
 
 
@@ -111,10 +121,15 @@ def _looks_like_body(
     return True, warnings
 
 
-def _tag_text(tag: Tag) -> str:
+def _tag_text(tag: Tag, exclude: tuple[str, ...] = ()) -> str:
     clone = BeautifulSoup(str(tag), "lxml")
-    for selector in UNWANTED_SELECTORS:
-        for node in clone.select(selector):
+    for selector in (*UNWANTED_SELECTORS, *exclude):
+        try:
+            nodes = clone.select(selector)
+        except Exception:
+            # A bad selector in source config must not take the article down.
+            continue
+        for node in nodes:
             node.decompose()
     blocks: list[str] = []
     for node in clone.select("h1, h2, h3, h4, h5, h6, p, li, pre, blockquote, tr"):
@@ -238,16 +253,24 @@ class NewsParser:
             raise ParseError(f"host {host} resolves to a non-public address")
 
     def _get(
-        self, url: str, *, allowed_hosts: tuple[str, ...] | None = None
+        self,
+        url: str,
+        *,
+        allowed_hosts: tuple[str, ...] | None = None,
+        headers: dict[str, str] | None = None,
     ) -> httpx.Response:
         initial_host = urlparse(url).hostname
         hosts = allowed_hosts or ((initial_host,) if initial_host else ())
         current_url = url
+        # Credentials in `headers` belong to the host they were minted for, so
+        # they are dropped as soon as a redirect leaves that host.
+        header_host = initial_host
         maximum_bytes = 12 * 1024 * 1024
         for _ in range(6):
             self._validate_url(current_url, hosts)
+            sent = headers if headers and urlparse(current_url).hostname == header_host else None
             try:
-                with self.client.stream("GET", current_url) as response:
+                with self.client.stream("GET", current_url, headers=sent) as response:
                     if response.is_redirect:
                         location = response.headers.get("location")
                         if not location:
@@ -292,6 +315,7 @@ class NewsParser:
         selectors: tuple[str, ...] = (),
         allowed_hosts: tuple[str, ...] = (),
         min_body_characters: int = 500,
+        exclude_selectors: tuple[str, ...] = (),
     ) -> tuple[str, str, list[str]]:
         response = self._get(url, allowed_hosts=allowed_hosts or None)
         page = response.text
@@ -301,7 +325,9 @@ class NewsParser:
         for selector in selectors:
             node = soup.select_one(selector)
             if node:
-                attempts.append((f"site-selector:{selector}", _tag_text(node)))
+                attempts.append(
+                    (f"site-selector:{selector}", _tag_text(node, exclude_selectors))
+                )
 
         attempts.extend(("json-ld:articleBody", body) for body in _json_ld_candidates(soup))
 
@@ -320,7 +346,12 @@ class NewsParser:
         for selector in ("article", "main", "[role='main']"):
             node = soup.select_one(selector)
             if node:
-                attempts.append((f"semantic-selector:{selector}", _tag_text(node)))
+                attempts.append(
+                    (
+                        f"semantic-selector:{selector}",
+                        _tag_text(node, exclude_selectors),
+                    )
+                )
 
         failures: list[str] = []
         valid_attempts: list[tuple[float, str, str, list[str]]] = []
@@ -407,6 +438,7 @@ class NewsParser:
                     source.article_selectors,
                     source.article_hosts,
                     source.min_body_characters,
+                    source.exclude_selectors,
                 )
             except ParseError as error:
                 body = ""
@@ -441,6 +473,7 @@ class NewsParser:
         selectors: tuple[str, ...],
         allowed_hosts: tuple[str, ...],
         min_body_characters: int,
+        exclude_selectors: tuple[str, ...] = (),
     ) -> tuple[str, str, list[str]]:
         feed_candidates: list[tuple[str, str]] = []
         for item in entry.get("content", []):
@@ -470,6 +503,7 @@ class NewsParser:
                 selectors=selectors,
                 allowed_hosts=allowed_hosts,
                 min_body_characters=min_body_characters,
+                exclude_selectors=exclude_selectors,
             )
         except ParseError:
             if valid_feed_candidates:

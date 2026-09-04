@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import os
+import re
+from datetime import date as date_type
 from pathlib import Path
 from typing import Any
 
@@ -9,6 +11,26 @@ from typing import Any
 REPORT_FILENAME = "daily-evidence.json"
 DEFAULT_LIMIT = 40
 MAX_LIMIT = 100
+REPORT_DATE_RE = re.compile(r"\A\d{4}-\d{2}-\d{2}\Z")
+
+
+def _report_directory(base: Path, date: str) -> Path:
+    """Resolve one dated report directory, refusing anything outside the root.
+
+    `date` arrives from an MCP client, so it is not joined to the root until it
+    has been proved to be a plain YYYY-MM-DD key, and the resolved path is
+    checked against the root again in case a symlink points away.
+    """
+    if not REPORT_DATE_RE.match(date):
+        raise ValueError("report date must be a plain YYYY-MM-DD key")
+    try:
+        date_type.fromisoformat(date)
+    except ValueError:
+        raise ValueError("report date must be a plain YYYY-MM-DD key") from None
+    folder = (base / date).resolve()
+    if base != folder and base not in folder.parents:
+        raise ValueError("report date resolves outside the reports directory")
+    return folder
 
 
 def reports_root(path: str | Path | None = None) -> Path:
@@ -24,6 +46,8 @@ def list_report_dates(root: str | Path | None = None) -> list[dict[str, Any]]:
         return []
     results: list[dict[str, Any]] = []
     for folder in sorted(base.iterdir(), reverse=True):
+        if not REPORT_DATE_RE.match(folder.name):
+            continue
         evidence = folder / REPORT_FILENAME
         if not folder.is_dir() or not evidence.is_file():
             continue
@@ -44,6 +68,7 @@ def list_report_dates(root: str | Path | None = None) -> list[dict[str, Any]]:
                 "patch_count": brief.get("patch_count") if isinstance(brief, dict) else None,
                 "block_count": brief.get("block_count") if isinstance(brief, dict) else None,
                 "hunt_count": brief.get("hunt_count") if isinstance(brief, dict) else None,
+                "kev_count": _kev_count(brief) if isinstance(brief, dict) else None,
             }
         )
     return results
@@ -54,9 +79,13 @@ def load_report(
 ) -> tuple[str, dict[str, Any]]:
     base = reports_root(root)
     if date:
-        evidence = base / date / REPORT_FILENAME
+        evidence = _report_directory(base, date) / REPORT_FILENAME
         if not evidence.is_file():
             raise FileNotFoundError(f"no report JSON for {date}")
+        # The directory is inside the root, but the file itself may still be a
+        # symlink pointing out of it.
+        if evidence.resolve() != evidence and base not in evidence.resolve().parents:
+            raise ValueError("report file resolves outside the reports directory")
         payload = json.loads(evidence.read_text(encoding="utf-8"))
         if not isinstance(payload, dict):
             raise ValueError(f"invalid report JSON for {date}")
@@ -87,7 +116,24 @@ def report_summary(
         "hunt_count": brief.get("hunt_count"),
         "monitor_count": brief.get("monitor_count"),
         "new_ioc_count": brief.get("new_ioc_count"),
+        "kev_count": _kev_count(brief),
+        "enrichment": payload.get("enrichment"),
     }
+
+
+def _kev_count(brief: Any) -> int | None:
+    actions = brief.get("actions") if isinstance(brief, dict) else None
+    if not isinstance(actions, list):
+        return None
+    return len(
+        {
+            str(item.get("target"))
+            for item in actions
+            if isinstance(item, dict)
+            and item.get("action") == "patch"
+            and item.get("kev")
+        }
+    )
 
 
 def _action_index(payload: dict[str, Any]) -> dict[tuple[str, str], dict[str, Any]]:
@@ -166,6 +212,8 @@ def search_iocs(
                     "action": action_name or None,
                     "priority": related.get("priority"),
                     "reason": related.get("reason"),
+                    "kev": related.get("kev"),
+                    "cvss_score": related.get("cvss_score"),
                     "article_title": title,
                     "article_url": url,
                 }
@@ -209,6 +257,10 @@ def lookup_indicator(
                     "action": related.get("action"),
                     "priority": related.get("priority"),
                     "reason": related.get("reason"),
+                    "kev": related.get("kev"),
+                    "kev_due_date": related.get("kev_due_date"),
+                    "cvss_score": related.get("cvss_score"),
+                    "cvss_severity": related.get("cvss_severity"),
                     "article_title": article.get("article_title"),
                     "article_url": article.get("article_url"),
                     "section": evidence.get("section"),

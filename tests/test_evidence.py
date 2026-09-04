@@ -88,13 +88,13 @@ def test_publisher_domain_is_rejected() -> None:
 
 def test_heading_boundaries_reset_ioc_and_excluded_zones() -> None:
     body = """## Indicators of Compromise
-evil[.]example
+evil[.]example.com
 ## Analysis
-analysis.example
+analysis.example.com
 ## References
-reference.example
+reference.example.com
 ## Technical details
-technical.example
+technical.example.com
 """
     article = article_with_mixed_evidence()
     article.body = body
@@ -106,19 +106,19 @@ technical.example
     }
 
     assert statuses == {
-        "evil.example": "confirmed",
-        "analysis.example": "candidate",
-        "reference.example": "rejected",
-        "technical.example": "candidate",
+        "evil.example.com": "confirmed",
+        "analysis.example.com": "candidate",
+        "reference.example.com": "rejected",
+        "technical.example.com": "candidate",
     }
 
 
 def test_url_path_case_ipv6_and_occurrence_ids_are_preserved() -> None:
     body = """## Indicators of Compromise
-hxxps://evil[.]example/CaseToken
-hxxps://evil[.]example/casetoken
+hxxps://evil[.]example.com/CaseToken
+hxxps://evil[.]example.com/casetoken
 2001:4860:4860::8888
-repeat.example repeat.example
+repeat.example.com repeat.example.com
 """
     article = article_with_mixed_evidence()
     article.body = body
@@ -127,11 +127,11 @@ repeat.example repeat.example
     repeat_ids = [
         item.evidence_id
         for item in manifest.evidence
-        if item.normalized_value == "repeat.example"
+        if item.normalized_value == "repeat.example.com"
     ]
 
-    assert "https://evil.example/CaseToken" in values
-    assert "https://evil.example/casetoken" in values
+    assert "https://evil.example.com/CaseToken" in values
+    assert "https://evil.example.com/casetoken" in values
     assert "2001:4860:4860::8888" in values
     assert len(repeat_ids) == 2
     assert len(set(repeat_ids)) == 2
@@ -198,9 +198,9 @@ def test_private_ip_is_rejected_even_in_ioc_section() -> None:
 def test_chinese_ioc_heading_confirms_network_indicators() -> None:
     body = """威脅分析
 妥協指標
-evil[.]example
+evil[.]example.com
 相關文章
-sidebar.example
+sidebar.example.com
 """
     article = article_with_mixed_evidence()
     article.body = body
@@ -211,8 +211,8 @@ sidebar.example
         if item.indicator_type == "domain"
     }
 
-    assert statuses["evil.example"] == "confirmed"
-    assert statuses["sidebar.example"] == "rejected"
+    assert statuses["evil.example.com"] == "confirmed"
+    assert statuses["sidebar.example.com"] == "rejected"
 
 
 def test_technique_without_attack_framework_is_not_extracted() -> None:
@@ -234,7 +234,7 @@ MITRE ATT&CK T1059.001 was named explicitly.
 
 def test_negated_inline_indicator_and_document_are_not_confirmed_domains() -> None:
     body = """## Analysis
-This is not an IoC: benign.example.
+This is not an IoC: benign.example.com.
 The malicious file is invoice.docx.
 Payload delivery domain bestsocialmedianewspapper.com serves an archive.
 """
@@ -243,7 +243,7 @@ Payload delivery domain bestsocialmedianewspapper.com serves an archive.
     manifest = build_manifest(article)
     evidence = {item.normalized_value: item for item in manifest.evidence}
 
-    assert evidence["benign.example"].status == "candidate"
+    assert evidence["benign.example.com"].status == "candidate"
     assert evidence["invoice.docx"].indicator_type == "filename"
     assert evidence["invoice.docx"].status == "candidate"
     assert evidence["bestsocialmedianewspapper.com"].indicator_type == "domain"
@@ -258,7 +258,7 @@ Indicators of compromise (IoCs):-**
 | Domain | `detectsysscanner[.]at` | Scam site |
 | Domain | `detectsysscanner[.]xn--q9jyb4c` | IDN scam site |
 ## Analysis
-later.example
+later.example.com
 """
     manifest = build_manifest(article)
     by_value = {item.normalized_value: item for item in manifest.evidence}
@@ -266,16 +266,126 @@ later.example
     assert by_value["157.230.180.90"].status == "confirmed"
     assert by_value["detectsysscanner.at"].status == "confirmed"
     assert by_value["detectsysscanner.xn--q9jyb4c"].status == "confirmed"
-    assert by_value["later.example"].status == "candidate"
+    assert by_value["later.example.com"].status == "candidate"
 
 
 def test_prose_mention_of_iocs_is_not_a_heading() -> None:
     article = article_with_mixed_evidence()
     article.body = """The report lists indicators of compromise below.
-prose.example
+prose.example.com
 """
     manifest = build_manifest(article)
     by_value = {item.normalized_value: item for item in manifest.evidence}
 
-    assert by_value["prose.example"].status == "candidate"
+    assert by_value["prose.example.com"].status == "candidate"
 
+
+
+def test_payload_file_extensions_are_not_blockable_domains() -> None:
+    article = article_with_mixed_evidence()
+    article.body = """Indicators of compromise (IoCs):-**
+File names out.tmp ; out.enc ; user.enc ; acc.enc ; combo.enc
+File names runner.ps1 ; sys_cache.zip
+Network indicators
+borertors92[.]anondns[.]net
+"""
+    manifest = build_manifest(article)
+    by_value = {item.normalized_value: item for item in manifest.evidence}
+
+    for name in ("out.tmp", "out.enc", "user.enc", "acc.enc", "combo.enc"):
+        assert by_value[name].indicator_type == "filename"
+    assert by_value["runner.ps1"].indicator_type == "filename"
+    assert by_value["borertors92.anondns.net"].indicator_type == "domain"
+    assert by_value["borertors92.anondns.net"].status == "confirmed"
+    assert manifest.unique_counts_by_status_and_type["confirmed"].get("domain") == 1
+
+
+def test_dotted_tokens_without_a_real_tld_are_not_domains() -> None:
+    article = article_with_mixed_evidence()
+    article.body = """Indicators of Compromise
+robots.txt
+system.drawing.bitmap
+ntds.dit
+win.dropper.miner
+gitnow[.]dev
+"""
+    manifest = build_manifest(article)
+    domains = {
+        item.normalized_value
+        for item in manifest.evidence
+        if item.indicator_type == "domain"
+    }
+
+    assert domains == {"gitnow.dev"}
+
+
+def test_plural_file_name_lead_reclassifies_an_unlisted_extension() -> None:
+    article = article_with_mixed_evidence()
+    article.body = """Indicators of Compromise
+File names stage2.shellcode
+"""
+    manifest = build_manifest(article)
+    by_value = {item.normalized_value: item for item in manifest.evidence}
+
+    assert by_value["stage2.shellcode"].indicator_type == "filename"
+
+
+def test_special_use_tlds_used_by_real_infrastructure_survive() -> None:
+    article = article_with_mixed_evidence()
+    article.body = """Indicators of Compromise
+xmrpool7z6ktfnvxbrc4ao[.]onion
+stats[.]i2p
+seed[.]bit
+"""
+    manifest = build_manifest(article)
+    domains = {
+        item.normalized_value
+        for item in manifest.evidence
+        if item.indicator_type == "domain"
+    }
+
+    assert domains == {"xmrpool7z6ktfnvxbrc4ao.onion", "stats.i2p", "seed.bit"}
+
+
+def test_documentation_and_private_reserves_stay_rejected() -> None:
+    article = article_with_mixed_evidence()
+    article.body = """Indicators of Compromise
+host.localhost
+printer.local
+sample.invalid
+"""
+    manifest = build_manifest(article)
+
+    assert not [
+        item for item in manifest.evidence if item.indicator_type == "domain"
+    ]
+
+
+def test_an_extension_that_is_also_a_tld_is_still_a_filename() -> None:
+    article = article_with_mixed_evidence()
+    article.body = """Indicators of Compromise
+promo-video.mov
+payload.zip
+loader.py
+"""
+    manifest = build_manifest(article)
+    kinds = {
+        item.normalized_value: item.indicator_type for item in manifest.evidence
+    }
+
+    assert kinds == {
+        "promo-video.mov": "filename",
+        "payload.zip": "filename",
+        "loader.py": "filename",
+    }
+
+
+def test_file_name_lead_ins_named_in_the_readme_all_match() -> None:
+    for lead in ("File name(s):", "Filename:", "File names", "attachment:", "payload is"):
+        article = article_with_mixed_evidence()
+        article.body = f"Indicators of Compromise\n{lead} custom.shellcode\n"
+        manifest = build_manifest(article)
+        kinds = {
+            item.normalized_value: item.indicator_type for item in manifest.evidence
+        }
+        assert kinds.get("custom.shellcode") == "filename", lead
