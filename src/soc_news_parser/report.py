@@ -240,8 +240,16 @@ def collect_report(
         ],
         "failures": [asdict(failure) for failure in failures],
         "warnings": [asdict(warning) for warning in source_warnings],
+        # Enrichment shapes the board, so it belongs in the identity - but the
+        # lookup timestamp does not, or a rerun of the same window would mint a
+        # new report_id and Resend would send the report twice.
         "cve_intel": {
-            key: value.to_dict() for key, value in sorted(intel.items())
+            key: {
+                field: item
+                for field, item in value.to_dict().items()
+                if field != "retrieved_at"
+            }
+            for key, value in sorted(intel.items())
         },
     }
     report_id = hashlib.sha256(
@@ -416,6 +424,20 @@ def _unique_article_evidence(
     return results
 
 
+def _kev_was_consulted(report: DailyReport) -> bool:
+    """True only when the KEV catalogue was actually loaded for this report.
+
+    Without this the header would print "known-exploited: 0" on a run where
+    enrichment was off or the catalogue fetch failed - stating a fact nobody
+    checked, which is exactly what this report refuses to do elsewhere.
+    """
+    data = report.enrichment or {}
+    if not data.get("enabled"):
+        return False
+    # Either field proves the catalogue parsed; a failed fetch leaves both unset.
+    return bool(data.get("kev_catalog_version") or data.get("kev_catalog_released"))
+
+
 def _render_enrichment_note(report: DailyReport) -> list[str]:
     """Say plainly how much of the CVE column is third-party, and how fresh."""
     data = report.enrichment or {}
@@ -425,13 +447,19 @@ def _render_enrichment_note(report: DailyReport) -> list[str]:
     released = data.get("kev_catalog_released")
     scored = data.get("cvss_count") or 0
     requested = data.get("requested_cve_count") or 0
+    errors = data.get("errors") or []
     if not requested:
-        return ["- CVE 加值：已啟用；今日沒有明確 CVE 需要查詢"]
+        note = ["- CVE 加值：已啟用；今日沒有明確 CVE 需要查詢"]
+        if errors:
+            note.append(
+                f"- CVE 加值有 {len(errors)} 項查詢失敗，KEV／CVSS 欄位今日可能不完整"
+                "（明細見 JSON 稽核檔）"
+            )
+        return note
     detail = f"CISA KEV 與 NVD；{scored}/{requested} 個 CVE 取得 NVD CVSS"
     if released:
         detail += f"；KEV 目錄發布於 {released}"
     lines.append(f"- CVE 加值：{detail}")
-    errors = data.get("errors") or []
     if errors:
         lines.append(
             f"- CVE 加值有 {len(errors)} 項查詢失敗，KEV／CVSS 欄位今日可能不完整"
@@ -450,7 +478,12 @@ def _compact_summary(manifest: EvidenceManifest, limit: int = 160) -> str:
         cut = head.rfind(ending)
         if cut >= limit // 2:
             return head[: cut + 1]
-    return f"{head.rsplit(' ', 1)[0].rstrip(' ,;:-')}…"
+    # Only trim back to a word boundary when one is near the end. CJK text has
+    # no spaces, so an early space would otherwise cut the gist down to a stub.
+    spaced = head.rsplit(" ", 1)[0].rstrip(" ,;:-")
+    if len(spaced) >= limit // 2:
+        return f"{spaced}…"
+    return f"{head.rstrip(' ,;:-')}…"
 
 
 def _split_articles(
@@ -486,10 +519,15 @@ def render_markdown(report: DailyReport) -> str:
         f"- 可疑檔名：{report.confirmed_filename_count} 個",
         f"- 原文指稱：{report.confirmed_claim_count} 項",
         f"- 待修 CVE：{report.analyst_brief.patch_count} 個",
-        f"- 其中已知遭利用（CISA KEV）：{report.kev_count} 個",
-        f"- 待封鎖：{report.analyst_brief.block_count} 個",
-        f"- 待hunt：{report.analyst_brief.hunt_count} 個",
     ]
+    if _kev_was_consulted(report):
+        lines.append(f"- 其中已知遭利用（CISA KEV）：{report.kev_count} 個")
+    lines.extend(
+        [
+            f"- 待封鎖：{report.analyst_brief.block_count} 個",
+            f"- 待hunt：{report.analyst_brief.hunt_count} 個",
+        ]
+    )
     if report.analyst_brief.unavailable_count:
         lines.append(
             f"- 未能取得全文：{report.analyst_brief.unavailable_count} 篇（需人工複核）"

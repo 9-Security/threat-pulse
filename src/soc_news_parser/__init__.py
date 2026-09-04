@@ -6,6 +6,7 @@ import os
 import re
 import sys
 import tempfile
+from typing import Callable
 import time
 from datetime import datetime
 from pathlib import Path
@@ -24,6 +25,7 @@ from .enrich import (
     EnrichmentReport,
     collect_cve_ids,
     default_fetcher,
+    fetcher_for,
     disabled_report,
     enrich_cves,
 )
@@ -43,7 +45,9 @@ from .sources import SOURCES
 DEFAULT_CACHE_DIR = ".cache/enrichment"
 
 
-def _resolve_intel(args: argparse.Namespace, report_manifests: list) -> tuple[dict, object]:
+def _resolve_intel(
+    args: argparse.Namespace, report_manifests: list, parser: object | None = None
+) -> tuple[dict, object]:
     """Look up KEV/NVD for the day's CVEs. Never fatal: a failure just degrades."""
     if not getattr(args, "enrich", True):
         return {}, disabled_report()
@@ -51,7 +55,11 @@ def _resolve_intel(args: argparse.Namespace, report_manifests: list) -> tuple[di
     if not cve_ids:
         # Enrichment ran; there was simply nothing to look up.
         return {}, EnrichmentReport(enabled=True)
-    fetch, close = default_fetcher()
+    close: Callable[[], None] = lambda: None
+    if parser is not None:
+        fetch = fetcher_for(parser)
+    else:
+        fetch, close = default_fetcher()
     try:
         return enrich_cves(
             cve_ids,
@@ -457,7 +465,7 @@ def _deliver(args: argparse.Namespace) -> dict[str, object]:
             until=until,
             generated_at=until,
             previous_iocs=previous_iocs,
-            enricher=lambda manifests: _resolve_intel(args, manifests),
+            enricher=lambda manifests: _resolve_intel(args, manifests, news_parser),
         )
     json_content, markdown_content = serialize_report(report)
     json_output, markdown_output = _write_report_pair(
@@ -611,7 +619,7 @@ def main() -> None:
                     until=until,
                     generated_at=generated_at,
                     previous_iocs=previous_iocs,
-                    enricher=lambda manifests: _resolve_intel(args, manifests),
+                    enricher=lambda manifests: _resolve_intel(args, manifests, news_parser),
                 )
                 json_content, markdown_content = serialize_report(report)
                 json_output, markdown_output = _write_report_pair(

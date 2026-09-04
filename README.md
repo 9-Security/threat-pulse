@@ -79,7 +79,7 @@ curl -s https://data.iana.org/TLD/tlds-alpha-by-domain.txt \
   | tr 'A-Z' 'a-z' | sort > src/soc_news_parser/data/iana_tlds.txt
 ```
 
-副檔名比對排在網域之前，所以 `.zip`、`.py`、`.mov` 這些同時是合法 TLD 的字尾會先判成檔名。
+副檔名比對排在網域之前，所以 `.zip`、`.py`、`.mov` 這些同時是合法 TLD 的字尾會先判成檔名。`.onion`、`.i2p`、`.bit` 雖未在 root zone 委派，但它們指向真實的攻擊基礎設施，因此明確納入；`.local`、`.localhost`、`.invalid`、`.example` 這類文件／私網保留字仍排除。
 
 `confirmed_unique_iocs` 與報告主旨只計 hash、IP、domain、URL 與 CVE；檔名與原文指稱另行統計。`unique_counts_by_status_and_type` 仍列出各類型完整細項。
 
@@ -116,15 +116,18 @@ manifest 仍然只記錄原文明確寫了什麼，加值結果放在 JSON 的 `
 處置清單的變化：
 
 - KEV 一律升為 HIGH。已確認在野利用，優先於任何文字訊號。
-- 修補清單改以 KEV 優先、再依 CISA 修補期限、再依 CVSS 排序；KEV 項目標上 `【KEV】`。
+- CVSS 取 NVD 與原文兩者較高者判定優先級；NVD 若只有暫定低分，不會把原文標為高分的漏洞悄悄降級。
+- 修補清單排序為 KEV → 優先級 → CVSS → CISA 修補期限；沒有任何分數但原文寫明 RCE 的 CVE 不會被排到已知低分項之後。KEV 項目標上 `【KEV】`。
 - 理由欄寫明來源，例如 `KEV 已知遭利用，CISA 修補期限 2026-09-18；CVSS 9.8 CRITICAL（NVD）`。
   原文自己寫的分數會標成 `（原文）`，兩者不會混淆。
-- 郵件主旨變成 `待修 73（KEV 3）`；報告表頭多一行「其中已知遭利用（CISA KEV）」。
+- 郵件主旨變成 `待修 73（KEV 3）`；報告表頭多一行「其中已知遭利用（CISA KEV）」。**該行只在 KEV 目錄確實載入成功時出現** —— 沒查到就不會寫「0 個」，因為那等於對沒檢查過的事下斷言。
 - CSV 多四欄：`kev`、`kev_due_date`、`cvss_score`、`cvss_severity`。
 
 查詢全部走與抓新聞相同的加固通道（HTTPS、主機白名單、公開 IP、redirect 重新驗證、
 12 MiB 上限）。**任何加值失敗都不會中斷報告**：錯誤記在 JSON 的 `enrichment.errors`，
 Markdown 會標「CVE 加值有 N 項查詢失敗」，報告照常寄出，只是 KEV／CVSS 欄位不完整。
+
+同一時間窗重跑會得到相同的 Report ID：加值的實質內容（KEV、CVSS）計入識別碼，但查詢時戳不計入，否則重試會產生新的 ID 而讓 Resend 的冪等鍵失效、重複寄出。
 
 結果會快取在 `--cache-dir`（預設 `.cache/enrichment`）。同一天重跑不會再發任何請求；
 隔天只查沒看過的 CVE。已有分數的 CVE 快取 7 天，NVD 尚未評分的每天重查一次。

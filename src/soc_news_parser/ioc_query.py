@@ -82,6 +82,10 @@ def load_report(
         evidence = _report_directory(base, date) / REPORT_FILENAME
         if not evidence.is_file():
             raise FileNotFoundError(f"no report JSON for {date}")
+        # The directory is inside the root, but the file itself may still be a
+        # symlink pointing out of it.
+        if evidence.resolve() != evidence and base not in evidence.resolve().parents:
+            raise ValueError("report file resolves outside the reports directory")
         payload = json.loads(evidence.read_text(encoding="utf-8"))
         if not isinstance(payload, dict):
             raise ValueError(f"invalid report JSON for {date}")

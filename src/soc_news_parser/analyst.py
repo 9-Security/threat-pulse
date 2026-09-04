@@ -214,6 +214,9 @@ class AnalystAction:
     kev_due_date: str | None = None
     cvss_score: float | None = None
     cvss_severity: str | None = None
+    # What the article itself printed, kept so ranking does not read a missing
+    # NVD score as zero and sink an un-enriched critical CVE to the bottom.
+    article_cvss_score: float | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -454,6 +457,7 @@ def _make_action(
     reason: str,
     manifest: EvidenceManifest,
     intel: CveIntel | None = None,
+    article_cvss: float | None = None,
 ) -> AnalystAction:
     return AnalystAction(
         action,
@@ -467,7 +471,18 @@ def _make_action(
         kev_due_date=intel.kev_due_date if intel else None,
         cvss_score=intel.cvss_score if intel else None,
         cvss_severity=intel.cvss_severity if intel else None,
+        article_cvss_score=article_cvss,
     )
+
+
+def effective_cvss(action: AnalystAction) -> float | None:
+    """The higher of the NVD and article scores, for ranking and priority.
+
+    NVD is authoritative for the published score, but a provisional or missing
+    NVD entry must never quietly downgrade a CVE the article scored higher.
+    """
+    scores = [item for item in (action.cvss_score, action.article_cvss_score) if item is not None]
+    return max(scores) if scores else None
 
 
 def _cve_priority(
@@ -478,7 +493,12 @@ def _cve_priority(
     """KEV outranks every text signal: it is confirmed in-the-wild exploitation."""
     if intel and intel.kev:
         return "high"
-    score = intel.cvss_score if intel and intel.cvss_score is not None else article_cvss
+    scores = [
+        item
+        for item in (intel.cvss_score if intel else None, article_cvss)
+        if item is not None
+    ]
+    score = max(scores) if scores else None
     if score is not None and score >= 9.0:
         return "high"
     if _priority(impacts, score) == "high":
@@ -579,6 +599,7 @@ def build_actions(
                     _cve_reason(local_labels, cvss, cve_intel),
                     manifest,
                     cve_intel,
+                    cvss,
                 )
             )
         elif evidence.indicator_type in NETWORK_TYPES:
@@ -819,8 +840,11 @@ def _kev_first(actions: list[AnalystAction]) -> list[AnalystAction]:
         key=lambda item: (
             not item.kev,
             # Severity leads inside KEV: a long-overdue low-scoring entry is
-            # background, not the thing to open the duty report with.
-            -(item.cvss_score or 0.0),
+            # background, not the thing to open the duty report with. Priority
+            # comes before the score so a CVE nobody scored, whose article
+            # states remote code execution, is not ranked below a known 3.1.
+            0 if item.priority == "high" else 1,
+            -(effective_cvss(item) or 0.0),
             item.kev_due_date or "9999-99-99",
             item.target,
         ),
@@ -883,10 +907,6 @@ def _csv_is_new(value: bool | None) -> str:
     return "" if value is None else str(value).lower()
 
 
-def _csv_flag(value: bool | None) -> str:
-    return "" if value is None else str(value).lower()
-
-
 def _csv_score(value: Any) -> str:
     return f"{value:g}" if isinstance(value, (int, float)) else ""
 
@@ -909,7 +929,7 @@ def render_ioc_csv_from_actions(actions: Iterable[AnalystAction | dict[str, Any]
                     action.article_title,
                     action.article_url,
                     action.reason,
-                    _csv_flag(action.kev),
+                    _csv_is_new(action.kev),
                     action.kev_due_date or "",
                     _csv_score(action.cvss_score),
                     action.cvss_severity or "",
@@ -929,7 +949,7 @@ def render_ioc_csv_from_actions(actions: Iterable[AnalystAction | dict[str, Any]
                 action.get("article_title", ""),
                 action.get("article_url", ""),
                 action.get("reason", ""),
-                _csv_flag(action.get("kev") if isinstance(action.get("kev"), bool) else None),
+                _csv_is_new(action.get("kev") if isinstance(action.get("kev"), bool) else None),
                 action.get("kev_due_date") or "",
                 _csv_score(action.get("cvss_score")),
                 action.get("cvss_severity") or "",

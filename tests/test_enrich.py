@@ -296,3 +296,30 @@ CVSS 4.0
     assert patch[0].priority == "high"
     assert patch[0].cvss_score == 9.1
     assert "（NVD）" in patch[0].reason
+
+
+def test_an_unscored_cache_entry_is_read_once_per_lookup(tmp_path, monkeypatch) -> None:
+    from soc_news_parser import enrich
+
+    responses = {
+        KEV_URL: kev_payload(),
+        f"{NVD_URL}?cveId=CVE-2026-7777": nvd_payload("CVE-2026-7777", None),
+    }
+    enrich_cves(
+        ["CVE-2026-7777"], fetcher=make_fetcher(responses), cache_dir=tmp_path, now=NOW
+    )
+
+    reads: list[str] = []
+    original = enrich.EnrichmentCache.read_entry
+
+    def counting(self, name):
+        reads.append(name)
+        return original(self, name)
+
+    monkeypatch.setattr(enrich.EnrichmentCache, "read_entry", counting)
+    _, report = enrich_cves(
+        ["CVE-2026-7777"], fetcher=make_fetcher(responses), cache_dir=tmp_path, now=NOW
+    )
+
+    assert report.cache_hits == 1
+    assert reads.count("nvd/CVE-2026-7777.json") == 1

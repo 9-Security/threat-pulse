@@ -733,3 +733,107 @@ def test_an_article_with_only_claims_says_which_kind_it_has() -> None:
     assert "- IoC：原文未提供明確指標。" not in markdown
     assert "無 hash／IP／網域／URL／CVE 類指標；本篇只有原文指稱，見下方。" in markdown
     assert "### 原文指稱" in markdown
+
+
+def test_report_id_is_stable_when_only_the_lookup_clock_moved() -> None:
+    def enricher_at(stamp: str):
+        def enricher(manifests):
+            return (
+                {
+                    "CVE-2026-1111": CveIntel(
+                        cve_id="CVE-2026-1111",
+                        kev=True,
+                        cvss_score=9.8,
+                        sources=[KEV_URL],
+                        retrieved_at=stamp,
+                    )
+                },
+                EnrichmentReport(
+                    enabled=True,
+                    requested_cve_count=1,
+                    kev_count=1,
+                    cvss_count=1,
+                    kev_catalog_version="2026.09.02",
+                ),
+            )
+
+        return enricher
+
+    first = cve_report(enricher_at("2026-09-04T06:00:00+00:00"))
+    rerun = cve_report(enricher_at("2026-09-04T06:31:12+00:00"))
+
+    # A retry of the same slot must reuse the id, or Resend's idempotency key
+    # changes and the report is delivered twice.
+    assert first.report_id == rerun.report_id
+    assert first.cve_intel["CVE-2026-1111"]["retrieved_at"] != (
+        rerun.cve_intel["CVE-2026-1111"]["retrieved_at"]
+    )
+
+
+def test_a_changed_kev_verdict_still_moves_the_report_id() -> None:
+    def without_kev(manifests):
+        return (
+            {"CVE-2026-1111": CveIntel(cve_id="CVE-2026-1111", cvss_score=9.8)},
+            EnrichmentReport(enabled=True, kev_catalog_version="2026.09.02"),
+        )
+
+    assert cve_report(kev_enricher).report_id != cve_report(without_kev).report_id
+
+
+def test_the_kev_header_is_absent_when_the_catalogue_was_not_consulted() -> None:
+    assert "已知遭利用" not in render_markdown(cve_report(None))
+
+    def kev_fetch_failed(manifests):
+        return {}, EnrichmentReport(
+            enabled=True,
+            requested_cve_count=2,
+            errors=["KEV catalogue unavailable: network is down"],
+        )
+
+    markdown = render_markdown(cve_report(kev_fetch_failed))
+    assert "已知遭利用" not in markdown
+    assert "CVE 加值有 1 項查詢失敗" in markdown
+
+
+def test_enrichment_errors_surface_even_with_no_cves_to_look_up() -> None:
+    def broken(manifests):
+        return {}, EnrichmentReport(
+            enabled=True,
+            requested_cve_count=0,
+            errors=["KEV catalogue unavailable: network is down"],
+        )
+
+    markdown = render_markdown(cve_report(broken))
+    assert "今日沒有明確 CVE 需要查詢" in markdown
+    assert "CVE 加值有 1 項查詢失敗" in markdown
+
+
+def test_a_cjk_summary_is_not_collapsed_to_its_english_prefix() -> None:
+    long_cjk = "Update: " + "資安研究人員發現新攻擊活動針對台灣金融機構並竊取憑證" * 9
+
+    class CjkParser:
+        def parse_feed(self, source: object, **_: object) -> list[ParsedArticle]:
+            if getattr(source, "name") != "The Hacker News":
+                return []
+            return [
+                parsed_article(
+                    "The Hacker News", "Threat campaign hits banks", long_cjk
+                )
+            ]
+
+    generated = datetime(2026, 9, 4, 6, 0, tzinfo=timezone.utc)
+    report = collect_report(
+        CjkParser(),  # type: ignore[arg-type]
+        ["the-hacker-news"],
+        since=datetime(2026, 9, 3, 6, 0, tzinfo=timezone.utc),
+        until=generated,
+        generated_at=generated,
+    )
+    entry = next(
+        line
+        for line in render_markdown(report).splitlines()
+        if line.startswith("- [Threat campaign hits banks]")
+    )
+
+    assert "Update…" not in entry
+    assert "資安研究人員發現新攻擊活動" in entry

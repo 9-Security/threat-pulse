@@ -111,7 +111,8 @@ class EnrichmentCache:
     def _path(self, name: str) -> Path:
         return self.directory / name
 
-    def read(self, name: str, ttl: timedelta, *, now: datetime) -> dict[str, Any] | None:
+    def read_entry(self, name: str) -> tuple[dict[str, Any], datetime] | None:
+        """The stored document and when it was written, without judging age."""
         path = self._path(name)
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
@@ -120,10 +121,17 @@ class EnrichmentCache:
         if not isinstance(payload, dict):
             return None
         stored = _parse_stamp(payload.get("cached_at"))
-        if stored is None or now - stored > ttl:
-            return None
         data = payload.get("data")
-        return data if isinstance(data, dict) else None
+        if stored is None or not isinstance(data, dict):
+            return None
+        return data, stored
+
+    def read(self, name: str, ttl: timedelta, *, now: datetime) -> dict[str, Any] | None:
+        entry = self.read_entry(name)
+        if entry is None:
+            return None
+        data, stored = entry
+        return data if now - stored <= ttl else None
 
     def write(self, name: str, data: dict[str, Any], *, now: datetime) -> None:
         path = self._path(name)
@@ -173,18 +181,23 @@ class _RateLimiter:
         self._calls.append(self.clock())
 
 
-def default_fetcher(timeout: float = 25.0) -> tuple[Fetcher, Callable[[], None]]:
-    """Reuse the hardened news fetcher: HTTPS, host allowlist, public IPs only."""
-    from .parser import NewsParser
-
-    parser = NewsParser(timeout=timeout)
+def fetcher_for(parser: Any) -> Fetcher:
+    """Borrow an already-open NewsParser: HTTPS, host allowlist, public IPs only."""
 
     def fetch(
         url: str, allowed_hosts: tuple[str, ...], headers: dict[str, str] | None
     ) -> bytes:
         return parser._get(url, allowed_hosts=allowed_hosts, headers=headers).content
 
-    return fetch, parser.close
+    return fetch
+
+
+def default_fetcher(timeout: float = 25.0) -> tuple[Fetcher, Callable[[], None]]:
+    """Open a parser of our own, for callers that do not already hold one."""
+    from .parser import NewsParser
+
+    parser = NewsParser(timeout=timeout)
+    return fetcher_for(parser), parser.close
 
 
 def _load_kev(
@@ -295,14 +308,15 @@ def _load_nvd(
     stats: dict[str, int],
 ) -> dict[str, Any] | None:
     name = f"nvd/{cve_id}.json"
-    cached = cache.read(name, NVD_TTL_SCORED, now=now)
-    if cached is not None and cached.get("cvss_score") is not None:
-        stats["cache_hits"] += 1
-        return cached
-    fresh = cache.read(name, NVD_TTL_UNSCORED, now=now)
-    if fresh is not None:
-        stats["cache_hits"] += 1
-        return fresh
+    entry = cache.read_entry(name)
+    if entry is not None:
+        cached, stored = entry
+        # A scored record stays usable for a week; one still awaiting analysis
+        # is re-checked the next day.
+        ttl = NVD_TTL_SCORED if cached.get("cvss_score") is not None else NVD_TTL_UNSCORED
+        if now - stored <= ttl:
+            stats["cache_hits"] += 1
+            return cached
     limiter.wait()
     stats["lookups"] += 1
     headers = {"apiKey": api_key} if api_key else None

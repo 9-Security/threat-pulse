@@ -328,3 +328,64 @@ File names stage2.shellcode
     by_value = {item.normalized_value: item for item in manifest.evidence}
 
     assert by_value["stage2.shellcode"].indicator_type == "filename"
+
+
+def test_special_use_tlds_used_by_real_infrastructure_survive() -> None:
+    article = article_with_mixed_evidence()
+    article.body = """Indicators of Compromise
+xmrpool7z6ktfnvxbrc4ao[.]onion
+stats[.]i2p
+seed[.]bit
+"""
+    manifest = build_manifest(article)
+    domains = {
+        item.normalized_value
+        for item in manifest.evidence
+        if item.indicator_type == "domain"
+    }
+
+    assert domains == {"xmrpool7z6ktfnvxbrc4ao.onion", "stats.i2p", "seed.bit"}
+
+
+def test_documentation_and_private_reserves_stay_rejected() -> None:
+    article = article_with_mixed_evidence()
+    article.body = """Indicators of Compromise
+host.localhost
+printer.local
+sample.invalid
+"""
+    manifest = build_manifest(article)
+
+    assert not [
+        item for item in manifest.evidence if item.indicator_type == "domain"
+    ]
+
+
+def test_an_extension_that_is_also_a_tld_is_still_a_filename() -> None:
+    article = article_with_mixed_evidence()
+    article.body = """Indicators of Compromise
+promo-video.mov
+payload.zip
+loader.py
+"""
+    manifest = build_manifest(article)
+    kinds = {
+        item.normalized_value: item.indicator_type for item in manifest.evidence
+    }
+
+    assert kinds == {
+        "promo-video.mov": "filename",
+        "payload.zip": "filename",
+        "loader.py": "filename",
+    }
+
+
+def test_file_name_lead_ins_named_in_the_readme_all_match() -> None:
+    for lead in ("File name(s):", "Filename:", "File names", "attachment:", "payload is"):
+        article = article_with_mixed_evidence()
+        article.body = f"Indicators of Compromise\n{lead} custom.shellcode\n"
+        manifest = build_manifest(article)
+        kinds = {
+            item.normalized_value: item.indicator_type for item in manifest.evidence
+        }
+        assert kinds.get("custom.shellcode") == "filename", lead
