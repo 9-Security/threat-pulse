@@ -341,3 +341,56 @@ def test_json_ld_still_reads_root_article_body() -> None:
     bodies = list(_json_ld_candidates(BeautifulSoup(page, "lxml")))
 
     assert bodies[0].startswith("Threat report body")
+
+
+def test_request_headers_are_dropped_when_a_redirect_leaves_the_host() -> None:
+    seen: list[tuple[str, str | None]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append((str(request.url), request.headers.get("apikey")))
+        if request.url.host == "api.example.test":
+            return httpx.Response(
+                302,
+                headers={"location": "https://mirror.other.test/v2"},
+                request=request,
+            )
+        return httpx.Response(200, text="{}", request=request)
+
+    parser = news_parser()
+    parser.client.close()
+    parser.client = httpx.Client(transport=httpx.MockTransport(handler))
+
+    with parser:
+        parser._get(
+            "https://api.example.test/v1",
+            allowed_hosts=("api.example.test", "mirror.other.test"),
+            headers={"apiKey": "secret-key"},
+        )
+
+    assert seen[0] == ("https://api.example.test/v1", "secret-key")
+    assert seen[1] == ("https://mirror.other.test/v2", None)
+
+
+def test_request_headers_survive_a_same_host_redirect() -> None:
+    seen: list[str | None] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.headers.get("apikey"))
+        if request.url.path == "/v1":
+            return httpx.Response(
+                302, headers={"location": "https://api.example.test/v2"}, request=request
+            )
+        return httpx.Response(200, text="{}", request=request)
+
+    parser = news_parser()
+    parser.client.close()
+    parser.client = httpx.Client(transport=httpx.MockTransport(handler))
+
+    with parser:
+        parser._get(
+            "https://api.example.test/v1",
+            allowed_hosts=("api.example.test",),
+            headers={"apiKey": "secret-key"},
+        )
+
+    assert seen == ["secret-key", "secret-key"]

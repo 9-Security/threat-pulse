@@ -44,6 +44,7 @@ def list_report_dates(root: str | Path | None = None) -> list[dict[str, Any]]:
                 "patch_count": brief.get("patch_count") if isinstance(brief, dict) else None,
                 "block_count": brief.get("block_count") if isinstance(brief, dict) else None,
                 "hunt_count": brief.get("hunt_count") if isinstance(brief, dict) else None,
+                "kev_count": _kev_count(brief) if isinstance(brief, dict) else None,
             }
         )
     return results
@@ -87,7 +88,24 @@ def report_summary(
         "hunt_count": brief.get("hunt_count"),
         "monitor_count": brief.get("monitor_count"),
         "new_ioc_count": brief.get("new_ioc_count"),
+        "kev_count": _kev_count(brief),
+        "enrichment": payload.get("enrichment"),
     }
+
+
+def _kev_count(brief: Any) -> int | None:
+    actions = brief.get("actions") if isinstance(brief, dict) else None
+    if not isinstance(actions, list):
+        return None
+    return len(
+        {
+            str(item.get("target"))
+            for item in actions
+            if isinstance(item, dict)
+            and item.get("action") == "patch"
+            and item.get("kev")
+        }
+    )
 
 
 def _action_index(payload: dict[str, Any]) -> dict[tuple[str, str], dict[str, Any]]:
@@ -166,6 +184,8 @@ def search_iocs(
                     "action": action_name or None,
                     "priority": related.get("priority"),
                     "reason": related.get("reason"),
+                    "kev": related.get("kev"),
+                    "cvss_score": related.get("cvss_score"),
                     "article_title": title,
                     "article_url": url,
                 }
@@ -209,6 +229,10 @@ def lookup_indicator(
                     "action": related.get("action"),
                     "priority": related.get("priority"),
                     "reason": related.get("reason"),
+                    "kev": related.get("kev"),
+                    "kev_due_date": related.get("kev_due_date"),
+                    "cvss_score": related.get("cvss_score"),
+                    "cvss_severity": related.get("cvss_severity"),
                     "article_title": article.get("article_title"),
                     "article_url": article.get("article_url"),
                     "section": evidence.get("section"),

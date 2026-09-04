@@ -10,6 +10,7 @@ import pytest
 from soc_news_parser import _parse_env_line, _write_report_pair
 from soc_news_parser.evidence import build_manifest
 from soc_news_parser.parser import ParseError, ParsedArticle
+from soc_news_parser.enrich import KEV_URL, CveIntel, EnrichmentReport
 from soc_news_parser.report import (
     _canonical_article_url,
     _source_summary,
@@ -410,3 +411,111 @@ def test_tracking_query_and_invalid_port_do_not_break_dedup() -> None:
     assert report.confirmed_ioc_count == 2
     titles = {item.article_title for item in report.articles}
     assert titles == {"Shared story", "Broken port story"}
+
+
+class CveParser:
+    def parse_feed(self, source: object, **_: object) -> list[ParsedArticle]:
+        if getattr(source, "name") != "The Hacker News":
+            return []
+        return [
+            parsed_article(
+                "The Hacker News",
+                "Vendor patches an exploited flaw",
+                """Indicators of Compromise
+CVE-2026-2222
+CVE-2026-1111
+""",
+            )
+        ]
+
+
+def cve_report(enricher):
+    generated = datetime(2026, 9, 4, 6, 0, tzinfo=timezone.utc)
+    return collect_report(
+        CveParser(),  # type: ignore[arg-type]
+        ["the-hacker-news"],
+        since=datetime(2026, 9, 3, 6, 0, tzinfo=timezone.utc),
+        until=generated,
+        generated_at=generated,
+        enricher=enricher,
+    )
+
+
+def kev_enricher(manifests):
+    return (
+        {
+            "CVE-2026-1111": CveIntel(
+                cve_id="CVE-2026-1111",
+                kev=True,
+                kev_due_date="2026-09-18",
+                cvss_score=9.8,
+                cvss_severity="CRITICAL",
+                sources=[KEV_URL],
+                retrieved_at="2026-09-04T06:00:00+00:00",
+            ),
+            "CVE-2026-2222": CveIntel(
+                cve_id="CVE-2026-2222", cvss_score=5.3, cvss_severity="MEDIUM"
+            ),
+        },
+        EnrichmentReport(
+            enabled=True,
+            requested_cve_count=2,
+            enriched_cve_count=2,
+            kev_count=1,
+            cvss_count=2,
+            kev_catalog_released="2026-09-03T14:00:00.0000Z",
+        ),
+    )
+
+
+def test_kev_reaches_the_subject_header_and_board() -> None:
+    report = cve_report(kev_enricher)
+    markdown = render_markdown(report)
+
+    assert report.kev_count == 1
+    assert "待修 2（KEV 1）" in report.subject
+    assert "- 其中已知遭利用（CISA KEV）：1 個" in markdown
+    assert "`CVE-2026-1111` 【KEV】" in markdown
+    assert "CISA KEV 與 NVD；2/2 個 CVE 取得 NVD CVSS" in markdown
+    assert "KEV 目錄發布於 2026-09-03" in markdown
+    assert report.cve_intel["CVE-2026-1111"]["sources"] == [KEV_URL]
+    assert report.enrichment["kev_count"] == 1
+
+
+def test_report_without_enrichment_says_so_and_still_ships() -> None:
+    report = cve_report(None)
+    markdown = render_markdown(report)
+
+    assert report.kev_count == 0
+    assert report.cve_intel == {}
+    assert report.enrichment["enabled"] is False
+    assert "CVE 加值：未啟用" in markdown
+    assert "【KEV】" not in markdown
+    assert "（KEV" not in report.subject
+
+
+def test_enrichment_errors_are_flagged_to_the_reader() -> None:
+    def failing(manifests):
+        return {}, EnrichmentReport(
+            enabled=True,
+            requested_cve_count=2,
+            errors=["KEV catalogue unavailable: network is down"],
+        )
+
+    markdown = render_markdown(cve_report(failing))
+
+    assert "CVE 加值有 1 項查詢失敗" in markdown
+
+
+def test_enrichment_moves_the_report_id() -> None:
+    assert cve_report(kev_enricher).report_id != cve_report(None).report_id
+
+
+def test_a_day_without_cves_says_enrichment_ran_with_nothing_to_do() -> None:
+    def nothing_to_look_up(manifests):
+        return {}, EnrichmentReport(enabled=True)
+
+    markdown = render_markdown(cve_report(nothing_to_look_up))
+
+    assert "CVE 加值：已啟用；今日沒有明確 CVE 需要查詢" in markdown
+    assert "未啟用" not in markdown

@@ -33,8 +33,8 @@ def report_pair(
         payload["reader_digest"] = hashlib.sha256(markdown.encode()).hexdigest()
     json_path = tmp_path / "daily-evidence.json"
     markdown_path = tmp_path / "daily-report.md"
-    json_path.write_text(json.dumps(payload), encoding="utf-8")
-    markdown_path.write_text(markdown, encoding="utf-8")
+    json_path.write_text(json.dumps(payload), encoding="utf-8", newline="\n")
+    markdown_path.write_text(markdown, encoding="utf-8", newline="\n")
     return str(json_path), str(markdown_path)
 
 
@@ -111,8 +111,8 @@ def test_serialized_reader_report_can_be_emailed(tmp_path: Path) -> None:
     json_content, markdown = serialize_report(report)
     json_path = tmp_path / "daily-evidence.json"
     markdown_path = tmp_path / "daily-report.md"
-    json_path.write_text(json_content, encoding="utf-8")
-    markdown_path.write_text(markdown, encoding="utf-8")
+    json_path.write_text(json_content, encoding="utf-8", newline="\n")
+    markdown_path.write_text(markdown, encoding="utf-8", newline="\n")
 
     email = build_report_email(
         json_path=str(json_path),

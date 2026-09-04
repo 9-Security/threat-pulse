@@ -238,16 +238,24 @@ class NewsParser:
             raise ParseError(f"host {host} resolves to a non-public address")
 
     def _get(
-        self, url: str, *, allowed_hosts: tuple[str, ...] | None = None
+        self,
+        url: str,
+        *,
+        allowed_hosts: tuple[str, ...] | None = None,
+        headers: dict[str, str] | None = None,
     ) -> httpx.Response:
         initial_host = urlparse(url).hostname
         hosts = allowed_hosts or ((initial_host,) if initial_host else ())
         current_url = url
+        # Credentials in `headers` belong to the host they were minted for, so
+        # they are dropped as soon as a redirect leaves that host.
+        header_host = initial_host
         maximum_bytes = 12 * 1024 * 1024
         for _ in range(6):
             self._validate_url(current_url, hosts)
+            sent = headers if headers and urlparse(current_url).hostname == header_host else None
             try:
-                with self.client.stream("GET", current_url) as response:
+                with self.client.stream("GET", current_url, headers=sent) as response:
                     if response.is_redirect:
                         location = response.headers.get("location")
                         if not location:

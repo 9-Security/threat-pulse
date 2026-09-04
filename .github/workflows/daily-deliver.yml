@@ -22,11 +22,14 @@ jobs:
   deliver:
     name: Deliver last 24 hours
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     env:
       RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
       RESEND_FROM: ${{ secrets.RESEND_FROM }}
       RESEND_TO: ${{ secrets.RESEND_TO }}
+      # Optional. Without it NVD allows 5 requests per 30s, so a day with many
+      # new CVEs spends several minutes in enrichment.
+      NVD_API_KEY: ${{ secrets.NVD_API_KEY }}
     steps:
       - name: Check Resend secrets
         run: |
@@ -53,10 +56,12 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Restore previous reports
+      - name: Restore previous reports and CVE enrichment cache
         uses: actions/cache@v4
         with:
-          path: reports
+          path: |
+            reports
+            .cache/enrichment
           key: soc-reports-${{ runner.os }}-${{ github.run_id }}
           restore-keys: |
             soc-reports-${{ runner.os }}-

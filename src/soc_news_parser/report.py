@@ -4,13 +4,20 @@ import hashlib
 import html
 import json
 import re
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable, Mapping
 
 from urllib.parse import parse_qsl, quote, urlencode, urlsplit, urlunsplit
 
-from .analyst import AnalystBrief, article_impacts, article_sort_key, build_brief
+from .analyst import (
+    AnalystBrief,
+    article_impacts,
+    article_sort_key,
+    build_brief,
+    kev_targets,
+)
+from .enrich import CveIntel, EnrichmentReport, disabled_report
 from .evidence import (
     CLAIM_TYPES,
     COUNTED_IOC_TYPES,
@@ -22,7 +29,11 @@ from .parser import NewsParser, ParseError
 from .sources import SOURCES
 
 
-REPORT_SCHEMA_VERSION = "1.4"
+Enricher = Callable[
+    [list[EvidenceManifest]], tuple[Mapping[str, CveIntel], EnrichmentReport]
+]
+
+REPORT_SCHEMA_VERSION = "1.5"
 CLAIM_LABELS = {
     "malware_family": "惡意程式家族",
     "attack_technique": "攻擊技術",
@@ -72,12 +83,22 @@ class DailyReport:
     source_failures: list[SourceFailure]
     source_warnings: list[SourceWarning]
     analyst_brief: AnalystBrief
+    cve_intel: dict[str, dict[str, Any]] = field(default_factory=dict)
+    enrichment: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def kev_count(self) -> int:
+        return len(kev_targets(self.analyst_brief.actions))
 
     @property
     def subject(self) -> str:
+        kev = self.kev_count
+        patch = f"待修 {self.analyst_brief.patch_count}"
+        if kev:
+            patch += f"（KEV {kev}）"
         return (
             "[SOC] 每日資安新聞 IoC 彙整報告 - "
-            f"待修 {self.analyst_brief.patch_count} / "
+            f"{patch} / "
             f"待封鎖 {self.analyst_brief.block_count} / "
             f"待hunt {self.analyst_brief.hunt_count} / "
             f"文章數 {self.article_count}"
@@ -155,6 +176,7 @@ def collect_report(
     until: datetime,
     generated_at: datetime | None = None,
     previous_iocs: set[tuple[str, str]] | None = None,
+    enricher: Enricher | None = None,
 ) -> DailyReport:
     manifests: list[EvidenceManifest] = []
     failures: list[SourceFailure] = []
@@ -191,7 +213,10 @@ def collect_report(
     excluded_articles = [
         item for item in all_manifests if not _is_topic_relevant(item)
     ]
-    brief = build_brief(manifests, previous_iocs=previous_iocs)
+    intel, enrichment_report = (
+        enricher(manifests) if enricher else ({}, disabled_report())
+    )
+    brief = build_brief(manifests, previous_iocs=previous_iocs, intel=intel)
 
     confirmed_iocs = _unique_confirmed(manifests, COUNTED_IOC_TYPES)
     confirmed_filenames = _unique_confirmed(manifests, frozenset({"filename"}))
@@ -213,6 +238,9 @@ def collect_report(
         ],
         "failures": [asdict(failure) for failure in failures],
         "warnings": [asdict(warning) for warning in source_warnings],
+        "cve_intel": {
+            key: value.to_dict() for key, value in sorted(intel.items())
+        },
     }
     report_id = hashlib.sha256(
         json.dumps(identity, sort_keys=True, ensure_ascii=False).encode()
@@ -241,6 +269,8 @@ def collect_report(
         source_failures=failures,
         source_warnings=source_warnings,
         analyst_brief=brief,
+        cve_intel={key: value.to_dict() for key, value in sorted(intel.items())},
+        enrichment=enrichment_report.to_dict(),
     )
 
 
@@ -333,7 +363,8 @@ def _render_analyst_board(report: DailyReport) -> list[str]:
                 if action.target_type != "article"
                 else _markdown_escape(action.target)
             )
-            marker = " 【新增】" if action.is_new else ""
+            marker = " 【KEV】" if action.kev else ""
+            marker += " 【新增】" if action.is_new else ""
             lines.append(
                 f"- **{action.priority.upper()}** {target}{marker}"
                 f" — {_markdown_escape(action.reason)}"
@@ -368,6 +399,30 @@ def _unique_article_evidence(
     return results
 
 
+def _render_enrichment_note(report: DailyReport) -> list[str]:
+    """Say plainly how much of the CVE column is third-party, and how fresh."""
+    data = report.enrichment or {}
+    if not data.get("enabled"):
+        return ["- CVE 加值：未啟用，CVSS 僅取自原文，未比對 CISA KEV"]
+    lines: list[str] = []
+    released = data.get("kev_catalog_released")
+    scored = data.get("cvss_count") or 0
+    requested = data.get("requested_cve_count") or 0
+    if not requested:
+        return ["- CVE 加值：已啟用；今日沒有明確 CVE 需要查詢"]
+    detail = f"CISA KEV 與 NVD；{scored}/{requested} 個 CVE 取得 NVD CVSS"
+    if released:
+        detail += f"；KEV 目錄發布於 {released}"
+    lines.append(f"- CVE 加值：{detail}")
+    errors = data.get("errors") or []
+    if errors:
+        lines.append(
+            f"- CVE 加值有 {len(errors)} 項查詢失敗，KEV／CVSS 欄位今日可能不完整"
+            "（明細見 JSON 稽核檔）"
+        )
+    return lines
+
+
 def render_markdown(report: DailyReport) -> str:
     start = datetime.fromisoformat(report.window_start).astimezone(timezone.utc)
     end = datetime.fromisoformat(report.window_end).astimezone(timezone.utc)
@@ -382,6 +437,7 @@ def render_markdown(report: DailyReport) -> str:
         f"- 可疑檔名：{report.confirmed_filename_count} 個",
         f"- 原文指稱：{report.confirmed_claim_count} 項",
         f"- 待修 CVE：{report.analyst_brief.patch_count} 個",
+        f"- 其中已知遭利用（CISA KEV）：{report.kev_count} 個",
         f"- 待封鎖：{report.analyst_brief.block_count} 個",
         f"- 待hunt：{report.analyst_brief.hunt_count} 個",
     ]
@@ -393,6 +449,7 @@ def render_markdown(report: DailyReport) -> str:
                 f"- 昨日有、今日未再出現：{report.analyst_brief.gone_ioc_count} 個",
             ]
         )
+    lines.extend(_render_enrichment_note(report))
     lines.append("")
     lines.extend(_render_analyst_board(report))
 

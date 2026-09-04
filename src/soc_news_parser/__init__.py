@@ -19,7 +19,14 @@ from .parser import (
     parse_utc,
     source_key_for_url,
 )
-from .analyst import load_previous_iocs, render_ioc_csv
+from .analyst import load_previous_iocs, render_ioc_csv_from_actions
+from .enrich import (
+    EnrichmentReport,
+    collect_cve_ids,
+    default_fetcher,
+    disabled_report,
+    enrich_cves,
+)
 from .report import collect_report, serialize_report
 from .resend import ResendClient, ResendError, build_report_email
 from .schedule import (
@@ -32,6 +39,28 @@ from .schedule import (
     slot_window,
 )
 from .sources import SOURCES
+
+DEFAULT_CACHE_DIR = ".cache/enrichment"
+
+
+def _resolve_intel(args: argparse.Namespace, report_manifests: list) -> tuple[dict, object]:
+    """Look up KEV/NVD for the day's CVEs. Never fatal: a failure just degrades."""
+    if not getattr(args, "enrich", True):
+        return {}, disabled_report()
+    cve_ids = collect_cve_ids(report_manifests)
+    if not cve_ids:
+        # Enrichment ran; there was simply nothing to look up.
+        return {}, EnrichmentReport(enabled=True)
+    fetch, close = default_fetcher()
+    try:
+        return enrich_cves(
+            cve_ids,
+            fetcher=fetch,
+            cache_dir=getattr(args, "cache_dir", DEFAULT_CACHE_DIR),
+            api_key=os.environ.get("NVD_API_KEY") or None,
+        )
+    finally:
+        close()
 
 
 def _arguments() -> argparse.Namespace:
@@ -89,6 +118,17 @@ def _arguments() -> argparse.Namespace:
     report.add_argument(
         "--previous-json",
         help="yesterday's report JSON; marks new IoCs and adds a day-over-day delta",
+    )
+    report.add_argument(
+        "--no-enrich",
+        dest="enrich",
+        action="store_false",
+        help="skip CISA KEV and NVD lookups; CVSS then comes only from the article",
+    )
+    report.add_argument(
+        "--cache-dir",
+        default=DEFAULT_CACHE_DIR,
+        help=f"CVE enrichment cache directory (default {DEFAULT_CACHE_DIR})",
     )
 
     send_report = subcommands.add_parser(
@@ -161,6 +201,17 @@ def _arguments() -> argparse.Namespace:
         action="store_true",
         help="write the report and validate email without calling Resend",
     )
+    deliver.add_argument(
+        "--no-enrich",
+        dest="enrich",
+        action="store_false",
+        help="skip CISA KEV and NVD lookups; CVSS then comes only from the article",
+    )
+    deliver.add_argument(
+        "--cache-dir",
+        default=DEFAULT_CACHE_DIR,
+        help=f"CVE enrichment cache directory (default {DEFAULT_CACHE_DIR})",
+    )
 
     schedule = subcommands.add_parser(
         "schedule",
@@ -169,6 +220,17 @@ def _arguments() -> argparse.Namespace:
     schedule.add_argument("--hours", type=int, default=24)
     schedule.add_argument("--at", default=DEFAULT_CLOCK)
     schedule.add_argument("--timezone", default=DEFAULT_TIMEZONE)
+    schedule.add_argument(
+        "--no-enrich",
+        dest="enrich",
+        action="store_false",
+        help="skip CISA KEV and NVD lookups; CVSS then comes only from the article",
+    )
+    schedule.add_argument(
+        "--cache-dir",
+        default=DEFAULT_CACHE_DIR,
+        help=f"CVE enrichment cache directory (default {DEFAULT_CACHE_DIR})",
+    )
     schedule.add_argument("--output-dir", default="reports")
     schedule.add_argument(
         "--to",
@@ -244,6 +306,10 @@ def _atomic_write(path: str, content: str) -> str:
         with tempfile.NamedTemporaryFile(
             "w",
             encoding="utf-8",
+            # The reader digest is taken over the in-memory string, so the bytes
+            # on disk must keep its newlines exactly. Without this, Windows
+            # writes CRLF and send-report rejects its own report pair.
+            newline="\n",
             dir=destination.parent,
             prefix=f".{destination.name}.",
             delete=False,
@@ -279,6 +345,7 @@ def _write_report_pair(
             with tempfile.NamedTemporaryFile(
                 "w",
                 encoding="utf-8",
+                newline="\n",
                 dir=destination.parent,
                 prefix=f".{destination.name}.",
                 delete=False,
@@ -390,6 +457,7 @@ def _deliver(args: argparse.Namespace) -> dict[str, object]:
             until=until,
             generated_at=until,
             previous_iocs=previous_iocs,
+            enricher=lambda manifests: _resolve_intel(args, manifests),
         )
     json_content, markdown_content = serialize_report(report)
     json_output, markdown_output = _write_report_pair(
@@ -399,7 +467,7 @@ def _deliver(args: argparse.Namespace) -> dict[str, object]:
         markdown_content,
     )
     csv_output = _atomic_write(
-        str(csv_path), render_ioc_csv(report.articles, previous_iocs=previous_iocs)
+        str(csv_path), render_ioc_csv_from_actions(report.analyst_brief.actions)
     )
     sent = _send_report_files(
         json_path=json_output,
@@ -543,6 +611,7 @@ def main() -> None:
                     until=until,
                     generated_at=generated_at,
                     previous_iocs=previous_iocs,
+                    enricher=lambda manifests: _resolve_intel(args, manifests),
                 )
                 json_content, markdown_content = serialize_report(report)
                 json_output, markdown_output = _write_report_pair(
@@ -555,7 +624,7 @@ def main() -> None:
                 if args.csv_output:
                     csv_output = _atomic_write(
                         args.csv_output,
-                        render_ioc_csv(report.articles, previous_iocs=previous_iocs),
+                        render_ioc_csv_from_actions(report.analyst_brief.actions),
                     )
                 print(
                     json.dumps(

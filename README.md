@@ -101,6 +101,50 @@ uv run soc-news-parser report \
 
 Markdown 是給 SOC／威脅分析師閱讀的值班報告：開頭是今日優先處置一句話，接著是修補、封鎖、Hunt、監控、觀察清單。每個 CVE 的 CVSS 與影響只取該指標所在文句，不會把同篇最高分套到全部漏洞。事件叢集只在同一 CVE 出現於兩篇以上來源時列出。監控／觀察只在標題或來源摘要寫成外洩、釣魚活動或勒索事件時列出；產品文正文帶過 phishing／個資不會進處置清單，文章仍留在報告後半。公共遞迴 DNS（例如 `8.8.8.8`、`1.1.1.1`、`dns.google`）與靜態清單中的品牌官網／子網域（例如 `claude.ai`、`code.claude.ai`、`microsoft.com`）若出現在 IoC 章節仍記成 confirmed，但降為 hunt 複核，不列入待封鎖。不會用「主機名含品牌字」或平台後綴（`gitlab.io`、`github.io`、`squarespace.com`、`it.com`）做白名單；`claude.ai.download-app.us`、`claude-desktop.gitlab.io` 仍待封鎖。同篇文章若已有較長子網域，兩標籤且左標籤長度 ≤ 3 的父網域（例如 `it.com` 對 `downloading-api.it.com`）改為 hunt；`download-app.us` 這類長左標籤父網域仍與子網域一併封鎖。清單只根據原文明確的 CVE、IoC 章節指標與原文影響用語產生，不把 candidate 升成 confirmed。Report ID、parser 版本、正文 hash、warnings、candidate/rejected、排除文章及來源錯誤只保留於 JSON 稽核檔。CSV 是一列一個可操作指標。JSON 會寫入 `reader_digest`（Markdown 的 SHA-256），寄送前用它核對兩份檔案仍成對，並拒絕相同輸出路徑。
 
+### CVE 加值：CISA KEV 與 NVD
+
+原文常只寫 CVE 編號，不寫 CVSS，也不會說這個漏洞是否正在被攻擊。`report` 與 `deliver`
+預設會把當日所有 `confirmed` CVE 拿去比對 CISA KEV 目錄與 NVD，讓「73 個待修 CVE」變成
+「其中 3 個已知遭利用，今天就要修」。
+
+加值資料是**第三方主張，不是原文說的**，所以與 evidence manifest 完全分開存放：
+manifest 仍然只記錄原文明確寫了什麼，加值結果放在 JSON 的 `cve_intel`，每筆帶自己的
+`sources` 與 `retrieved_at`。`candidate` 不會因為加值而升成 `confirmed`。
+
+處置清單的變化：
+
+- KEV 一律升為 HIGH。已確認在野利用，優先於任何文字訊號。
+- 修補清單改以 KEV 優先、再依 CISA 修補期限、再依 CVSS 排序；KEV 項目標上 `【KEV】`。
+- 理由欄寫明來源，例如 `KEV 已知遭利用，CISA 修補期限 2026-09-18；CVSS 9.8 CRITICAL（NVD）`。
+  原文自己寫的分數會標成 `（原文）`，兩者不會混淆。
+- 郵件主旨變成 `待修 73（KEV 3）`；報告表頭多一行「其中已知遭利用（CISA KEV）」。
+- CSV 多四欄：`kev`、`kev_due_date`、`cvss_score`、`cvss_severity`。
+
+查詢全部走與抓新聞相同的加固通道（HTTPS、主機白名單、公開 IP、redirect 重新驗證、
+12 MiB 上限）。**任何加值失敗都不會中斷報告**：錯誤記在 JSON 的 `enrichment.errors`，
+Markdown 會標「CVE 加值有 N 項查詢失敗」，報告照常寄出，只是 KEV／CVSS 欄位不完整。
+
+結果會快取在 `--cache-dir`（預設 `.cache/enrichment`）。同一天重跑不會再發任何請求；
+隔天只查沒看過的 CVE。已有分數的 CVE 快取 7 天，NVD 尚未評分的每天重查一次。
+
+NVD 未帶 API key 時限制每 30 秒 5 次請求，73 個新 CVE 大約要 9 分鐘。申請免費 key 後
+放進環境變數可提高到每 30 秒 50 次：
+
+```bash
+export NVD_API_KEY="..."
+```
+
+API key 只會送往 `services.nvd.nist.gov`；若 redirect 離開該主機，header 會被丟掉。
+
+要完全關掉加值（離線環境、或只想要原文事實）：
+
+```bash
+uv run soc-news-parser report --no-enrich ...
+uv run soc-news-parser deliver --no-enrich
+```
+
+關掉時報告會明講「CVE 加值：未啟用，CVSS 僅取自原文，未比對 CISA KEV」。
+
 ### 使用 Resend 寄送報告
 
 先在 Resend 驗證寄件網域，並以環境變數提供憑證。工作目錄的 `.env` 會在變數尚未設定時自動載入。程式不會從命令列參數接受或輸出 API key：
