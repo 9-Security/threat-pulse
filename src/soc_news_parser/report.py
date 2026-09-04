@@ -14,8 +14,10 @@ from .analyst import (
     AnalystBrief,
     article_impacts,
     article_sort_key,
+    body_unavailable,
     build_brief,
     kev_targets,
+    unavailable_reason,
 )
 from .enrich import CveIntel, EnrichmentReport, disabled_report
 from .evidence import (
@@ -335,6 +337,7 @@ ACTION_HEADINGS = {
     "hunt": "Hunt",
     "monitor": "監控",
     "observe": "觀察",
+    "review": "人工複核",
 }
 
 
@@ -352,7 +355,7 @@ def _render_analyst_board(report: DailyReport) -> list[str]:
     for action in brief.actions:
         heading = ACTION_HEADINGS[action.action]
         grouped.setdefault(heading, []).append(action)
-    for heading in ("修補", "封鎖", "Hunt", "監控", "觀察"):
+    for heading in ("修補", "封鎖", "Hunt", "監控", "觀察", "人工複核"):
         items = grouped.get(heading)
         if not items:
             continue
@@ -441,6 +444,10 @@ def render_markdown(report: DailyReport) -> str:
         f"- 待封鎖：{report.analyst_brief.block_count} 個",
         f"- 待hunt：{report.analyst_brief.hunt_count} 個",
     ]
+    if report.analyst_brief.unavailable_count:
+        lines.append(
+            f"- 未能取得全文：{report.analyst_brief.unavailable_count} 篇（需人工複核）"
+        )
     if report.analyst_brief.new_ioc_count is not None:
         lines.extend(
             [
@@ -494,7 +501,7 @@ def render_markdown(report: DailyReport) -> str:
             action
             for action in report.analyst_brief.actions
             if action.article_url == manifest.article_url
-            and action.action in {"patch", "block", "hunt", "monitor"}
+            and action.action in {"patch", "block", "hunt", "monitor", "review"}
         ]
         if article_actions:
             first = article_actions[0]
@@ -513,6 +520,11 @@ def render_markdown(report: DailyReport) -> str:
                         f"  - 上下文：{_markdown_escape(_reader_context(evidence))}",
                     ]
                 )
+        elif body_unavailable(manifest):
+            lines.append(
+                f"- IoC：**未能取得全文**（{_markdown_escape(unavailable_reason(manifest))}）；"
+                "本篇是否含指標尚未確認，請人工開啟原文複核。"
+            )
         else:
             lines.append("- IoC：原文未提供明確指標。")
         if filenames:

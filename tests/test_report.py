@@ -10,6 +10,7 @@ import pytest
 from soc_news_parser import _parse_env_line, _write_report_pair
 from soc_news_parser.evidence import build_manifest
 from soc_news_parser.parser import ParseError, ParsedArticle
+from soc_news_parser.analyst import render_ioc_csv_from_actions
 from soc_news_parser.enrich import KEV_URL, CveIntel, EnrichmentReport
 from soc_news_parser.report import (
     _canonical_article_url,
@@ -519,3 +520,106 @@ def test_a_day_without_cves_says_enrichment_ran_with_nothing_to_do() -> None:
 
     assert "CVE 加值：已啟用；今日沒有明確 CVE 需要查詢" in markdown
     assert "未啟用" not in markdown
+
+
+def blocked_article(title: str) -> ParsedArticle:
+    """An article whose body was never retrieved, as a 403 leaves it."""
+    return ParsedArticle(
+        source="Dark Reading",
+        title=title,
+        url=f"https://example.test/{title.lower().replace(' ', '-')}",
+        published_at="2026-09-03T20:18:00+00:00",
+        body="",
+        extraction_method="failed",
+        body_characters=0,
+        warnings=[
+            "full article extraction failed; feed excerpt is metadata only",
+            "HTTP fetch failed for https://example.test/x: Client error "
+            "'403 Forbidden' for url 'https://example.test/x'",
+        ],
+    )
+
+
+class BlockedParser:
+    def __init__(self, title: str) -> None:
+        self.title = title
+
+    def parse_feed(self, source: object, **_: object) -> list[ParsedArticle]:
+        if getattr(source, "name") != "The Hacker News":
+            return []
+        return [blocked_article(self.title)]
+
+
+def blocked_report(title: str = "Threat Actors Target Enterprises in Fake Merger Scams"):
+    generated = datetime(2026, 9, 4, 6, 0, tzinfo=timezone.utc)
+    return collect_report(
+        BlockedParser(title),  # type: ignore[arg-type]
+        ["the-hacker-news"],
+        since=datetime(2026, 9, 3, 6, 0, tzinfo=timezone.utc),
+        until=generated,
+        generated_at=generated,
+    )
+
+
+def test_an_unread_article_is_never_reported_as_having_no_indicators() -> None:
+    report = blocked_report()
+    markdown = render_markdown(report)
+
+    assert "原文未提供明確指標" not in markdown
+    assert "未能取得全文" in markdown
+    assert "來源回應 HTTP 403，疑似反機器人阻擋" in markdown
+    assert "請人工開啟原文複核" in markdown
+
+
+def test_an_unread_article_becomes_a_review_action() -> None:
+    report = blocked_report()
+    actions = report.analyst_brief.actions
+
+    assert [item.action for item in actions] == ["review"]
+    assert actions[0].priority == "medium"
+    assert report.analyst_brief.unavailable_count == 1
+    assert "人工複核" in render_markdown(report)
+
+
+def test_a_blocked_phishing_headline_is_review_not_observe() -> None:
+    # The observe wording claims the article carried no actionable indicator,
+    # which cannot be said about a body that was never read.
+    report = blocked_report("Hackers Use QR Codes in Phishing Emails to Steal Logins")
+    actions = report.analyst_brief.actions
+
+    assert [item.action for item in actions] == ["review"]
+    assert report.analyst_brief.monitor_count == 0
+
+
+def test_review_actions_stay_out_of_the_actionable_csv() -> None:
+    report = blocked_report()
+    assert [item.action for item in report.analyst_brief.actions] == ["review"]
+    csv_text = render_ioc_csv_from_actions(report.analyst_brief.actions)
+
+    assert csv_text.strip().splitlines()[1:] == []
+    assert report.analyst_brief.patch_count == 0
+    assert report.analyst_brief.block_count == 0
+    assert report.analyst_brief.hunt_count == 0
+
+
+def test_an_unparseable_page_reports_its_own_cause() -> None:
+    article = blocked_article("Daily Cyber Security Stormcast For Friday")
+    article.warnings = [
+        "could not extract a valid article body from https://example.test/x: "
+        "no extraction candidates"
+    ]
+
+    class Parser:
+        def parse_feed(self, source: object, **_: object) -> list[ParsedArticle]:
+            return [article] if getattr(source, "name") == "The Hacker News" else []
+
+    generated = datetime(2026, 9, 4, 6, 0, tzinfo=timezone.utc)
+    report = collect_report(
+        Parser(),  # type: ignore[arg-type]
+        ["the-hacker-news"],
+        since=datetime(2026, 9, 3, 6, 0, tzinfo=timezone.utc),
+        until=generated,
+        generated_at=generated,
+    )
+
+    assert "頁面沒有可解析的正文結構" in render_markdown(report)

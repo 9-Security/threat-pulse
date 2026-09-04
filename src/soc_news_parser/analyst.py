@@ -239,6 +239,7 @@ class AnalystBrief:
     block_count: int
     hunt_count: int
     monitor_count: int
+    unavailable_count: int
     new_ioc_count: int | None
     repeat_ioc_count: int | None
     gone_ioc_count: int | None
@@ -252,6 +253,7 @@ class AnalystBrief:
             "block_count": self.block_count,
             "hunt_count": self.hunt_count,
             "monitor_count": self.monitor_count,
+            "unavailable_count": self.unavailable_count,
             "new_ioc_count": self.new_ioc_count,
             "repeat_ioc_count": self.repeat_ioc_count,
             "gone_ioc_count": self.gone_ioc_count,
@@ -510,10 +512,51 @@ def _cve_reason(
     return "；".join(parts)
 
 
+HTTP_STATUS_RE = re.compile(r"\b(\d{3})\s+(?:Forbidden|Unauthorized|Not Found|"
+                            r"Too Many Requests|Service Unavailable|error)", re.IGNORECASE)
+
+
+def body_unavailable(manifest: EvidenceManifest) -> bool:
+    """True when no article body was retrieved, so its content is unknown."""
+    return manifest.extraction_method == "failed" or not manifest.canonical_body.strip()
+
+
+def unavailable_reason(manifest: EvidenceManifest) -> str:
+    """A short, honest cause taken from the extraction warnings."""
+    joined = " ".join(manifest.extraction_warnings or ())
+    status = HTTP_STATUS_RE.search(joined)
+    if status:
+        code = status.group(1)
+        if code == "403":
+            return "來源回應 HTTP 403，疑似反機器人阻擋"
+        if code == "429":
+            return "來源回應 HTTP 429，請求過於頻繁"
+        return f"來源回應 HTTP {code}"
+    if "no extraction candidates" in joined:
+        return "頁面沒有可解析的正文結構"
+    if joined:
+        return "全文擷取失敗"
+    return "全文未取得"
+
+
 def build_actions(
     manifest: EvidenceManifest,
     intel: Mapping[str, CveIntel] | None = None,
 ) -> list[AnalystAction]:
+    if body_unavailable(manifest):
+        # The body was never read, so nothing may be asserted about its
+        # contents - not even that it carried no indicators.
+        return [
+            _make_action(
+                "review",
+                "medium",
+                "article",
+                manifest.article_title,
+                f"{unavailable_reason(manifest)}；未讀到正文，無法判斷是否含指標，"
+                "請人工開啟原文複核",
+                manifest,
+            )
+        ]
     confirmed = _confirmed(manifest)
     article_hosts = {
         host
@@ -825,6 +868,9 @@ def build_brief(
                 for item in marked
                 if item.action in {"monitor", "observe"}
             }
+        ),
+        unavailable_count=len(
+            {item.article_url for item in marked if item.action == "review"}
         ),
         new_ioc_count=new_count,
         repeat_ioc_count=repeat_count,
