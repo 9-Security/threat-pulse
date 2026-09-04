@@ -394,3 +394,62 @@ def test_request_headers_survive_a_same_host_redirect() -> None:
         )
 
     assert seen == ["secret-key", "secret-key"]
+
+
+def test_source_exclusions_strip_page_furniture_from_the_body() -> None:
+    article_url = "https://example.test/story"
+    page = """<html><body><article>
+        <p>Attackers exploited the flaw to run code remotely on the appliance.</p>
+        <div class="zox-side-widget">
+          <h3>People on the Move</h3>
+          <div class="industry-moves">
+            <p>Someone has joined Example Corp as Chief Marketing Officer.</p>
+          </div>
+        </div>
+        <div class="page-date page-date--btm">4 Sep 2026 2297 Views</div>
+        <p>The vendor shipped a patch on Tuesday for all supported releases.</p>
+    </article></body></html>"""
+
+    parser = news_parser()
+    parser.client.close()
+    parser.client = client_for({article_url: ("text/html", page)})
+
+    with parser:
+        body, method, _ = parser.extract_html(
+            article_url,
+            allowed_hosts=("example.test",),
+            selectors=("article",),
+            min_body_characters=50,
+            exclude_selectors=("div.zox-side-widget",),
+        )
+
+    assert "Attackers exploited the flaw" in body
+    assert "The vendor shipped a patch" in body
+    assert "People on the Move" not in body
+    assert "Chief Marketing Officer" not in body
+    # The global list covers the view counter without per-source config.
+    assert "2297 Views" not in body
+
+
+def test_a_broken_exclusion_selector_does_not_lose_the_article() -> None:
+    article_url = "https://example.test/story"
+    page = (
+        "<html><body><article><p>"
+        + "The advisory describes a remote code execution flaw. " * 4
+        + "</p></article></body></html>"
+    )
+
+    parser = news_parser()
+    parser.client.close()
+    parser.client = client_for({article_url: ("text/html", page)})
+
+    with parser:
+        body, _, _ = parser.extract_html(
+            article_url,
+            allowed_hosts=("example.test",),
+            selectors=("article",),
+            min_body_characters=50,
+            exclude_selectors=("div[[[not-a-selector",),
+        )
+
+    assert "remote code execution flaw" in body

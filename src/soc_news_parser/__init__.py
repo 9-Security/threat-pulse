@@ -675,6 +675,9 @@ def main() -> None:
                     min_body_characters=(
                         source.min_body_characters if source else 500
                     ),
+                    exclude_selectors=(
+                        source.exclude_selectors if source else ()
+                    ),
                 )
                 if args.command == "audit":
                     article_source = source.name if source else "Unknown"

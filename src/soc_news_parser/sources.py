@@ -8,6 +8,9 @@ class Source:
     article_selectors: tuple[str, ...] = ()
     article_hosts: tuple[str, ...] = ()
     min_body_characters: int = 500
+    # Extra CSS selectors to strip before reading the body, for page furniture
+    # the global list does not name.
+    exclude_selectors: tuple[str, ...] = ()
 
 
 SOURCES: dict[str, Source] = {
@@ -40,6 +43,7 @@ SOURCES: dict[str, Source] = {
         "https://www.securityweek.com/feed/",
         ("div.entry-content", "div.article-content", "article"),
         ("securityweek.com",),
+        exclude_selectors=("div.zox-side-widget", "div.industry-moves"),
     ),
     "the-record": Source(
         "The Record",
@@ -161,6 +165,7 @@ SOURCES: dict[str, Source] = {
         "https://www.hkcert.org/getrss/security-bulletin",
         ("div.article-content", "main article", "article", "main"),
         ("hkcert.org",),
+        exclude_selectors=("div.page-date--btm", "div.nav-article", "p.nav-article__info"),
     ),
     "cyber-security-news": Source(
         "Cyber Security News",

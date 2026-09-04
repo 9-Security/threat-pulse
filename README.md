@@ -10,7 +10,7 @@
 4. 使用 Trafilatura 做通用正文抽取。
 5. 最後嘗試 `article`、`main` 等語意標籤。
 
-解析結果會記錄 `extraction_method`、字元數及 warnings。Cloudflare 驗證頁、Access Denied、過短內容不會被當成文章正文。若完整 HTML 受阻但 RSS 有通過品質檢查的部分正文，會標成 `feed:*:partial`；兩者皆不可用時才標成 `extraction_method: "failed"`、`body` 留空。正文未取得的文章**不會**被寫成「原文未提供明確指標」——沒讀到的內容不能下任何斷言。它會列入處置清單的「人工複核」，並標明原因（例如「來源回應 HTTP 403，疑似反機器人阻擋」「頁面沒有可解析的正文結構」），報告表頭也會出現「未能取得全文：N 篇（需人工複核）」。複核項不計入待修／待封鎖／待 hunt，也不進 CSV，因為它沒有可操作的指標。JSON-LD `@graph` 最多走 64 個節點，避免環狀或過深結構拖垮擷取。沒有時區的 feed 日期會當成 UTC，並寫入來源診斷。
+擷取前會先剝除頁面裝飾：`script`、`nav`、`footer`、`aside`、廣告與社群分享區塊之外，另含側欄（`side-widget`、`sidebar`）、上下篇導覽與瀏覽計數器等每次載入都會變動的區域。來源可用 `exclude_selectors` 再補自己的選擇器（例如 SecurityWeek 的 `div.zox-side-widget`、HKCERT 的 `div.page-date--btm`）；選擇器寫錯不會讓整篇文章擷取失敗。解析結果會記錄 `extraction_method`、字元數及 warnings。Cloudflare 驗證頁、Access Denied、過短內容不會被當成文章正文。若完整 HTML 受阻但 RSS 有通過品質檢查的部分正文，會標成 `feed:*:partial`；兩者皆不可用時才標成 `extraction_method: "failed"`、`body` 留空。正文未取得的文章**不會**被寫成「原文未提供明確指標」——沒讀到的內容不能下任何斷言。它會列入處置清單的「人工複核」，並標明原因（例如「來源回應 HTTP 403，疑似反機器人阻擋」「頁面沒有可解析的正文結構」），報告表頭也會出現「未能取得全文：N 篇（需人工複核）」。複核項不計入待修／待封鎖／待 hunt，也不進 CSV，因為它沒有可操作的指標。JSON-LD `@graph` 最多走 64 個節點，避免環狀或過深結構拖垮擷取。沒有時區的 feed 日期會當成 UTC，並寫入來源診斷。
 
 所有 feed 與文章請求只允許 HTTPS、來源設定中的文章網域及公開 IP；每次 redirect 都會重新驗證，並以串流方式在解壓後 12 MiB 上限立即中止，避免 feed 連結造成 SSRF 或無界下載。
 
@@ -127,7 +127,7 @@ manifest 仍然只記錄原文明確寫了什麼，加值結果放在 JSON 的 `
 12 MiB 上限）。**任何加值失敗都不會中斷報告**：錯誤記在 JSON 的 `enrichment.errors`，
 Markdown 會標「CVE 加值有 N 項查詢失敗」，報告照常寄出，只是 KEV／CVSS 欄位不完整。
 
-同一時間窗重跑會得到相同的 Report ID：加值的實質內容（KEV、CVSS）計入識別碼，但查詢時戳不計入，否則重試會產生新的 ID 而讓 Resend 的冪等鍵失效、重複寄出。
+同一時間窗重跑會得到相同的 Report ID。識別碼取自**抽取到的證據**，不是原始正文雜湊 —— 瀏覽計數器、輪播側欄這類頁面裝飾會讓同一篇未變動文章的 `body_sha256` 每次抓取都不同（實測 46 篇中有 7 篇如此），若用它當識別碼，重試就會產生新 ID、讓 Resend 的冪等鍵失效而重複寄出。加值的實質內容（KEV、CVSS）計入識別碼，查詢時戳不計入。指標若真的增減，ID 仍會改變。
 
 結果會快取在 `--cache-dir`（預設 `.cache/enrichment`）。同一天重跑不會再發任何請求；
 隔天只查沒看過的 CVE。已有分數的 CVE 快取 7 天，NVD 尚未評分的每天重查一次。

@@ -233,7 +233,7 @@ def collect_report(
         "articles": [
             (
                 manifest.article_url,
-                manifest.body_sha256,
+                _findings_digest(manifest),
                 _is_topic_relevant(manifest),
             )
             for manifest in all_manifests
@@ -484,6 +484,23 @@ def _compact_summary(manifest: EvidenceManifest, limit: int = 160) -> str:
     if len(spaced) >= limit // 2:
         return f"{spaced}…"
     return f"{head.rstrip(' ,;:-')}…"
+
+
+def _findings_digest(manifest: EvidenceManifest) -> str:
+    """A fingerprint of what the parser found, not of the bytes it read.
+
+    The raw body hash cannot serve as report identity: view counters and
+    rotating sidebars change it between two fetches of an unchanged article, so
+    a retry of the same slot would mint a new report_id, the Resend idempotency
+    key would change with it, and the report would be delivered twice. What the
+    report actually says is its findings, and those are stable.
+    """
+    rows = sorted(
+        f"{item.status}\t{item.indicator_type}\t{item.normalized_value}"
+        for item in manifest.evidence
+    )
+    payload = "\n".join([str(body_unavailable(manifest)), *rows])
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 def _split_articles(

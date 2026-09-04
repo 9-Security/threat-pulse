@@ -837,3 +837,61 @@ def test_a_cjk_summary_is_not_collapsed_to_its_english_prefix() -> None:
 
     assert "Update…" not in entry
     assert "資安研究人員發現新攻擊活動" in entry
+
+
+def _volatile_pair(chrome: str) -> tuple[str, str]:
+    core = """Indicators of Compromise
+CVE-2026-1111
+evil-c2-host[.]com    C2 server for the implant
+"""
+    return core + chrome, core + chrome.replace("2297", "2304")
+
+
+def test_page_chrome_drift_does_not_move_the_report_id() -> None:
+    first, second = _volatile_pair("4 Sep 2026 2297 Views\n")
+    assert first != second
+
+    def report_for(body: str):
+        class Parser:
+            def parse_feed(self, source: object, **_: object) -> list[ParsedArticle]:
+                if getattr(source, "name") != "The Hacker News":
+                    return []
+                return [parsed_article("The Hacker News", "Campaign hits routers", body)]
+
+        generated = datetime(2026, 9, 4, 6, 0, tzinfo=timezone.utc)
+        return collect_report(
+            Parser(),  # type: ignore[arg-type]
+            ["the-hacker-news"],
+            since=datetime(2026, 9, 3, 6, 0, tzinfo=timezone.utc),
+            until=generated,
+            generated_at=generated,
+        )
+
+    a, b = report_for(first), report_for(second)
+
+    # The bodies, and so their hashes, differ; the findings do not.
+    assert a.articles[0].body_sha256 != b.articles[0].body_sha256
+    assert a.report_id == b.report_id
+
+
+def test_a_changed_finding_still_moves_the_report_id() -> None:
+    def report_for(body: str):
+        class Parser:
+            def parse_feed(self, source: object, **_: object) -> list[ParsedArticle]:
+                if getattr(source, "name") != "The Hacker News":
+                    return []
+                return [parsed_article("The Hacker News", "Campaign hits routers", body)]
+
+        generated = datetime(2026, 9, 4, 6, 0, tzinfo=timezone.utc)
+        return collect_report(
+            Parser(),  # type: ignore[arg-type]
+            ["the-hacker-news"],
+            since=datetime(2026, 9, 3, 6, 0, tzinfo=timezone.utc),
+            until=generated,
+            generated_at=generated,
+        )
+
+    full = "Indicators of Compromise\nCVE-2026-1111\nevil-c2-host[.]com    C2 server\n"
+    fewer = "Indicators of Compromise\nCVE-2026-1111\n"
+
+    assert report_for(full).report_id != report_for(fewer).report_id
