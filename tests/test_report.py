@@ -256,7 +256,9 @@ def test_topic_filter_keeps_security_articles_without_iocs() -> None:
     markdown = render_markdown(report)
     assert "Hospitals hit by ransomware campaign" in markdown
     assert "Quarterly earnings" not in markdown
-    assert "IoC：原文未提供明確指標。" in markdown
+    # Kept, but as a one-line entry rather than a full section.
+    assert "## 其他相關文章" in markdown
+    assert "## 1. Hospitals hit by ransomware campaign" not in markdown
     assert "今日沒有可立即修補、封鎖或 hunt 的明確指標。" in markdown
     assert "### 觀察" in markdown
 
@@ -623,3 +625,78 @@ def test_an_unparseable_page_reports_its_own_cause() -> None:
     )
 
     assert "頁面沒有可解析的正文結構" in render_markdown(report)
+
+
+class MixedParser:
+    def parse_feed(self, source: object, **_: object) -> list[ParsedArticle]:
+        if getattr(source, "name") != "The Hacker News":
+            return []
+        return [
+            parsed_article(
+                "The Hacker News",
+                "Campaign drops a backdoor",
+                """Indicators of Compromise
+CVE-2026-1111
+evil-c2-host[.]com    C2 server for the second-stage implant
+""",
+            ),
+            parsed_article(
+                "The Hacker News",
+                "Ransomware crews shift tactics this quarter",
+                "A trend piece with no indicators of any kind in the body.",
+            ),
+        ]
+
+
+def mixed_report():
+    generated = datetime(2026, 9, 4, 6, 0, tzinfo=timezone.utc)
+    return collect_report(
+        MixedParser(),  # type: ignore[arg-type]
+        ["the-hacker-news"],
+        since=datetime(2026, 9, 3, 6, 0, tzinfo=timezone.utc),
+        until=generated,
+        generated_at=generated,
+    )
+
+
+def test_articles_without_indicators_collapse_to_one_line_each() -> None:
+    report = mixed_report()
+    markdown = render_markdown(report)
+    lines = markdown.splitlines()
+
+    assert "## 1. Campaign drops a backdoor" in markdown
+    assert "## 2. Ransomware crews shift tactics this quarter" not in markdown
+
+    compact = [
+        line
+        for line in lines
+        if line.startswith("- [Ransomware crews shift tactics this quarter]")
+    ]
+    assert len(compact) == 1
+    # The one line still carries source, time and the source's own summary.
+    assert "The Hacker News" in compact[0]
+    assert "UTC" in compact[0]
+    assert "trend piece" in compact[0]
+    assert "## 其他相關文章" in markdown
+
+
+def test_an_unread_article_keeps_its_full_section() -> None:
+    # It is not "read with nothing found", so it must not be collapsed away.
+    markdown = render_markdown(blocked_report())
+
+    assert "## 1. " in markdown
+    assert "未能取得全文" in markdown
+    assert "## 其他相關文章" not in markdown
+
+
+def test_context_is_dropped_when_it_only_repeats_the_indicator() -> None:
+    markdown = render_markdown(mixed_report())
+    lines = markdown.splitlines()
+
+    # Anchor on the detail section; the duty board lists the same values.
+    cve = next(i for i, line in enumerate(lines) if line.startswith("- **CVE**："))
+    assert not lines[cve + 1].startswith("  - 上下文：")
+
+    host = next(i for i, line in enumerate(lines) if line.startswith("- **DOMAIN**："))
+    assert lines[host + 1].startswith("  - 上下文：")
+    assert "C2 server for the second-stage implant" in lines[host + 1]

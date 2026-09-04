@@ -331,6 +331,20 @@ def _reader_context(evidence: Evidence) -> str:
     return f"{truncated}…"
 
 
+def _context_line(evidence: Evidence) -> str | None:
+    """The context line, unless it only repeats the indicator back."""
+    context = _reader_context(evidence)
+    if not context:
+        return None
+    flattened = re.sub(r"\s+", " ", context).strip().lower()
+    if flattened in {
+        evidence.normalized_value.strip().lower(),
+        evidence.raw_value.strip().lower(),
+    }:
+        return None
+    return f"  - 上下文：{_markdown_escape(context)}"
+
+
 ACTION_HEADINGS = {
     "patch": "修補",
     "block": "封鎖",
@@ -426,6 +440,38 @@ def _render_enrichment_note(report: DailyReport) -> list[str]:
     return lines
 
 
+def _compact_summary(manifest: EvidenceManifest, limit: int = 160) -> str:
+    """A gist for the one-line list; the full summary stays in the JSON."""
+    summary = _source_summary(manifest)
+    if len(summary) <= limit:
+        return summary
+    head = summary[:limit]
+    for ending in _SENTENCE_ENDINGS:
+        cut = head.rfind(ending)
+        if cut >= limit // 2:
+            return head[: cut + 1]
+    return f"{head.rsplit(' ', 1)[0].rstrip(' ,;:-')}…"
+
+
+def _split_articles(
+    report: DailyReport,
+) -> tuple[list[EvidenceManifest], list[EvidenceManifest]]:
+    """Full sections for articles with something to show or explain.
+
+    An article that was read and simply held no indicator needs a line, not a
+    section; keeping it as one buried the duty board under filler.
+    """
+    detailed: list[EvidenceManifest] = []
+    listed: list[EvidenceManifest] = []
+    for manifest in report.articles:
+        confirmed = _unique_article_evidence(manifest, "confirmed")
+        if confirmed or body_unavailable(manifest):
+            detailed.append(manifest)
+        else:
+            listed.append(manifest)
+    return detailed, listed
+
+
 def render_markdown(report: DailyReport) -> str:
     start = datetime.fromisoformat(report.window_start).astimezone(timezone.utc)
     end = datetime.fromisoformat(report.window_end).astimezone(timezone.utc)
@@ -460,7 +506,8 @@ def render_markdown(report: DailyReport) -> str:
     lines.append("")
     lines.extend(_render_analyst_board(report))
 
-    for number, manifest in enumerate(report.articles, start=1):
+    detailed, listed = _split_articles(report)
+    for number, manifest in enumerate(detailed, start=1):
         confirmed = _unique_article_evidence(manifest, "confirmed")
         iocs = [
             evidence
@@ -513,13 +560,12 @@ def render_markdown(report: DailyReport) -> str:
         if iocs:
             lines.extend(["### 明確 IoC", ""])
             for evidence in iocs:
-                lines.extend(
-                    [
-                        f"- **{evidence.indicator_type.upper()}**："
-                        f"`{_markdown_code(evidence.normalized_value)}`",
-                        f"  - 上下文：{_markdown_escape(_reader_context(evidence))}",
-                    ]
+                lines.append(
+                    f"- **{evidence.indicator_type.upper()}**："
+                    f"`{_markdown_code(evidence.normalized_value)}`"
                 )
+                if (context := _context_line(evidence)) is not None:
+                    lines.append(context)
         elif body_unavailable(manifest):
             lines.append(
                 f"- IoC：**未能取得全文**（{_markdown_escape(unavailable_reason(manifest))}）；"
@@ -530,22 +576,43 @@ def render_markdown(report: DailyReport) -> str:
         if filenames:
             lines.extend(["", "### 相關檔案", ""])
             for evidence in filenames:
-                lines.extend(
-                    [
-                        f"- `{_markdown_code(evidence.normalized_value)}`",
-                        f"  - 上下文：{_markdown_escape(_reader_context(evidence))}",
-                    ]
-                )
+                lines.append(f"- `{_markdown_code(evidence.normalized_value)}`")
+                if (context := _context_line(evidence)) is not None:
+                    lines.append(context)
         if claims:
             lines.extend(["", "### 原文指稱", ""])
             for evidence in claims:
                 label = CLAIM_LABELS[evidence.indicator_type]
-                lines.extend(
-                    [
-                        f"- **{label}**：`{_markdown_code(evidence.normalized_value)}`",
-                        f"  - 上下文：{_markdown_escape(_reader_context(evidence))}",
-                    ]
+                lines.append(
+                    f"- **{label}**：`{_markdown_code(evidence.normalized_value)}`"
                 )
+                if (context := _context_line(evidence)) is not None:
+                    lines.append(context)
+        lines.append("")
+
+    if listed:
+        lines.extend(
+            [
+                "## 其他相關文章",
+                "",
+                f"以下 {len(listed)} 篇已擷取全文但未出現明確指標，僅列標題供情勢掌握；"
+                "完整正文與候選值見 JSON 稽核檔。",
+                "",
+            ]
+        )
+        for manifest in listed:
+            published = (
+                datetime.fromisoformat(manifest.published_at).astimezone(timezone.utc)
+                if manifest.published_at
+                else None
+            )
+            stamp = published.strftime("%m-%d %H:%M") if published else "時間未提供"
+            lines.append(
+                f"- [{_markdown_escape(manifest.article_title)}]"
+                f"({_markdown_url(manifest.article_url)})"
+                f" — {_markdown_escape(manifest.source)}"
+                f"（{stamp} UTC）— {_markdown_escape(_compact_summary(manifest))}"
+            )
         lines.append("")
 
     lines.extend(
