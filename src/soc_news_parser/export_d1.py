@@ -144,22 +144,28 @@ INDICATOR_COLUMNS = (
     "reason, kev, kev_due_date, cvss_score, cvss_severity, source, "
     "article_title, article_url, section, context"
 )
-# D1 rejects an over-long statement with SQLITE_TOOBIG, and a context line can
-# run to 300 characters, so batches are sized in bytes rather than in rows.
+# D1 rejects an over-long statement with SQLITE_TOOBIG. Batches are sized by
+# encoded length, not character count: a Chinese-language advisory is three
+# bytes per character, and a 40,000-character batch already went out at 41 KB.
 MAX_STATEMENT_BYTES = 40_000
+
+
+def _encoded(text: str) -> int:
+    """Bytes on the wire, which is what D1 measures."""
+    return len(text.encode("utf-8"))
 
 
 def _insert_batches(rows: list[tuple[Any, ...]]) -> Iterator[str]:
     header = f"INSERT OR REPLACE INTO indicators ({INDICATOR_COLUMNS}) VALUES"
     batch: list[str] = []
-    size = len(header)
+    size = _encoded(header)
     for row in rows:
         rendered = _row(row)
-        if batch and size + len(rendered) + 2 > MAX_STATEMENT_BYTES:
+        if batch and size + _encoded(rendered) + 2 > MAX_STATEMENT_BYTES:
             yield header + "\n" + ",\n".join(batch) + ";"
-            batch, size = [], len(header)
+            batch, size = [], _encoded(header)
         batch.append(rendered)
-        size += len(rendered) + 2
+        size += _encoded(rendered) + 2
     if batch:
         yield header + "\n" + ",\n".join(batch) + ";"
 
@@ -220,6 +226,10 @@ def export_report(
     if not isinstance(payload, dict):
         raise ValueError("report JSON is not an object")
     # A dated folder names the report already; trust it over any derivation.
+    if report_date is not None and not REPORT_DATE_RE.match(report_date):
+        # It becomes the primary key, so a typo would write rows no later
+        # re-push could replace and no query could select.
+        raise ValueError("report date must be a plain YYYY-MM-DD key")
     folder = path.parent.name if REPORT_DATE_RE.match(path.parent.name) else None
     chosen = report_date or folder or report_date_for(payload, timezone_name=timezone_name)
     return render_sql(payload, chosen, ingested_at=ingested_at)

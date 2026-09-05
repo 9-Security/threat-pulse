@@ -107,10 +107,20 @@ jobs:
           # Checked here rather than in `if:` so an absent token says so. A
           # step skipped by its condition vanishes from the run with the run
           # still green, which is how an empty secret went unnoticed once.
-          if [ -z "${CLOUDFLARE_API_TOKEN}" ]; then
-            echo "::notice::CLOUDFLARE_API_TOKEN is not set; skipping the D1 push"
+          if [ "${DRY_RUN}" = "true" ]; then
+            # A dry run is documented as the safe way to exercise the pipeline;
+            # it must not delete and rewrite a day in the production corpus.
+            echo "::notice::dry run; not pushing to D1"
             exit 0
           fi
+          for name in CLOUDFLARE_API_TOKEN CLOUDFLARE_ACCOUNT_ID; do
+            if [ -z "${!name}" ]; then
+              # Both are required: without the account id wrangler tries to
+              # enumerate /memberships and dies pointing at the wrong secret.
+              echo "::notice::${name} is not set; skipping the D1 push"
+              exit 0
+            fi
+          done
           # Take the folder deliver actually wrote rather than recomputing the
           # date: a manual run in the small hours of Taipei time lands on the
           # previous slot, and the names sort chronologically anyway.
@@ -129,6 +139,7 @@ jobs:
             --remote --file "/tmp/${day}.sql"
           echo "pushed ${day} to D1"
         env:
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || false }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
 

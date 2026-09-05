@@ -47,6 +47,9 @@ CREATE TABLE IF NOT EXISTS indicators (
     article_url     TEXT NOT NULL,
     section         TEXT,
     context         TEXT,
+    -- Lookups arrive lower-cased from a log. Comparing LOWER(value) would make
+    -- SQLite ignore the index and scan the table, so the folded form is stored.
+    value_lc TEXT GENERATED ALWAYS AS (lower(value)) VIRTUAL,
     PRIMARY KEY (report_date, indicator_type, value, article_url),
     FOREIGN KEY (report_date) REFERENCES reports(report_date) ON DELETE CASCADE
 );
@@ -55,7 +58,7 @@ CREATE TABLE IF NOT EXISTS indicators (
 -- and asks about each one. Parent-host matching issues one lookup per label, so
 -- it rides the same index.
 CREATE INDEX IF NOT EXISTS idx_indicators_value
-    ON indicators(value);
+    ON indicators(value_lc);
 CREATE INDEX IF NOT EXISTS idx_indicators_type_value
     ON indicators(indicator_type, value);
 CREATE INDEX IF NOT EXISTS idx_indicators_action_date

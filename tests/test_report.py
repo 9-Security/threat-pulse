@@ -970,3 +970,80 @@ ip-api.com (a legitimate resource used by cybercriminals)
     assert "legitimate resource used by cybercriminals" in context
     # The value is on the line directly above; repeating it says nothing.
     assert not context.startswith("  - 上下文：ip-api")
+
+
+def _render(body: str, *, title: str = "Campaign hits routers", summary: str = ""):
+    class Parser:
+        def parse_feed(self, source: object, **_: object) -> list[ParsedArticle]:
+            if getattr(source, "name") != "The Hacker News":
+                return []
+            article = parsed_article("The Hacker News", title, body)
+            if summary:
+                article.feed_excerpt = summary
+            return [article]
+
+    generated = datetime(2026, 9, 5, 6, 0, tzinfo=timezone.utc)
+    report = collect_report(
+        Parser(),  # type: ignore[arg-type]
+        ["the-hacker-news"],
+        since=datetime(2026, 9, 4, 6, 0, tzinfo=timezone.utc),
+        until=generated,
+        generated_at=generated,
+    )
+    return report, render_markdown(report)
+
+def test_titles_and_summaries_are_defanged_too() -> None:
+    _, markdown = _render(
+        "Indicators of Compromise\nevil-c2-host[.]com    C2 server\n",
+        title="Loader staged at the C2",
+        summary="Attackers staged the loader at http://evil-c2-host.com/gate.",
+    )
+
+    # Markdown escapes the brackets, so match on the neutralised scheme
+    # and the absence of a live one.
+    assert "hxxp://evil-c2-host" in markdown
+    prose = [
+        line
+        for line in markdown.splitlines()
+        if not line.startswith("- 來源：") and "http://" in line
+    ]
+    assert prose == [], prose
+
+
+def test_prose_that_only_looks_like_a_host_is_left_alone() -> None:
+    from soc_news_parser.report import _defang_text
+
+    # zip, sh and boo are delegated TLDs, but none of these is a host.
+    # Defanging on TLD alone bracketed the filename an analyst copies, so only
+    # the day's own indicators are neutralised.
+    hosts = (("evil-c2-host.com", "domain"),)
+    prose = (
+        "dropped payload.zip and run.sh, tracked as Laboo.boo, "
+        "beaconing to evil-c2-host.com. Patch now.In addition, see 4.16.7.1"
+    )
+
+    result = _defang_text(prose, hosts)
+
+    assert "payload.zip" in result
+    assert "run.sh" in result
+    assert "Laboo.boo" in result
+    assert "now.In" in result
+    assert "4.16.7.1" in result
+    assert "evil-c2-host[.]com" in result
+
+
+def test_a_url_keeps_its_query_string_intact() -> None:
+    from soc_news_parser.report import _defang
+
+    assert _defang("http://evil.com?u=a.b.c", "url") == "hxxp://evil[.]com?u=a.b.c"
+    assert _defang("http://evil.com#frag.x", "url") == "hxxp://evil[.]com#frag.x"
+    assert _defang("http://evil.com:8443/a.b", "url") == "hxxp://evil[.]com:8443/a.b"
+
+
+def test_a_host_containing_another_is_fully_defanged() -> None:
+    from soc_news_parser.report import _defang_text
+
+    hosts = (("evil.com", "domain"), ("mail.evil.com", "domain"))
+    assert _defang_text("blocking mail.evil.com today", hosts) == (
+        "blocking mail[.]evil[.]com today"
+    )

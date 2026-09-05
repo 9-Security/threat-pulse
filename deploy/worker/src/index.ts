@@ -275,21 +275,28 @@ async function lookupMany(env: Env, values: string[], since: string | null, call
   }
   if (allCandidates.size === 0) return [];
 
-  const placeholders = [...allCandidates].map(() => "?").join(",");
-  const binds: unknown[] = [...allCandidates];
-  let sql = `SELECT * FROM indicators WHERE LOWER(value) IN (${placeholders})`;
-  if (since) {
-    sql += " AND report_date >= ?";
-    binds.push(since);
-  }
-  sql += " ORDER BY report_date DESC";
-  const { results } = await env.DB.prepare(sql).bind(...binds).all<Json>();
-
+  // D1 allows 100 bound parameters per query, and one hostname expands to a
+  // candidate per label, so 40 FQDNs already overrun a single statement.
+  const PARAMS_PER_QUERY = 90;
   const byValue = new Map<string, Json[]>();
-  for (const row of results) {
-    const key = String(row.value).toLowerCase();
-    if (!byValue.has(key)) byValue.set(key, []);
-    byValue.get(key)!.push(row);
+  const candidates = [...allCandidates];
+  for (let start = 0; start < candidates.length; start += PARAMS_PER_QUERY) {
+    const chunk = candidates.slice(start, start + PARAMS_PER_QUERY);
+    const placeholders = chunk.map(() => "?").join(",");
+    const binds: unknown[] = [...chunk];
+    // value_lc is indexed; wrapping the column in LOWER() would force a scan.
+    let sql = `SELECT * FROM indicators WHERE value_lc IN (${placeholders})`;
+    if (since) {
+      sql += " AND report_date >= ?";
+      binds.push(since);
+    }
+    sql += " ORDER BY report_date DESC";
+    const { results } = await env.DB.prepare(sql).bind(...binds).all<Json>();
+    for (const row of results) {
+      const key = String(row.value).toLowerCase();
+      if (!byValue.has(key)) byValue.set(key, []);
+      byValue.get(key)!.push(row);
+    }
   }
 
   return wanted.map((value) => {
