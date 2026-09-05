@@ -30,8 +30,6 @@ jobs:
       # Optional. Without it NVD allows 5 requests per 30s, so a day with many
       # new CVEs spends several minutes in enrichment.
       NVD_API_KEY: ${{ secrets.NVD_API_KEY }}
-      # Read by the D1 step's `if:` guard, so an unconfigured repo skips it.
-      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
     steps:
       - name: Check Resend secrets
         run: |
@@ -103,9 +101,15 @@ jobs:
       - name: Push indicators to D1
         # The email is the deliverable; the D1 corpus is what agents query
         # later, so a push failure must not fail the run that already sent it.
-        if: success() && env.CLOUDFLARE_API_TOKEN != ''
+        if: success()
         continue-on-error: true
         run: |
+          # The check lives here rather than in `if:`, where a secret read
+          # through the env context evaluates empty and silently skips the step.
+          if [ -z "${CLOUDFLARE_API_TOKEN}" ]; then
+            echo "::notice::CLOUDFLARE_API_TOKEN is not set; skipping the D1 push"
+            exit 0
+          fi
           # Take the folder deliver actually wrote rather than recomputing the
           # date: a manual run in the small hours of Taipei time lands on the
           # previous slot, and the names sort chronologically anyway.
