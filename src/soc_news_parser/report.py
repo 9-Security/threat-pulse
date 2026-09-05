@@ -22,6 +22,7 @@ from .analyst import (
 from .enrich import CveIntel, EnrichmentReport, disabled_report
 from .evidence import (
     CLAIM_TYPES,
+    KNOWN_TLDS,
     COUNTED_IOC_TYPES,
     Evidence,
     EvidenceManifest,
@@ -339,18 +340,88 @@ def _reader_context(evidence: Evidence) -> str:
     return f"{truncated}…"
 
 
+DEFANGED_TYPES = frozenset({"domain", "ip", "url"})
+# Anchored for a value that is a whole URL; unanchored for prose, where the
+# scheme turns up mid-sentence and is what a mail client linkifies.
+_SCHEME_RE = re.compile(r"^http(s?)://", re.IGNORECASE)
+_SCHEME_ANYWHERE_RE = re.compile(r"http(s?)://", re.IGNORECASE)
+# Host-shaped runs in prose. The TLD check in _defang_host_token decides which
+# of them are really hosts.
+_HOST_IN_TEXT_RE = re.compile(
+    r"(?<![\w@.\[-])(?:[a-z0-9-]{1,63}\.){1,}[a-z]{2,63}(?![\w\]-])",
+    re.IGNORECASE,
+)
+
+
+def _defang(value: str, indicator_type: str) -> str:
+    """Neutralise a network indicator for the human-readable report.
+
+    A mail client turns a live host into a clickable link, and a duty report is
+    the last place an analyst should be one slip away from resolving a C2. Only
+    the Markdown is defanged; the CSV, the JSON and the D1 corpus keep the
+    canonical value, because those are read by machines that need it to work.
+    """
+    if indicator_type not in DEFANGED_TYPES or not value:
+        return value
+    if indicator_type == "url":
+        scheme = _SCHEME_RE.match(value)
+        rest = value[scheme.end():] if scheme else value
+        host, slash, path = rest.partition("/")
+        defanged_host = host.replace(".", "[.]")
+        prefix = f"hxxp{scheme.group(1)}://" if scheme else ""
+        return f"{prefix}{defanged_host}{slash}{path}"
+    # IPv6 has no dots to break; its colons are not linkified anyway.
+    return value.replace(".", "[.]")
+
+
+def _defang_host_token(match: re.Match[str]) -> str:
+    """Defang a host-shaped token, but only if its last label is a real TLD.
+
+    The IANA list is what keeps version numbers and sentence endings intact:
+    `4.16.7.1` and `end.Next` have no delegated suffix and are left alone.
+    """
+    token = match.group(0)
+    return token.replace(".", "[.]") if token.rsplit(".", 1)[-1].lower() in KNOWN_TLDS else token
+
+
+def _defang_in_text(text: str, evidence: Evidence) -> str:
+    """Neutralise anything in a context sentence a mail client would linkify.
+
+    This runs for every indicator type, not just network ones: a live URL in a
+    filename's context is exactly as clickable as one in a domain's.
+    """
+    if evidence.indicator_type in DEFANGED_TYPES:
+        for original in (evidence.raw_value, evidence.normalized_value):
+            if original and original in text:
+                text = text.replace(
+                    original, _defang(original, evidence.indicator_type)
+                )
+    text = _SCHEME_ANYWHERE_RE.sub(lambda m: f"hxxp{m.group(1)}://", text)
+    return _HOST_IN_TEXT_RE.sub(_defang_host_token, text)
+
+
 def _context_line(evidence: Evidence) -> str | None:
     """The context line, unless it only repeats the indicator back."""
     context = _reader_context(evidence)
     if not context:
         return None
-    flattened = re.sub(r"\s+", " ", context).strip().lower()
-    if flattened in {
-        evidence.normalized_value.strip().lower(),
-        evidence.raw_value.strip().lower(),
-    }:
+    flattened = re.sub(r"\s+", " ", context).strip()
+    values = [
+        item.strip()
+        for item in (evidence.normalized_value, evidence.raw_value)
+        if item and item.strip()
+    ]
+    if flattened.lower() in {item.lower() for item in values}:
         return None
-    return f"  - 上下文：{_markdown_escape(context)}"
+    # The value sits directly above, so a context that opens by repeating it
+    # spends its first words saying nothing.
+    for item in sorted(values, key=len, reverse=True):
+        if flattened.lower().startswith(item.lower()):
+            trimmed = flattened[len(item):].lstrip(" :\u2014-")
+            if trimmed:
+                flattened = trimmed
+            break
+    return f"  - 上下文：{_markdown_escape(_defang_in_text(flattened, evidence))}"
 
 
 ACTION_HEADINGS = {
@@ -363,6 +434,21 @@ ACTION_HEADINGS = {
 }
 
 
+def _defang_priority_line(brief: AnalystBrief) -> str:
+    """The headline names one indicator, and it must not be live either.
+
+    The line is built once for every consumer, so it keeps the canonical value
+    in the JSON; only this rendering neutralises it.
+    """
+    line = brief.priority_line
+    for action in brief.actions:
+        if action.target_type in DEFANGED_TYPES and action.target in line:
+            line = line.replace(
+                action.target, _defang(action.target, action.target_type)
+            )
+    return line
+
+
 def _render_analyst_board(report: DailyReport) -> list[str]:
     brief = report.analyst_brief
     if not report.articles:
@@ -372,7 +458,12 @@ def _render_analyst_board(report: DailyReport) -> list[str]:
             "期間內沒有主題相關新文；無需立即修補、封鎖或 hunt。",
             "",
         ]
-    lines = ["## 今日處置清單", "", f"{_markdown_escape(brief.priority_line)}", ""]
+    lines = [
+        "## 今日處置清單",
+        "",
+        _markdown_escape(_defang_priority_line(brief)),
+        "",
+    ]
     grouped: dict[str, list] = {}
     for action in brief.actions:
         heading = ACTION_HEADINGS[action.action]
@@ -384,7 +475,7 @@ def _render_analyst_board(report: DailyReport) -> list[str]:
         lines.extend([f"### {heading}", ""])
         for action in items:
             target = (
-                f"`{_markdown_code(action.target)}`"
+                f"`{_markdown_code(_defang(action.target, action.target_type))}`"
                 if action.target_type != "article"
                 else _markdown_escape(action.target)
             )
@@ -617,7 +708,7 @@ def render_markdown(report: DailyReport) -> str:
             for evidence in iocs:
                 lines.append(
                     f"- **{evidence.indicator_type.upper()}**："
-                    f"`{_markdown_code(evidence.normalized_value)}`"
+                    f"`{_markdown_code(_defang(evidence.normalized_value, evidence.indicator_type))}`"
                 )
                 if (context := _context_line(evidence)) is not None:
                     lines.append(context)
@@ -683,6 +774,9 @@ def render_markdown(report: DailyReport) -> str:
         [
             "## 報告說明",
             "",
+            "- 網域、IP 與 URL 在本文中已 defang（`example[.]com`、`hxxp://`），"
+            "避免郵件用戶端把惡意主機變成可點連結；要匯入防火牆或 SIEM 請用 CSV，"
+            "那份保持原值。",
             "- 僅收錄標題或來源摘要與資安主題明確相關的文章。",
             "- 處置清單只根據原文明確的 CVE、IoC 章節指標與影響用語，不額外猜測。",
             "- 監控／觀察只在標題或來源摘要寫成外洩、釣魚活動或勒索事件時列出；正文帶過的用語不進清單。",

@@ -312,8 +312,10 @@ def test_same_source_keeps_every_same_day_article_with_iocs() -> None:
     assert "Afternoon phishing wave" in markdown
     assert "Evening CVE advisory" in markdown
     assert markdown.count("### 明確 IoC") == 3
-    assert "`shared.example.com`" in markdown
-    assert "`phish.example.com`" in markdown
+    # Hosts are defanged in the Markdown so a mail client cannot linkify them.
+    assert "`shared[.]example[.]com`" in markdown
+    assert "`phish[.]example[.]com`" in markdown
+    assert "`shared.example.com`" not in markdown
     assert "`CVE-2026-76581`" in markdown
 
 
@@ -895,3 +897,76 @@ def test_a_changed_finding_still_moves_the_report_id() -> None:
     fewer = "Indicators of Compromise\nCVE-2026-1111\n"
 
     assert report_for(full).report_id != report_for(fewer).report_id
+
+
+def test_hosts_are_defanged_in_markdown_but_not_in_the_csv() -> None:
+    body = """Indicators of Compromise
+evil-c2-host[.]com    C2 server, reachable at http://evil-c2-host.com/gate
+45.13.237.190
+hxxp://evil-c2-host[.]com/payload.bin
+loader.exe
+CVE-2026-1111
+"""
+
+    class Parser:
+        def parse_feed(self, source: object, **_: object) -> list[ParsedArticle]:
+            if getattr(source, "name") != "The Hacker News":
+                return []
+            return [parsed_article("The Hacker News", "Campaign hits routers", body)]
+
+    generated = datetime(2026, 9, 5, 6, 0, tzinfo=timezone.utc)
+    report = collect_report(
+        Parser(),  # type: ignore[arg-type]
+        ["the-hacker-news"],
+        since=datetime(2026, 9, 4, 6, 0, tzinfo=timezone.utc),
+        until=generated,
+        generated_at=generated,
+    )
+    markdown = render_markdown(report)
+    csv_text = render_ioc_csv_from_actions(report.analyst_brief.actions)
+
+    # Markdown: nothing a mail client can turn into a live link.
+    assert "`evil-c2-host[.]com`" in markdown
+    assert "`45[.]13[.]237[.]190`" in markdown
+    assert "evil-c2-host.com" not in markdown
+    assert "45.13.237.190" not in markdown
+    assert "http://evil-c2-host" not in markdown
+
+    # Filenames and CVEs are not network resources; leave them alone.
+    assert "`loader.exe`" in markdown
+    assert "`CVE-2026-1111`" in markdown
+
+    # The CSV feeds a firewall or SIEM, so it keeps the canonical value.
+    assert "evil-c2-host.com" in csv_text
+    assert "45.13.237.190" in csv_text
+    assert "[.]" not in csv_text
+
+    # So does the JSON audit file.
+    assert "evil-c2-host.com" in json.dumps(report.to_dict(), ensure_ascii=False)
+
+
+def test_a_context_that_opens_with_its_own_value_drops_the_repetition() -> None:
+    body = """Indicators of Compromise
+ip-api.com (a legitimate resource used by cybercriminals)
+"""
+
+    class Parser:
+        def parse_feed(self, source: object, **_: object) -> list[ParsedArticle]:
+            if getattr(source, "name") != "The Hacker News":
+                return []
+            return [parsed_article("The Hacker News", "Backdoor calls home", body)]
+
+    generated = datetime(2026, 9, 5, 6, 0, tzinfo=timezone.utc)
+    report = collect_report(
+        Parser(),  # type: ignore[arg-type]
+        ["the-hacker-news"],
+        since=datetime(2026, 9, 4, 6, 0, tzinfo=timezone.utc),
+        until=generated,
+        generated_at=generated,
+    )
+    lines = render_markdown(report).splitlines()
+    context = next(line for line in lines if line.startswith("  - 上下文："))
+
+    assert "legitimate resource used by cybercriminals" in context
+    # The value is on the line directly above; repeating it says nothing.
+    assert not context.startswith("  - 上下文：ip-api")
