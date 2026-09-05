@@ -98,6 +98,51 @@ jobs:
         env:
           DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || false }}
 
+      - name: Push indicators to D1
+        # The email is the deliverable; the D1 corpus is what agents query
+        # later, so a push failure must not fail the run that already sent it.
+        if: success()
+        continue-on-error: true
+        run: |
+          # Checked here rather than in `if:` so an absent token says so. A
+          # step skipped by its condition vanishes from the run with the run
+          # still green, which is how an empty secret went unnoticed once.
+          if [ "${DRY_RUN}" = "true" ]; then
+            # A dry run is documented as the safe way to exercise the pipeline;
+            # it must not delete and rewrite a day in the production corpus.
+            echo "::notice::dry run; not pushing to D1"
+            exit 0
+          fi
+          for name in CLOUDFLARE_API_TOKEN CLOUDFLARE_ACCOUNT_ID; do
+            if [ -z "${!name}" ]; then
+              # Both are required: without the account id wrangler tries to
+              # enumerate /memberships and dies pointing at the wrong secret.
+              echo "::notice::${name} is not set; skipping the D1 push"
+              exit 0
+            fi
+          done
+          # Take the folder deliver actually wrote rather than recomputing the
+          # date: a manual run in the small hours of Taipei time lands on the
+          # previous slot, and the names sort chronologically anyway.
+          day="$(ls -1 reports 2>/dev/null | grep -E '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' | sort | tail -1)"
+          evidence="reports/${day}/daily-evidence.json"
+          if [ -z "${day}" ] || [ ! -f "${evidence}" ]; then
+            echo "::warning::no dated report on disk; nothing to push"
+            exit 0
+          fi
+          uv run soc-news-parser export-d1 \
+            --json-report "${evidence}" \
+            --date "${day}" \
+            --output "/tmp/${day}.sql"
+          npx --yes wrangler@3 d1 execute soc-iocs \
+            --config deploy/worker/wrangler.toml \
+            --remote --file "/tmp/${day}.sql"
+          echo "pushed ${day} to D1"
+        env:
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || false }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
       - name: Upload report artifacts
         if: success()
         uses: actions/upload-artifact@v4

@@ -101,7 +101,7 @@ uv run soc-news-parser report \
 
 郵件主旨改為值班可掃描的處置數字：待修 CVE、待封鎖網路指標、待 hunt 端點指標、相關文章數。這三個處置數字與 IoC 總數一樣採全報告唯一值；同一 CVE 被兩家媒體寫到只計一次，清單仍保留各來源列供對照。文章數只計標題或來源摘要具有明確資安主題訊號的文章；不相關文章仍保留在 JSON 的 `excluded_articles` 供稽核。IoC 總數僅計 `confirmed` 的 MD5、SHA-1、SHA-256、IPv4/IPv6、domain、URL 與 CVE，檔名與原文指稱另行統計。
 
-Markdown 是給 SOC／威脅分析師閱讀的值班報告：開頭是今日優先處置一句話，接著是修補、封鎖、Hunt、監控、觀察清單。每個 CVE 的 CVSS 與影響只取該指標所在文句，不會把同篇最高分套到全部漏洞。事件叢集只在同一 CVE 出現於兩篇以上來源時列出。監控／觀察只在標題或來源摘要寫成外洩、釣魚活動或勒索事件時列出；產品文正文帶過 phishing／個資不會進處置清單，文章仍留在報告後半。公共遞迴 DNS（例如 `8.8.8.8`、`1.1.1.1`、`dns.google`）與靜態清單中的品牌官網／子網域（例如 `claude.ai`、`code.claude.ai`、`microsoft.com`）若出現在 IoC 章節仍記成 confirmed，但降為 hunt 複核，不列入待封鎖。不會用「主機名含品牌字」或平台後綴（`gitlab.io`、`github.io`、`squarespace.com`、`it.com`）做白名單；`claude.ai.download-app.us`、`claude-desktop.gitlab.io` 仍待封鎖。同篇文章若已有較長子網域，兩標籤且左標籤長度 ≤ 3 的父網域（例如 `it.com` 對 `downloading-api.it.com`）改為 hunt；`download-app.us` 這類長左標籤父網域仍與子網域一併封鎖。清單只根據原文明確的 CVE、IoC 章節指標與原文影響用語產生，不把 candidate 升成 confirmed。報告後半只給有明確指標、或未能取得全文的文章完整區塊；已讀到全文但沒有指標的文章集中在「其他相關文章」，一篇一行（標題連結、來源、時間、摘要摘要至 160 字），情勢掌握仍在，但不再淹沒處置清單。所有文章都保留在報告中，完整正文與候選值見 JSON。指標的「上下文」行只在原文句子確實多於指標本身時才列出；像 CVE 條列那種上下文等於指標值的情況會省略，不重複同一個字串。Report ID、parser 版本、正文 hash、warnings、candidate/rejected、排除文章及來源錯誤只保留於 JSON 稽核檔。CSV 是一列一個可操作指標。JSON 會寫入 `reader_digest`（Markdown 的 SHA-256），寄送前用它核對兩份檔案仍成對，並拒絕相同輸出路徑。
+Markdown 是給 SOC／威脅分析師閱讀的值班報告：開頭是今日優先處置一句話，接著是修補、封鎖、Hunt、監控、觀察清單。每個 CVE 的 CVSS 與影響只取該指標所在文句，不會把同篇最高分套到全部漏洞。事件叢集只在同一 CVE 出現於兩篇以上來源時列出。監控／觀察只在標題或來源摘要寫成外洩、釣魚活動或勒索事件時列出；產品文正文帶過 phishing／個資不會進處置清單，文章仍留在報告後半。公共遞迴 DNS（例如 `8.8.8.8`、`1.1.1.1`、`dns.google`）與靜態清單中的品牌官網／子網域（例如 `claude.ai`、`code.claude.ai`、`microsoft.com`）若出現在 IoC 章節仍記成 confirmed，但降為 hunt 複核，不列入待封鎖。不會用「主機名含品牌字」或平台後綴（`gitlab.io`、`github.io`、`squarespace.com`、`it.com`）做白名單；`claude.ai.download-app.us`、`claude-desktop.gitlab.io` 仍待封鎖。同篇文章若已有較長子網域，兩標籤且左標籤長度 ≤ 3 的父網域（例如 `it.com` 對 `downloading-api.it.com`）改為 hunt；`download-app.us` 這類長左標籤父網域仍與子網域一併封鎖。清單只根據原文明確的 CVE、IoC 章節指標與原文影響用語產生，不把 candidate 升成 confirmed。報告後半只給有明確指標、或未能取得全文的文章完整區塊；已讀到全文但沒有指標的文章集中在「其他相關文章」，一篇一行（標題連結、來源、時間、摘要摘要至 160 字），情勢掌握仍在，但不再淹沒處置清單。所有文章都保留在報告中，完整正文與候選值見 JSON。指標的「上下文」行只在原文句子確實多於指標本身時才列出；上下文等於指標值時整行省略，以指標值開頭時去掉開頭那次重複（值就在正上方）。Markdown 中的網域、IP 與 URL 會 defang（`example[.]com`、`hxxp://`），涵蓋處置清單、今日優先那行、文章標題、來源摘要與上下文句子，避免郵件用戶端把惡意主機變成可點連結。規則只有兩條、不做猜測：中和 `http://` scheme，以及替換**當日報告自己確認的**網路指標。不會只因為字尾是合法 TLD 就 defang —— `payload.zip`、`run.sh`、`Laboo.boo` 分別是檔名、指令稿與惡意程式家族名，加括號只會破壞分析師要複製的值。來源引用連結不受影響，仍可點擊。CSV、JSON 稽核檔與 D1／MCP 保持原值，那些是機器要用的。Report ID、parser 版本、正文 hash、warnings、candidate/rejected、排除文章及來源錯誤只保留於 JSON 稽核檔。CSV 是一列一個可操作指標。JSON 會寫入 `reader_digest`（Markdown 的 SHA-256），寄送前用它核對兩份檔案仍成對，並拒絕相同輸出路徑。
 
 ### CVE 加值：CISA KEV 與 NVD
 
@@ -266,6 +266,27 @@ uv run soc-news-parser mcp --http --host 0.0.0.0 --port 43124
 ```
 
 報告目錄預設 `reports/`，可用 `SOC_IOC_REPORTS_DIR` 覆寫。MCP 的 `date` 參數只接受 `YYYY-MM-DD` 且必須是真實日期；解析後的路徑會再確認仍位於報告根目錄內，因此帶 `..`、斜線或指向外部的符號連結都會被拒絕，不會讀到根目錄以外的檔案。`list_reports` 也只列出符合日期格式的資料夾。
+
+### 對外服務：Cloudflare Workers + D1
+
+要讓外部 LLM／Agent 查詢歷史指標，本機的檔案式 MCP 有兩個先天限制：只查最新一份報告，
+而且完全比對 —— log 裡的 `sub.evil.com` 對不上報告裡的 `evil.com`。`deploy/worker/`
+是解法：D1 就是 SQLite，跨日期查詢、父網域比對、批次查詢都變成有索引的讀取。
+
+沒有主機要維護。每日 Actions 把當日指標推進去，Worker 只讀。
+
+`canonical_body` **不會**離開稽核檔 —— 那是 26 家出版商的全文。上傳的是指標值（事實）、
+本專案自己的處置判斷、KEV／NVD（公共領域）、以及標題與連結（引用）。`context` 是原文
+逐字句，截到 300 字元，且只發給持有 `context` scope 的 token；只有 `read` 的 token 仍
+拿得到完整命中與引用連結，自行去原文閱讀。
+
+推送與部署見 `deploy/worker/README.md`。單日匯出：
+
+```bash
+uv run soc-news-parser export-d1   --json-report reports/2026-09-05/daily-evidence.json   --output /tmp/2026-09-05.sql
+```
+
+重推同一天會先刪除當日資料再寫入，所以修正後的報告是取代而非疊加。
 
 ### 驗證
 
