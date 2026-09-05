@@ -267,6 +267,27 @@ uv run soc-news-parser mcp --http --host 0.0.0.0 --port 43124
 
 報告目錄預設 `reports/`，可用 `SOC_IOC_REPORTS_DIR` 覆寫。MCP 的 `date` 參數只接受 `YYYY-MM-DD` 且必須是真實日期；解析後的路徑會再確認仍位於報告根目錄內，因此帶 `..`、斜線或指向外部的符號連結都會被拒絕，不會讀到根目錄以外的檔案。`list_reports` 也只列出符合日期格式的資料夾。
 
+### 對外服務：Cloudflare Workers + D1
+
+要讓外部 LLM／Agent 查詢歷史指標，本機的檔案式 MCP 有兩個先天限制：只查最新一份報告，
+而且完全比對 —— log 裡的 `sub.evil.com` 對不上報告裡的 `evil.com`。`deploy/worker/`
+是解法：D1 就是 SQLite，跨日期查詢、父網域比對、批次查詢都變成有索引的讀取。
+
+沒有主機要維護。每日 Actions 把當日指標推進去，Worker 只讀。
+
+`canonical_body` **不會**離開稽核檔 —— 那是 26 家出版商的全文。上傳的是指標值（事實）、
+本專案自己的處置判斷、KEV／NVD（公共領域）、以及標題與連結（引用）。`context` 是原文
+逐字句，截到 300 字元，且只發給持有 `context` scope 的 token；只有 `read` 的 token 仍
+拿得到完整命中與引用連結，自行去原文閱讀。
+
+推送與部署見 `deploy/worker/README.md`。單日匯出：
+
+```bash
+uv run soc-news-parser export-d1   --json-report reports/2026-09-05/daily-evidence.json   --output /tmp/2026-09-05.sql
+```
+
+重推同一天會先刪除當日資料再寫入，所以修正後的報告是取代而非疊加。
+
 ### 驗證
 
 ```bash

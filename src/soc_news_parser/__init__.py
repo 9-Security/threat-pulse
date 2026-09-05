@@ -29,6 +29,7 @@ from .enrich import (
     disabled_report,
     enrich_cves,
 )
+from .export_d1 import export_report
 from .report import collect_report, serialize_report
 from .resend import ResendClient, ResendError, build_report_email
 from .schedule import (
@@ -220,6 +221,16 @@ def _arguments() -> argparse.Namespace:
         default=DEFAULT_CACHE_DIR,
         help=f"CVE enrichment cache directory (default {DEFAULT_CACHE_DIR})",
     )
+
+    export_d1 = subcommands.add_parser(
+        "export-d1",
+        help="render a report JSON as SQL for the D1-backed IoC service",
+    )
+    export_d1.add_argument("--json-report", required=True)
+    export_d1.add_argument(
+        "--date", help="report date key; defaults to the report's own window end"
+    )
+    export_d1.add_argument("--output", help="write SQL here instead of stdout")
 
     schedule = subcommands.add_parser(
         "schedule",
@@ -559,6 +570,17 @@ def main() -> None:
                 indent=2,
             )
         )
+        return
+    if args.command == "export-d1":
+        try:
+            sql = export_report(args.json_report, report_date=args.date)
+        except (OSError, ValueError) as error:
+            print(f"error: {error}", file=sys.stderr)
+            raise SystemExit(1) from error
+        if args.output:
+            print(_atomic_write(args.output, sql))
+        else:
+            sys.stdout.write(sql)
         return
     if args.command == "send-report":
         try:
