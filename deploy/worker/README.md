@@ -25,12 +25,36 @@ does travel:
 A token with only `read` gets every hit and every citation, but no source
 sentence — it can follow the link and read it at the publisher.
 
+## Credentials
+
+`wrangler login` requests fifteen OAuth scopes, including Pages, Queues and AI,
+where this needs two. A scoped API token is both tighter and easier to hand to
+CI. Create one under My Profile → API Tokens → Create Custom Token with:
+
+| permission | why |
+|---|---|
+| Account → Workers Scripts → Edit | deploy the Worker |
+| Account → D1 → Edit | push each day's indicators |
+| Account → Account Settings → Read | resolve the account |
+
+Keep it out of the repo and out of your shell history — `deploy/worker/.env` is
+gitignored:
+
+```bash
+printf 'CLOUDFLARE_API_TOKEN=%s\n' "$TOKEN" > deploy/worker/.env
+printf 'CLOUDFLARE_ACCOUNT_ID=%s\n' "$ACCOUNT_ID" >> deploy/worker/.env
+```
+
+`CLOUDFLARE_ACCOUNT_ID` is not optional: without it wrangler enumerates
+`/memberships`, which a minimally scoped token cannot do, and `d1 create` fails
+with `Authentication error [code: 10000]`.
+
 ## First deploy
 
 ```bash
 cd deploy/worker
 npm install
-npx wrangler login                       # opens a browser
+set -a && . ./.env && set +a
 npx wrangler d1 create soc-iocs          # paste database_id into wrangler.toml
 npm run schema                           # applies ../d1/schema.sql
 npx wrangler deploy
@@ -60,7 +84,7 @@ npx wrangler d1 execute soc-iocs --command \
 uv run soc-news-parser export-d1 \
   --json-report reports/2026-09-05/daily-evidence.json \
   --output /tmp/2026-09-05.sql
-npx wrangler d1 execute soc-iocs --file /tmp/2026-09-05.sql
+npx wrangler d1 execute soc-iocs --remote --file /tmp/2026-09-05.sql
 ```
 
 Re-pushing a day repairs it: the file deletes that day's rows first, so a

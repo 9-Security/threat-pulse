@@ -2,13 +2,13 @@ name = "soc-iocs-mcp"
 main = "src/index.ts"
 compatibility_date = "2026-09-01"
 
-# Created with:
-#   npx wrangler d1 create soc-iocs
-# then paste the printed database_id here.
+# Created with `npx wrangler d1 create soc-iocs`.
+# The account id is not committed; export CLOUDFLARE_ACCOUNT_ID, or put it
+# in deploy/worker/.env alongside CLOUDFLARE_API_TOKEN.
 [[d1_databases]]
 binding = "DB"
 database_name = "soc-iocs"
-database_id = "REPLACE_WITH_YOUR_D1_DATABASE_ID"
+database_id = "819cd0ac-bd1a-43bd-91fd-9a21a9d34dd3"
 
 [observability]
 enabled = true
