@@ -83,14 +83,15 @@ meaningful signal on the CVE path and close to a constant on the indicator path.
 
 ### 4. Corpus yield is small and heavily weighted toward CVEs
 
-Measured on current code across four consecutive daily windows:
+Measured across four consecutive daily windows, re-extracted from the stored
+article bodies on the current code:
 
-| report date | day | articles | confirmed unique | CVE | domain | ip | sha256 |
-|---|---|---|---|---|---|---|---|
-| 2026-09-04 | Fri | 25 | 93 | 56 | 6 | 3 | 11 |
-| 2026-09-05 | Sat | 38 | 87 | 61 | 3 | 0 | 0 |
-| 2026-09-06 | Sun | 9 | 12 | 9 | 0 | 0 | 0 |
-| 2026-09-07 | Mon | 9 | 5 | 1 | 0 | 0 | 0 |
+| report date | day | articles | confirmed unique | CVE | domain | ip | sha256 | family | candidate |
+|---|---|---|---|---|---|---|---|---|---|
+| 2026-09-04 | Fri | 25 | 81 | 56 | 6 | 3 | 11 | 4 | 99 |
+| 2026-09-05 | Sat | 38 | 69 | 61 | 3 | 0 | 0 | 0 | 61 |
+| 2026-09-06 | Sun | 9 | 9 | 9 | 0 | 0 | 0 | 0 | 24 |
+| 2026-09-07 | Mon | 9 | 1 | 1 | 0 | 0 | 0 | 0 | 16 |
 
 Deduplicated across all four days: **119 unique CVEs against 25 unique network
 and file indicators** — 9 domains, 3 IPs, 11 SHA-256, 2 MD5.
@@ -109,8 +110,21 @@ per four days should be expected to hit rarely. The review already accepted a lo
 hit rate provided exact hits are accurate and citable; these numbers are what
 that acceptance will be tested against.
 
-Earlier figures shared informally came from parser revision `bacf32e`; the tables
-above supersede them and were produced on `1b592d5`.
+These supersede every earlier figure. They were produced on `66ca089`, after two
+corrections that changed what counts as confirmed:
+
+- Malware family apposition ("X ransomware") became a candidate rather than a
+  confirmed claim, which is most of the drop in the `confirmed unique` column
+  against figures shared earlier in review.
+- Registry boundaries are decided by the Public Suffix List.
+
+The boundary change altered nothing on these four days: none of the nine
+confirmed domains is itself a public suffix. Six of them, however, sit under
+`duckdns.org`, which is one. Under the previous label-length rule a single
+article naming the bare registry would have placed it on the block list, so the
+exposure was one article away rather than absent.
+
+The next scheduled run is the first produced end to end on this code.
 
 ---
 
@@ -582,10 +596,48 @@ From the review's Recommendation, plus what the disclosures add.
 | 7 | Data handling and retention documentation | partially answered above |
 | 8 | Remove "safe to automate" claim | done throughout |
 | 9 | **Corpus depth** | store running since 2026-09-04; accrues 1 day/day |
-| 10 | Restate measurements on current parser revision | in progress |
+| 10 | Restate measurements on current parser revision | done; see Disclosure 4 |
 
 Items 9 and 10 are not in the review because the reviewers could not have known
 about them. Item 9 is not an engineering task — the collector already runs daily
 and pushes to the store. It is a scheduling constraint: four of the fields the
 review rated strongest need depth the corpus can only accumulate forward, so the
 pilot window should be set against the depth that will exist by then.
+
+---
+
+## What happens next, and what it waits on
+
+**Items 1, 2 and 6 are deliberately not built yet.** Response provenance fields,
+citation completeness and CVE provenance separation are all shape decisions
+inside `enrich_observables`, and their right shape depends on answers the pilot
+produces rather than on anything decidable here. The review's acceptance
+measures name decision-change rate and citation reachability; if the fields that
+change a decision turn out to be `verdict` and `suggested_investigation_action`
+alone, the response should be materially smaller than what this document
+drafts. Building it first and trimming afterwards costs more than waiting, and
+the difference is a scheduling conversation, not a technical one.
+
+**Item 7 is the one piece of work blocked on nobody.** A written data-handling
+policy — request logging, retention, residency, subprocessors, tenant isolation
+— is procurement's first question and is being drafted independently of the
+pilot.
+
+**Item 9 sets the earliest useful pilot date.** Depth accrues one day per day and
+cannot be backfilled. A measurement window that reports `last_seen`,
+`days_since_last_seen`, `report_count` and `source_count` as anything other than
+"the day the store began" needs the store to be materially older than the values
+being queried.
+
+### The open question this document does not settle
+
+Disclosure 4 puts the CVE path at roughly five times the volume of the indicator
+path, on a namespace that is closed, unambiguous, and already emitted by the
+consumer's own vulnerability tooling. `enrich_observables` is specified here
+because the review asked for it and validated its shape. Whether it, or a
+CVE-centred tool beside it, is the one that earns its place is a question the
+pilot's decision-change measurements should answer rather than this
+specification.
+
+Both read the same corpus. Nothing in the work below the interface has to be
+decided before that answer arrives.
