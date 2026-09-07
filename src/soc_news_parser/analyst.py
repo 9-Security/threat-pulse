@@ -253,6 +253,10 @@ class AnalystAction:
     # What the article itself printed, kept so ranking does not read a missing
     # NVD score as zero and sink an un-enriched critical CVE to the bottom.
     article_cvss_score: float | None = None
+    # Which rule held this back from the block list, when one did. A consumer
+    # should not have to substring-match a Chinese reason string to tell a
+    # public-resolver hit from a registry boundary.
+    benign_basis: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -519,6 +523,7 @@ def _make_action(
     manifest: EvidenceManifest,
     intel: CveIntel | None = None,
     article_cvss: float | None = None,
+    benign_basis: str | None = None,
 ) -> AnalystAction:
     return AnalystAction(
         action,
@@ -533,6 +538,7 @@ def _make_action(
         cvss_score=intel.cvss_score if intel else None,
         cvss_severity=intel.cvss_severity if intel else None,
         article_cvss_score=article_cvss,
+        benign_basis=benign_basis,
     )
 
 
@@ -674,6 +680,7 @@ def build_actions(
                         evidence.normalized_value,
                         PUBLIC_DNS_REASON,
                         manifest,
+                        benign_basis=BENIGN_BASIS_PUBLIC_RESOLVER,
                     )
                 )
             elif is_official_brand_host(
@@ -687,6 +694,7 @@ def build_actions(
                         evidence.normalized_value,
                         BRAND_REASON,
                         manifest,
+                        benign_basis=BENIGN_BASIS_BRAND_APEX,
                     )
                 )
             elif host and is_unsafe_domain_boundary(host):
@@ -698,6 +706,7 @@ def build_actions(
                         evidence.normalized_value,
                         PUBLIC_SUFFIX_REASON,
                         manifest,
+                        benign_basis=BENIGN_BASIS_DOMAIN_BOUNDARY,
                     )
                 )
             elif host and is_short_parent_of_confirmed_host(host, article_hosts):
@@ -709,6 +718,7 @@ def build_actions(
                         evidence.normalized_value,
                         SHORT_PARENT_REASON,
                         manifest,
+                        benign_basis=BENIGN_BASIS_DOMAIN_BOUNDARY,
                     )
                 )
             else:

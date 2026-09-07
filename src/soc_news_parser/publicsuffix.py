@@ -17,6 +17,7 @@ Refresh it with:
 
 from __future__ import annotations
 
+import hashlib
 from functools import lru_cache
 from importlib import resources
 
@@ -29,17 +30,28 @@ __all__ = [
 ]
 
 
-def _load_rules() -> tuple[frozenset[str], frozenset[str], frozenset[str]]:
+# The real list carries around ten thousand rules. A truncated or empty file
+# would parse without complaint and quietly answer "not a public suffix" to
+# everything, putting `github.io` back on block lists with nothing logged, so a
+# floor is enforced at import: a boundary list that cannot decide boundaries is
+# a failure to start, not a default.
+MINIMUM_RULES = 1000
+
+_LIST_PATH = "data/public_suffix_list.dat"
+
+
+def _read_list() -> str:
+    return (
+        resources.files(__package__).joinpath(_LIST_PATH).read_text(encoding="utf-8")
+    )
+
+
+def _load_rules(text: str) -> tuple[frozenset[str], frozenset[str], frozenset[str]]:
     """Split the list into normal, wildcard and exception rules.
 
     Wildcard rules are stored by their parent (`*.ck` as `ck`) and exception
     rules without the `!`, which is how both are matched below.
     """
-    text = (
-        resources.files(__package__)
-        .joinpath("data/public_suffix_list.dat")
-        .read_text(encoding="utf-8")
-    )
     normal: set[str] = set()
     wildcard: set[str] = set()
     exception: set[str] = set()
@@ -53,17 +65,29 @@ def _load_rules() -> tuple[frozenset[str], frozenset[str], frozenset[str]]:
             wildcard.add(rule[2:].lower())
         else:
             normal.add(rule.lower())
+    if len(normal) < MINIMUM_RULES:
+        raise RuntimeError(
+            f"{_LIST_PATH} yielded {len(normal)} rules, expected at least "
+            f"{MINIMUM_RULES}. Refresh it from https://publicsuffix.org/list/ "
+            "-- a short list silently disables every boundary decision."
+        )
     return frozenset(normal), frozenset(wildcard), frozenset(exception)
 
 
-NORMAL_RULES, WILDCARD_RULES, EXCEPTION_RULES = _load_rules()
+_LIST_TEXT = _read_list()
+NORMAL_RULES, WILDCARD_RULES, EXCEPTION_RULES = _load_rules(_LIST_TEXT)
+_LIST_DIGEST = hashlib.sha256(_LIST_TEXT.encode("utf-8")).hexdigest()[:12]
 
 
 def public_suffix_list_version() -> str:
-    """Rule counts, for reporting which list produced a boundary."""
-    return (
-        f"psl-{len(NORMAL_RULES)}n-{len(WILDCARD_RULES)}w-{len(EXCEPTION_RULES)}x"
-    )
+    """A digest of the bundled list, identifying which one drew a boundary.
+
+    Rule counts would not do. The list churns constantly, and a refresh that
+    adds one suffix and drops another leaves every count identical while moving
+    a real domain across the block/hunt line -- which is exactly the case
+    callers derive a version to catch.
+    """
+    return f"psl-{_LIST_DIGEST}"
 
 
 def _labels(host: str) -> list[str]:

@@ -140,6 +140,25 @@ jobs:
             echo "::warning::no dated report on disk; nothing to push"
             exit 0
           fi
+          # The same guard deploy/run-daily.sh applies. This workflow is
+          # manual-dispatch only now, which makes it precisely the case the
+          # guard exists for: re-collecting a window that closed hours ago
+          # returns a decayed copy of it, and the exporter deletes and rewrites
+          # the whole date. Both counts are compared, because a re-run that
+          # still finds the headlines but can no longer read their bodies keeps
+          # article_count and drops every indicator.
+          stored="$(npx --yes wrangler@3 d1 execute soc-iocs \
+            --config deploy/worker/wrangler.toml --remote --json \
+            --command "SELECT article_count, confirmed_ioc_count FROM reports WHERE report_date = '${day}'" \
+            2>/dev/null | uv run python deploy/first_field.py article_count confirmed_ioc_count)" || stored=""
+          if [ -n "${stored}" ] && [ "${FORCE_D1:-0}" != "1" ]; then
+            collected="$(uv run python deploy/first_field.py --plain article_count confirmed_ioc_count < "${evidence}")"
+            if [ "${collected%% *}" -lt "${stored%% *}" ] || [ "${collected##* }" -lt "${stored##* }" ]; then
+              echo "::warning::refusing to replace ${day}: D1 holds '${stored}' (articles indicators), this run collected '${collected}'. Set FORCE_D1=1 to override."
+              exit 0
+            fi
+          fi
+
           uv run soc-news-parser export-d1 \
             --json-report "${evidence}" \
             --date "${day}" \

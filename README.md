@@ -90,7 +90,7 @@ Cloudflare Worker 的父網域比對用**同一份**清單：`npm run psl` 由�
 更新清單後記得重跑 `npm run psl`：
 
 ```bash
-curl -s https://publicsuffix.org/list/public_suffix_list.dat \r
+curl -s https://publicsuffix.org/list/public_suffix_list.dat \
   > src/soc_news_parser/data/public_suffix_list.dat
 ```
 
@@ -212,6 +212,8 @@ uv run soc-news-parser deliver --dry-run
 
 `deploy/run-daily.sh` 是一天的完整流程：`git pull` → `uv sync` → `deliver` → `export-d1` → 推 D1。搭配 `deploy/systemd/` 的 service 與 timer：
 
+需要 **systemd 252 以上**（Ubuntu 24.04、Debian 12 起符合）。`OnCalendar` 的時區後綴在更舊版本上會解析失敗，timer 會安靜地永遠不觸發——而 CI 排程已停用，等於完全沒有排程在跑。舊系統請拿掉 unit 裡的時區後綴，並確保主機時區本身就是 `Asia/Taipei`。
+
 ```bash
 sudo useradd --system --create-home --home-dir /home/threatpulse --shell /bin/bash threatpulse
 sudo -u threatpulse -H bash -lc 'curl -LsSf https://astral.sh/uv/install.sh | sh'
@@ -248,7 +250,15 @@ journalctl -u threat-pulse-daily.service -n 50
 
 `.github/workflows/daily-deliver.yml` 跑同樣的步驟，**排程已停用**，只保留 Actions 介面的手動觸發，供主機停機時備援。兩邊同時排程會各自抓取、產生不同的 report ID，於是繞過 Resend 的冪等鍵而寄出兩封，D1 也會互相覆蓋。
 
-要改回 CI 排程，把 workflow 的 `schedule:` 取消註解並停掉主機 timer，然後設定 Repository secrets：`RESEND_API_KEY`、`RESEND_FROM`、`RESEND_TO`，以及選用的 `NVD_API_KEY`、`CLOUDFLARE_API_TOKEN`、`CLOUDFLARE_ACCOUNT_ID`。GitHub 的 cron 可能延遲數分鐘到數小時，免費倉庫 60 天沒有新 commit 排程會被停用，昨日對照也只能靠可能未命中的 Actions cache。
+要改回 CI 排程，先停掉主機 timer，再把下面這段加回 workflow 的 `on:` 底下——原本的 `schedule:` 是整段刪除的，沒有註解可以取消：
+
+```yaml
+  schedule:
+    # 22:00 UTC is 06:00 Asia/Taipei.
+    - cron: "0 22 * * *"
+```
+
+然後設定 Repository secrets：`RESEND_API_KEY`、`RESEND_FROM`、`RESEND_TO`，以及選用的 `NVD_API_KEY`、`CLOUDFLARE_API_TOKEN`、`CLOUDFLARE_ACCOUNT_ID`。GitHub 的 cron 可能延遲數分鐘到數小時，免費倉庫 60 天沒有新 commit 排程會被停用，昨日對照也只能靠可能未命中的 Actions cache。
 
 #### 舊的 cron 安裝方式
 

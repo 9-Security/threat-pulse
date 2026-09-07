@@ -5,6 +5,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from soc_news_parser.analyst import (
+    BENIGN_BASIS_BRAND_APEX,
+    BENIGN_BASIS_DOMAIN_BOUNDARY,
+    BENIGN_BASIS_PUBLIC_RESOLVER,
     article_cvss,
     article_impacts,
     build_actions,
@@ -12,6 +15,7 @@ from soc_news_parser.analyst import (
     build_clusters,
     is_official_brand_host,
     is_short_parent_of_confirmed_host,
+    is_unsafe_domain_boundary,
     load_previous_iocs,
     render_ioc_csv,
 )
@@ -558,3 +562,54 @@ def test_reader_markdown_has_action_board() -> None:
     assert report.analyst_brief.patch_count == 1
     assert report.subject.startswith("[SOC] 每日資安新聞 IoC 彙整報告 - 待修 1")
     assert "待封鎖 0" in report.subject
+
+
+def test_short_registrable_parent_with_its_child_is_hunt() -> None:
+    """The rule the PSL boundary does not cover, run through build_actions.
+
+    `abc.com` is registrable, so `is_unsafe_domain_boundary` does not fire and
+    the demotion has to come from the short-parent rule. This branch's only
+    test used `it.com`, which became a public-suffix case and stopped reaching
+    it at all.
+    """
+    manifest = build_manifest(
+        _article(
+            "Lure domains listed",
+            "Researchers listed the lure domains.\n"
+            "Indicators of Compromise\n"
+            "abc.com\n"
+            "api.abc.com\n",
+        )
+    )
+    by_target = {item.target: item for item in build_actions(manifest)}
+
+    assert not is_unsafe_domain_boundary("abc.com")
+    assert by_target["abc.com"].action == "hunt"
+    assert "父網域過寬" in by_target["abc.com"].reason
+    assert by_target["abc.com"].benign_basis == BENIGN_BASIS_DOMAIN_BOUNDARY
+    assert by_target["api.abc.com"].action == "block"
+    assert by_target["api.abc.com"].benign_basis is None
+
+
+def test_every_demotion_names_the_rule_that_caused_it() -> None:
+    """A consumer must not have to substring-match a prose reason.
+
+    The three benign bases were defined and then read by nothing, so the
+    provenance they promised never reached the output.
+    """
+    manifest = build_manifest(
+        _article(
+            "Mixed indicators",
+            "Researchers listed the infrastructure.\n"
+            "Indicators of Compromise\n"
+            "8.8.8.8\n"
+            "accounts.google.com\n"
+            "github.io\n",
+        )
+    )
+    by_target = {item.target: item for item in build_actions(manifest)}
+
+    assert by_target["8.8.8.8"].benign_basis == BENIGN_BASIS_PUBLIC_RESOLVER
+    assert by_target["accounts.google.com"].benign_basis == BENIGN_BASIS_BRAND_APEX
+    assert by_target["github.io"].benign_basis == BENIGN_BASIS_DOMAIN_BOUNDARY
+    assert by_target["github.io"].action == "hunt"
