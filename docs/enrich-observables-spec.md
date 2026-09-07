@@ -463,22 +463,32 @@ See Disclosure 3: on the indicator path this will almost always be 1.
 
 ### Domain relationship matching
 
-**The Public Suffix List is not currently used.** The present rule is a
-heuristic: a two-label parent whose left label is three characters or shorter
-(`it.com`) is demoted rather than treated as an ordinary parent, while a longer
-left label (`download-app.us`) is treated as a parent. A separate hardcoded list
-of brand apexes is matched by suffix.
+**The Public Suffix List is now used on both sides.** The previous rule was a
+heuristic — a two-label parent whose left label was three characters or shorter
+(`it.com`) was demoted, a longer one (`download-app.us`) was not. It caught
+`it.com` by accident and missed `github.io`, `gitlab.io` and `duckdns.org`
+entirely, all of which have longer left labels and all of which are registry
+boundaries. It also would have demoted `squarespace.com`, which reads like a
+platform but is an ordinary registrable domain.
 
-The review is right that this is the wrong boundary. A public suffix or
-shared-hosting boundary must not be treated as an ordinary parent domain, and the
-heuristic gets that wrong in both directions — it will accept some public
-suffixes and reject some legitimate registrable domains.
+Two things changed:
 
-**Adopting the PSL is accepted as a prerequisite for the pilot.** Until then,
-`match_boundary` reports which rule produced the relation, so a consumer can
-discount heuristic matches. Every non-exact match returns `matched_value`. A
-related domain suppressed because the boundary is unsafe is returned in
-`excluded` with reason code `unsafe_domain_boundary`.
+- **Report generation.** A name that is itself a public suffix is never placed on
+  the block list, however it appears in an article and whether or not a
+  subdomain accompanies it. It is demoted to hunt with a reason naming the
+  boundary. Subdomains beneath it stay blockable — the tenant is not the
+  registry.
+- **Query matching.** Parent candidates stop at the registrable domain. The
+  previous implementation walked down to any two-label pair, producing `co.uk`
+  and `github.io` as lookup keys; a report naming either would then have matched
+  every unrelated tenant beneath it.
+
+Both read the same bundled list, generated into the Worker from the file the
+Python package ships, so the boundary a report was written against cannot drift
+from the boundary a query is matched against.
+
+Every non-exact match returns `matched_value`, and `match_boundary` names the
+rule that produced the relation.
 
 ### Known-benign provenance
 
@@ -490,11 +500,14 @@ Three distinct rules exist today, each with its own basis:
 | `vendor_brand_apex` | Brand apex domains, matched as apex or subdomain |
 | `domain_boundary_rule` | Parent domain too broad relative to a reported subdomain |
 
-**There is no version on any of them today.** They are hardcoded sets in the
-analyst module. The review's point stands: a benign classification without
-provenance goes stale and cannot be audited.
-`benign_registry_version` is specified above and requires implementing versioning
-for these sets. It is listed as a pilot prerequisite.
+Each is now versioned. `benign_registry_version` is a digest over the contents
+of all three sets plus the public suffix rule counts, recorded on every report as
+`analyst_brief.benign_registry_version`.
+
+It is derived rather than hand-maintained deliberately: a manual version number
+goes stale the first time someone adds an entry without bumping it, and a stale
+benign classification is precisely the unauditable case the review described. A
+content digest changes when, and only when, a decision would change.
 
 ### CVE semantics
 
@@ -563,8 +576,8 @@ From the review's Recommendation, plus what the disclosures add.
 | 1 | Response provenance and partial-failure fields | specified above |
 | 2 | Citation completeness | specified above |
 | 3 | `report_count` vs `source_count` semantics | specified; see Disclosure 3 |
-| 4 | Domain-boundary matching via PSL | accepted, not yet implemented |
-| 5 | Known-benign provenance and versioning | accepted, not yet implemented |
+| 4 | Domain-boundary matching via PSL | done, both sides |
+| 5 | Known-benign provenance and versioning | done |
 | 6 | CVE provenance separation | specified above |
 | 7 | Data handling and retention documentation | partially answered above |
 | 8 | Remove "safe to automate" claim | done throughout |
