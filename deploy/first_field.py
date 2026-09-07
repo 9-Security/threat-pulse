@@ -1,14 +1,22 @@
-"""Read one field out of a `wrangler d1 execute --json` result on stdin.
+"""Read fields out of the JSON a CLI printed, for a shell script to compare.
 
-Wrangler wraps the rows in a report object and prints npm noise around it, so a
-shell pipeline cannot reach the value without a JSON parser.
+Two shapes, because two callers need one:
 
-Prints nothing when the query matched no rows, and also when the output could
-not be parsed at all. Both mean the caller cannot compare against a stored
-value, so a guard reading this fails open -- it behaves as it did before the
-guard existed rather than blocking a push on a transient wrangler error.
+    wrangler d1 execute ... --json | first_field.py article_count ...
+    printf '%s' "$deliver_output" | first_field.py --plain json_output
 
-    wrangler d1 execute ... --json | python3 first_field.py article_count
+Wrangler wraps rows in a report object and npm decorates the stream around it,
+so the array has to be found rather than parsed from position 0. `--plain`
+reads a single JSON object, which is what the parser's own commands print.
+
+Exit status carries the distinction a guard depends on:
+
+    0 with output     the value was read
+    0 with no output  the query ran and matched nothing
+    1                 the output could not be parsed at all
+
+Without that split, a caller cannot tell "no row stored yet" from "wrangler
+never answered", and an expired token reads as an empty database.
 """
 
 from __future__ import annotations
@@ -18,23 +26,64 @@ import re
 import sys
 
 
-def main() -> int:
-    if len(sys.argv) != 2:
-        print("usage: first_field.py FIELD", file=sys.stderr)
+def _find_wrangler_rows(text: str) -> list[dict[str, object]] | None:
+    """The first JSON array in the stream that parses as wrangler's envelope.
+
+    Scanning for a bracket and taking everything to the last one would swallow
+    any bracketed banner printed alongside it, so each candidate start is parsed
+    with a decoder that stops at the end of its own value.
+    """
+    decoder = json.JSONDecoder()
+    for match in re.finditer(r"\[", text):
+        try:
+            value, _ = decoder.raw_decode(text[match.start() :])
+        except ValueError:
+            continue
+        if not isinstance(value, list) or not value:
+            continue
+        first = value[0]
+        if isinstance(first, dict) and isinstance(first.get("results"), list):
+            return [row for row in first["results"] if isinstance(row, dict)]
+    return None
+
+
+def main(argv: list[str]) -> int:
+    plain = False
+    if argv and argv[0] == "--plain":
+        plain = True
+        argv = argv[1:]
+    if not argv:
+        print("usage: first_field.py [--plain] FIELD [FIELD ...]", file=sys.stderr)
         return 2
-    field = sys.argv[1]
-    # The JSON array is preceded by warnings and followed by npm notices.
-    match = re.search(r"\[.*\]", sys.stdin.read(), re.S)
-    if not match:
-        return 0
-    try:
-        rows = json.loads(match.group())[0]["results"]
-    except (ValueError, KeyError, IndexError):
-        return 0
-    if rows and field in rows[0]:
-        print(rows[0][field])
+
+    text = sys.stdin.read()
+    if plain:
+        try:
+            row: dict[str, object] | None = json.loads(text)
+        except ValueError:
+            print("could not parse JSON on stdin", file=sys.stderr)
+            return 1
+        if not isinstance(row, dict):
+            print("expected a JSON object on stdin", file=sys.stderr)
+            return 1
+        rows = [row]
+    else:
+        found = _find_wrangler_rows(text)
+        if found is None:
+            print("could not find a wrangler result array on stdin", file=sys.stderr)
+            return 1
+        rows = found
+
+    if not rows:
+        return 0  # Ran fine, matched nothing.
+    values = [rows[0].get(field) for field in argv]
+    if any(value is None for value in values):
+        missing = [f for f, v in zip(argv, values) if v is None]
+        print(f"field(s) absent from the result: {', '.join(missing)}", file=sys.stderr)
+        return 1
+    print(" ".join(str(value) for value in values))
     return 0
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(main(sys.argv[1:]))

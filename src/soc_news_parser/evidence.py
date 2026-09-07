@@ -73,11 +73,19 @@ FAMILY_RE = re.compile(
     (?:
         # The same explicit naming with the verb first: "tracked the loader as
         # BraZetsu". Still the article naming the thing, not apposition.
+        #
+        # `as` is required, not optional. Without it the shape is just
+        # <verb> <type noun> <Capitalised word>, which matches ordinary prose:
+        # "Known Ransomware Groups Target ..." yields Groups, "named the malware
+        # Families" yields Families. Both were confirmed families until this was
+        # tightened. Losing "named the malware Locky" to the same rule is the
+        # right trade: silence beats a claim the article did not make, and the
+        # apposition branch still reports it as a candidate.
         (?i:known|tracked|dubbed|named|called)\s+
         (?:(?i:the|this|a|an)\s+)?
         (?i:malware|ransomware|backdoor|trojan|botnet|wiper|stealer|rat|
             implant|loader|toolset|campaign|family)\s+
-        (?:(?i:as|to\s+be)\s+)?
+        (?i:as|to\s+be)\s+
         ["']?(?P<verb_named>[A-Z][A-Za-z0-9][\w+.-]{2,40})
     )
     |

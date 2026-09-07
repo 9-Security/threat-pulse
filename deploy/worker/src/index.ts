@@ -299,11 +299,13 @@ async function lookupMany(env: Env, values: string[], since: string | null, call
   const candidateMap = new Map<string, string[]>();
   const allCandidates = new Set<string>();
   for (const value of wanted) {
-    const candidates = hostCandidates(value);
-    // A hash or CVE is matched as given, only hosts expand upward.
+    // A hash or CVE is matched as given; only hosts expand upward. The
+    // expansion walks ~10,300 suffix rules, so it is computed inside the branch
+    // that uses it -- a batch of 100 hashes previously paid for 100 walks and
+    // discarded every one, on a Worker billed per request.
     const list = /^[0-9a-f]{32,64}$/i.test(value) || /^cve-/i.test(value)
       ? [value.toLowerCase()]
-      : candidates;
+      : hostCandidates(value);
     candidateMap.set(value, list);
     list.forEach((c) => allCandidates.add(c));
   }

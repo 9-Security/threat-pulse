@@ -389,3 +389,57 @@ def test_file_name_lead_ins_named_in_the_readme_all_match() -> None:
             item.normalized_value: item.indicator_type for item in manifest.evidence
         }
         assert kinds.get("custom.shellcode") == "filename", lead
+
+
+def test_verb_first_naming_needs_the_linking_word() -> None:
+    """`<verb> <type noun> <Capitalised word>` is ordinary prose, not a name.
+
+    Accepting it without `as` turned "Known Ransomware Groups Target ..." into a
+    confirmed family called Groups, and "named the malware Families" into one
+    called Families -- the exact class of false positive the apposition split was
+    written to remove, readmitted through the branch added beside it.
+    """
+    prose = ParsedArticle(
+        source="The Hacker News",
+        title="Known Ransomware Groups Target Healthcare Networks",
+        url="https://thehackernews.com/2026/09/known-ransomware-groups.html",
+        published_at="2026-09-04T08:00:00+00:00",
+        body=(
+            "Known Ransomware Groups Target Healthcare Networks\n"
+            "Analysts named the malware Families in the report.\n"
+            "They tracked the malware Samples to a single operator.\n"
+            "One researcher called the ransomware Attacks unprecedented.\n"
+        ),
+        extraction_method="feed:content",
+        body_characters=200,
+        warnings=[],
+    )
+    claimed = {
+        item.normalized_value
+        for item in build_manifest(prose).evidence
+        if item.indicator_type == "malware_family"
+    }
+    assert claimed == set()
+
+
+def test_verb_first_naming_with_the_linking_word_is_confirmed() -> None:
+    """"tracked the loader as BraZetsu" is the article naming the thing."""
+    named = ParsedArticle(
+        source="The Hacker News",
+        title="Loader tracked to a single operator",
+        url="https://thehackernews.com/2026/09/loader-tracked.html",
+        published_at="2026-09-04T08:00:00+00:00",
+        body=(
+            "Researchers tracked the loader as BraZetsu ransomware.\n"
+            "The group dubbed the backdoor as AsioGate in its report.\n"
+        ),
+        extraction_method="feed:content",
+        body_characters=120,
+        warnings=[],
+    )
+    confirmed = {
+        item.normalized_value
+        for item in build_manifest(named).evidence
+        if item.indicator_type == "malware_family" and item.status == "confirmed"
+    }
+    assert confirmed == {"BraZetsu", "AsioGate"}

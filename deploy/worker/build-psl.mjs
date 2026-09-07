@@ -22,6 +22,17 @@ for (const line of readFileSync(source, "utf8").split("\n")) {
   else normal.push(rule);
 }
 
+// A truncated source would produce an empty ruleset that parses fine and then
+// answers "not a public suffix" to everything, putting co.uk and github.io back
+// in play as lookup keys. Fail the build instead of shipping that silently.
+const MINIMUM_RULES = 1000;
+if (normal.length < MINIMUM_RULES) {
+  throw new Error(
+    `${source} yielded ${normal.length} rules, expected at least ${MINIMUM_RULES}. ` +
+      "Refresh it from https://publicsuffix.org/list/ before regenerating.",
+  );
+}
+
 writeFileSync(target, JSON.stringify({ normal, wildcard, exception }));
 console.log(
   `psl.json: ${normal.length} normal, ${wildcard.length} wildcard, ${exception.length} exception`,
