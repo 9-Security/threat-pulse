@@ -208,15 +208,49 @@ uv run soc-news-parser send-report \
 uv run soc-news-parser deliver --dry-run
 ```
 
-沒有會長駐的主機時，用 GitHub Actions 跑同一支 `deliver`。工作流程在 `.github/workflows/daily-deliver.yml`：UTC 22:00（台北 06:00）排程，也可用 Actions 介面手動觸發。把倉庫推到 GitHub 的預設分支，並設定這三個 Repository secrets：
+#### 在長駐主機上用 systemd（目前的正式排程）
 
-- `RESEND_API_KEY`
-- `RESEND_FROM`（已驗證寄件者，例如 `IOC Reports <reports@your-verified-domain.example>`）
-- `RESEND_TO`
+`deploy/run-daily.sh` 是一天的完整流程：`git pull` → `uv sync` → `deliver` → `export-d1` → 推 D1。搭配 `deploy/systemd/` 的 service 與 timer：
 
-排程只在 GitHub 預設分支生效；Cursor Cloud Agent 或尚未推到 GitHub 的遠端不會跑 Actions。GitHub 的 cron 可能延遲數分鐘到數小時，免費倉庫若 60 天沒有新 commit，排程會被停用。昨日對照靠 Actions cache 帶回 `reports/`，cache 未命中時仍會出報，只是沒有較昨日新增的統計。報告會當 artifact 保留 14 天，不會 commit 進 git。
+```bash
+sudo useradd --system --create-home --home-dir /home/threatpulse --shell /bin/bash threatpulse
+sudo -u threatpulse -H bash -lc 'curl -LsSf https://astral.sh/uv/install.sh | sh'
+sudo -u threatpulse -H git clone https://github.com/9-Security/threat-pulse.git /home/threatpulse/app
 
-在會長駐的機器上也可以繼續用 cron：
+sudo install -m 0644 /home/threatpulse/app/deploy/systemd/threat-pulse-daily.{service,timer} /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now threat-pulse-daily.timer
+```
+
+憑證放在 `/home/threatpulse/threat-pulse.env`，屬主 `threatpulse`、模式 `0600`，由 unit 的 `EnvironmentFile` 讀入，不會進 shell history：
+
+```
+RESEND_API_KEY=...
+RESEND_FROM=SOC Reports <reports@your-verified-domain.example>
+RESEND_TO=analyst@example.com
+NVD_API_KEY=...              # 可略，只影響加值速度
+CLOUDFLARE_API_TOKEN=...     # 只需要 D1 Edit 權限
+CLOUDFLARE_ACCOUNT_ID=...
+```
+
+`CLOUDFLARE_*` 缺席時報告照常寄出，只是略過 D1 推送並在日誌寫明原因——語料庫會停止成長，但當日交付不受影響。timer 帶 `Persistent=true`，主機在 06:00 關機或休眠時開機後會補跑；來源 feed 只留最近的項目，漏掉的一天補不回來。
+
+service 以 `ProtectSystem=strict`、`ProtectHome=read-only` 執行，只有 `/home/threatpulse` 可寫——這台主機同時跑其他服務。
+
+檢視：
+
+```bash
+systemctl list-timers threat-pulse-daily.timer
+journalctl -u threat-pulse-daily.service -n 50
+```
+
+#### GitHub Actions（備援）
+
+`.github/workflows/daily-deliver.yml` 跑同樣的步驟，**排程已停用**，只保留 Actions 介面的手動觸發，供主機停機時備援。兩邊同時排程會各自抓取、產生不同的 report ID，於是繞過 Resend 的冪等鍵而寄出兩封，D1 也會互相覆蓋。
+
+要改回 CI 排程，把 workflow 的 `schedule:` 取消註解並停掉主機 timer，然後設定 Repository secrets：`RESEND_API_KEY`、`RESEND_FROM`、`RESEND_TO`，以及選用的 `NVD_API_KEY`、`CLOUDFLARE_API_TOKEN`、`CLOUDFLARE_ACCOUNT_ID`。GitHub 的 cron 可能延遲數分鐘到數小時，免費倉庫 60 天沒有新 commit 排程會被停用，昨日對照也只能靠可能未命中的 Actions cache。
+
+#### 舊的 cron 安裝方式
 
 ```bash
 ./deploy/install-taipei-cron.sh
@@ -228,6 +262,8 @@ uv run soc-news-parser deliver --dry-run
 CRON_TZ=Asia/Taipei
 0 6 * * * cd /path/to/soc-news-parser && /path/to/uv run soc-news-parser deliver --hours 24 --at 06:00 --timezone Asia/Taipei --output-dir /path/to/soc-news-parser/reports >> /path/to/soc-news-parser/reports/deliver.log 2>&1
 ```
+
+cron 版只跑 `deliver`，不推 D1。新部署請用上面的 systemd 方式。
 
 沒有 cron、也還沒接 GitHub Actions 時，可讓程式自己等到下一班 06:00：
 

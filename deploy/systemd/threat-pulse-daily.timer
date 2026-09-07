@@ -1,0 +1,19 @@
+[Unit]
+Description=Run the daily SOC IoC report at 06:00 Asia/Taipei
+Documentation=https://github.com/9-Security/threat-pulse
+
+[Timer]
+# The timezone is named rather than assumed: this must not move if the host's
+# own timezone is ever changed.
+OnCalendar=*-*-* 06:00:00 Asia/Taipei
+# A host that was asleep or rebooted at 06:00 still gets the day's report, and
+# the collector cannot recover a day it missed -- source feeds carry only their
+# most recent items.
+Persistent=true
+# Nothing else fires at 06:00, but a fixed minute across a fleet is a thundering
+# herd waiting to happen.
+RandomizedDelaySec=120
+Unit=threat-pulse-daily.service
+
+[Install]
+WantedBy=timers.target

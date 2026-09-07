@@ -1,0 +1,35 @@
+[Unit]
+Description=Daily SOC IoC report: collect, mail, push to D1
+Documentation=https://github.com/9-Security/threat-pulse
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=threatpulse
+Group=threatpulse
+WorkingDirectory=/home/threatpulse/app
+# Credentials live here, owned by the service user and readable by nobody else.
+# The unit fails loudly if it is missing rather than running unconfigured.
+EnvironmentFile=/home/threatpulse/threat-pulse.env
+ExecStart=/home/threatpulse/app/deploy/run-daily.sh
+# NVD without an API key allows 5 requests per 30s, so a day with many new CVEs
+# spends several minutes in enrichment. 45 minutes matches the CI timeout.
+TimeoutStartSec=45min
+
+# The job reads public feeds and writes one directory. Nothing else is its
+# business, and this host runs other people's services.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/threatpulse/app /home/threatpulse
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target

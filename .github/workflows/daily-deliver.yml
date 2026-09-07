@@ -1,9 +1,19 @@
 name: Daily Taipei SOC report
 
+# The schedule moved to wendy-lab, which runs the same steps from
+# deploy/run-daily.sh on a systemd timer. Two schedulers would each collect the
+# window independently, and because they fetch seconds or minutes apart they
+# extract different articles, produce different report IDs, and so defeat the
+# Resend idempotency key -- two mails, and whichever D1 push lands second
+# overwrites the first.
+#
+# The host also keeps what CI could not: `reports/` and the enrichment cache
+# persist instead of riding a cache key that can miss, and GitHub's cron may run
+# hours late and is disabled entirely after 60 days without a commit. Feeds
+# carry only recent items, so a day the collector misses is a day lost.
+#
+# Kept as a manual fallback: run it from the Actions tab if the host is down.
 on:
-  schedule:
-    # 22:00 UTC is 06:00 Asia/Taipei. GitHub cron is UTC-only and may run late.
-    - cron: "0 22 * * *"
   workflow_dispatch:
     inputs:
       dry_run:
