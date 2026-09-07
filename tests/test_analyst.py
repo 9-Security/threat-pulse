@@ -178,7 +178,7 @@ def test_short_parent_domain_is_hunt_when_child_is_confirmed() -> None:
     actions = build_actions(manifest)
     by_target = {item.target: item for item in actions}
     assert by_target["it.com"].action == "hunt"
-    assert "父網域過寬" in by_target["it.com"].reason
+    assert "Public Suffix List" in by_target["it.com"].reason
     assert by_target["downloading-api.it.com"].action == "block"
     assert all(
         item.status == "confirmed"
@@ -209,7 +209,33 @@ def test_long_parent_domain_stays_blocked_with_its_subdomain() -> None:
     )
 
 
-def test_short_parent_alone_is_still_block() -> None:
+def test_short_registrable_parent_alone_is_still_block() -> None:
+    """A short apex is only held back when its own child is in the article.
+
+    `abc.com` is registrable and nothing was seen beneath it, so there is
+    nothing to hold it back for.
+    """
+    actions = build_actions(
+        build_manifest(
+            _article(
+                "C2 infrastructure observed",
+                "The C2 server was observed contacting victims.\n"
+                "Indicators of Compromise\n"
+                "abc.com\n",
+            )
+        )
+    )
+    assert [item.action for item in actions] == ["block"]
+    assert actions[0].target == "abc.com"
+
+
+def test_public_suffix_is_never_blocked_even_alone() -> None:
+    """The boundary itself is hunt-only however it appears.
+
+    `it.com` is a registry: a firewall rule on it reaches every unrelated
+    tenant beneath it. Unlike the short-parent rule this needs no sibling in
+    the article, because the hazard is the name itself, not the context.
+    """
     actions = build_actions(
         build_manifest(
             _article(
@@ -220,8 +246,34 @@ def test_short_parent_alone_is_still_block() -> None:
             )
         )
     )
-    assert [item.action for item in actions] == ["block"]
-    assert actions[0].target == "it.com"
+    assert [item.action for item in actions] == ["hunt"]
+    assert "Public Suffix List" in actions[0].reason
+
+
+def test_platform_suffixes_with_long_labels_are_not_blocked() -> None:
+    """The cases the label-length heuristic could never reach.
+
+    `github.io` and `duckdns.org` have left labels of six and seven
+    characters, so a rule keyed on three or fewer let both through to the
+    block list. Their subdomains stay blockable, which is the point: the
+    tenant is not the registry.
+    """
+    actions = build_actions(
+        build_manifest(
+            _article(
+                "Fake installer campaign",
+                "Researchers listed the lure domains.\n"
+                "Indicators of Compromise\n"
+                "github.io\n"
+                "duckdns.org\n"
+                "m-doxa-geo.duckdns.org\n",
+            )
+        )
+    )
+    by_target = {item.target: item for item in actions}
+    assert by_target["github.io"].action == "hunt"
+    assert by_target["duckdns.org"].action == "hunt"
+    assert by_target["m-doxa-geo.duckdns.org"].action == "block"
 
 
 def test_topic_article_without_event_headline_stays_off_the_board() -> None:

@@ -79,6 +79,23 @@ curl -s https://data.iana.org/TLD/tlds-alpha-by-domain.txt \
   | tr 'A-Z' 'a-z' | sort > src/soc_news_parser/data/iana_tlds.txt
 ```
 
+### 註冊邊界：Public Suffix List
+
+一個主機名在哪裡從「某個組織」變成「某個註冊機構」，數標籤是答不出來的。`github.io`、`duckdns.org`、`it.com` 都是 public suffix——在防火牆上封鎖任何一個，會波及其下所有互不相關的租戶；而 `squarespace.com` 讀起來像平台，其實是一般可註冊網域。舊的「左標籤 ≤3 字元」啟發式抓得到 `it.com`，卻完全漏掉 `github.io`。
+
+因此邊界判斷改用 Public Suffix List，清單以 `src/soc_news_parser/data/public_suffix_list.dat` 隨套件封存，不在執行期連外查詢。是 public suffix 的名稱一律降為 hunt 複核、永不進待封鎖清單，理由欄寫明原因；其下的子網域（例如 `m-doxa-geo.duckdns.org`）不受影響，仍照常封鎖——租戶不是註冊機構。
+
+Cloudflare Worker 的父網域比對用**同一份**清單：`npm run psl` 由該 `.dat` 產生 `deploy/worker/src/psl.json`，避免報告寫入時的邊界與查詢時的邊界漂移。查詢候選只往上走到可註冊網域為止，不會再產生 `co.uk`、`github.io` 這種會命中全部租戶的查詢鍵。
+
+更新清單後記得重跑 `npm run psl`：
+
+```bash
+curl -s https://publicsuffix.org/list/public_suffix_list.dat \r
+  > src/soc_news_parser/data/public_suffix_list.dat
+```
+
+良性判定（公共 DNS、品牌 apex、註冊邊界）會在報告 JSON 的 `analyst_brief.benign_registry_version` 記下一個內容雜湊，由三份清單加 PSL 規則數推導。清單一改識別碼就變，不需要有人記得手動加版號，也就不會出現「清單動了但版號沒動」的稽核缺口。
+
 副檔名比對排在網域之前，所以 `.zip`、`.py`、`.mov` 這些同時是合法 TLD 的字尾會先判成檔名。`.onion`、`.i2p`、`.bit` 雖未在 root zone 委派，但它們指向真實的攻擊基礎設施，因此明確納入；`.local`、`.localhost`、`.invalid`、`.example` 這類文件／私網保留字仍排除。
 
 `confirmed_unique_iocs` 與報告主旨只計 hash、IP、domain、URL 與 CVE；檔名與原文指稱另行統計。`unique_counts_by_status_and_type` 仍列出各類型完整細項。

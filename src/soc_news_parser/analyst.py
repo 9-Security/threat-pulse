@@ -21,6 +21,7 @@ from .evidence import (
     EvidenceManifest,
     heading_kind,
 )
+from .publicsuffix import is_public_suffix, public_suffix_list_version
 
 
 IMPACT_PATTERNS: tuple[tuple[str, str, re.Pattern[str]], ...] = (
@@ -147,8 +148,16 @@ BRAND_REASON = (
 SHORT_PARENT_REASON = (
     "同篇文章已有此短 apex 的子網域；父網域過寬，改為 hunt 複核，不建議直接封鎖"
 )
+PUBLIC_SUFFIX_REASON = (
+    "此名稱是 Public Suffix List 上的註冊邊界，其下為互不相關的租戶；"
+    "封鎖它會波及全部，改為 hunt 複核"
+)
 # Official brand apexes only. Match host == apex or host.endswith("." + apex).
-# Do not list platform suffixes (gitlab.io, github.io, squarespace.com, it.com).
+# Registry boundaries do not belong here -- `gitlab.io`, `github.io` and
+# `it.com` are public suffixes and are handled by is_unsafe_domain_boundary().
+# `squarespace.com` reads like one but is not: it is an ordinary registrable
+# domain, so listing it here would be a deliberate brand decision, not a
+# boundary one.
 BRAND_APEXES = frozenset(
     {
         "adobe.com",
@@ -199,6 +208,33 @@ BRAND_APEXES = frozenset(
 )
 
 
+# What made a value benign, so a consumer can tell a registry hit from a rule.
+BENIGN_BASIS_PUBLIC_RESOLVER = "public_resolver_registry"
+BENIGN_BASIS_BRAND_APEX = "vendor_brand_apex"
+BENIGN_BASIS_DOMAIN_BOUNDARY = "domain_boundary_rule"
+
+
+def benign_registry_version() -> str:
+    """A content digest of the benign sets, not a number someone must remember.
+
+    A hand-maintained version goes stale the first time an entry is added
+    without bumping it, and a stale benign classification is exactly what the
+    reviewers warned cannot be audited. Deriving it from the contents means the
+    identifier changes when, and only when, the decision would change.
+    """
+    payload = json.dumps(
+        {
+            "public_dns_ips": sorted(PUBLIC_DNS_IPS),
+            "public_dns_hosts": sorted(PUBLIC_DNS_HOSTS),
+            "brand_apexes": sorted(BRAND_APEXES),
+            "public_suffix_list": public_suffix_list_version(),
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+    return "benign-" + hashlib.sha256(payload.encode("utf-8")).hexdigest()[:12]
+
+
 @dataclass(frozen=True)
 class AnalystAction:
     action: str
@@ -247,6 +283,10 @@ class AnalystBrief:
     repeat_ioc_count: int | None
     gone_ioc_count: int | None
     priority_line: str
+    # Which benign sets and domain-boundary list produced the hunt-not-block
+    # decisions above. A benign call without provenance cannot be audited once
+    # the sets have moved on.
+    benign_registry_version: str
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -261,6 +301,7 @@ class AnalystBrief:
             "repeat_ioc_count": self.repeat_ioc_count,
             "gone_ioc_count": self.gone_ioc_count,
             "priority_line": self.priority_line,
+            "benign_registry_version": self.benign_registry_version,
         }
 
 
@@ -440,7 +481,27 @@ def is_official_brand_host(target_type: str, target: str) -> bool:
     return any(host == apex or host.endswith(f".{apex}") for apex in BRAND_APEXES)
 
 
+def is_unsafe_domain_boundary(host: str) -> bool:
+    """True when `host` is a registry boundary rather than one organisation's.
+
+    `github.io`, `duckdns.org` and `it.com` are public suffixes: everything
+    below them belongs to unrelated tenants, so a firewall rule on the boundary
+    hits all of them. Label counting cannot find these -- `github.io` has a
+    six-character left label, and `squarespace.com`, which reads like a
+    platform, is an ordinary registrable domain that may legitimately be
+    blocked.
+    """
+    return bool(host) and is_public_suffix(host)
+
+
 def is_short_parent_of_confirmed_host(host: str, article_hosts: set[str]) -> bool:
+    """A bare parent named alongside its own subdomain, below the PSL boundary.
+
+    `it.com` is caught by :func:`is_unsafe_domain_boundary`. This covers the
+    weaker case the boundary cannot see: an article naming both `evil.com` and
+    `api.evil.com`, where the apex is registrable and blockable in principle,
+    but the article only ever showed activity on the child.
+    """
     labels = host.split(".")
     if len(labels) != 2 or len(labels[0]) > 3:
         return False
@@ -625,6 +686,17 @@ def build_actions(
                         evidence.indicator_type,
                         evidence.normalized_value,
                         BRAND_REASON,
+                        manifest,
+                    )
+                )
+            elif host and is_unsafe_domain_boundary(host):
+                actions.append(
+                    _make_action(
+                        "hunt",
+                        "low",
+                        evidence.indicator_type,
+                        evidence.normalized_value,
+                        PUBLIC_SUFFIX_REASON,
                         manifest,
                     )
                 )
@@ -899,6 +971,7 @@ def build_brief(
         new_ioc_count=new_count,
         repeat_ioc_count=repeat_count,
         gone_ioc_count=gone_count,
+        benign_registry_version=benign_registry_version(),
         priority_line=_priority_line(marked),
     )
 
