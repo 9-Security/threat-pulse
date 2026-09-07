@@ -64,6 +64,25 @@ push_to_d1() {
     return 0
   fi
 
+  # Look at what is stored before replacing it. The exporter deletes and
+  # rewrites the whole date, and a re-run of a window that closed hours ago
+  # collects a decayed copy: feeds carry only their most recent items, and the
+  # same window re-collected three days later returned 55% of its articles. The
+  # scheduled run is safe because it collects the window that just closed. The
+  # hazard is a manual re-run, which is also the most natural thing to try.
+  # FORCE_D1=1 pushes a genuine correction that legitimately has fewer.
+  local stored collected
+  stored="$(npx --yes wrangler@3 d1 execute soc-iocs \
+    --config deploy/worker/wrangler.toml --remote --json \
+    --command "SELECT article_count FROM reports WHERE report_date = '${day}'" \
+    2>/dev/null | python3 "$APP_DIR/deploy/first_field.py" article_count || true)"
+  collected="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["article_count"])' "$evidence")"
+  if [ -n "$stored" ] && [ "$collected" -lt "$stored" ] && [ "${FORCE_D1:-0}" != "1" ]; then
+    echo "refusing to replace ${day}: D1 holds ${stored} articles, this run collected ${collected}" >&2
+    echo "the stored copy was collected closer to its window; FORCE_D1=1 overrides" >&2
+    return 0
+  fi
+
   uv run soc-news-parser export-d1 \
     --json-report "$evidence" --date "$day" --output "/tmp/${day}.sql"
   npx --yes wrangler@3 d1 execute soc-iocs \
