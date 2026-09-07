@@ -11,18 +11,21 @@ marks, and four disclosures the reviewers could not have known from v1.
 
 The reviewers marked fields USE based on v1's descriptions. Four of those
 descriptions were stronger than the data supports, or wrong. Correcting them here
-rather than letting the pilot discover them. All figures below were produced on
-parser revision `1b592d5` unless stated otherwise.
+rather than letting the pilot discover them. Figures are labelled with the
+revision that produced them; Disclosure 4 supersedes every earlier number.
 
 ### 1. Corpus history exists but is shallow, and cannot be deepened backwards
 
 The review named `last_seen`, `days_since_last_seen`, `report_count` and
 `source_count` among the strongest fields. All four require history.
 
-A durable store does exist. A scheduled CI job runs daily at 22:00 UTC
-(06:00 Asia/Taipei), generates the day's report and pushes its confirmed
-indicators into D1. **As of 2026-09-07 that store holds four days**, beginning
-2026-09-04. The temporal fields are therefore computable, but four days of depth
+A durable store does exist. A systemd timer on a dedicated host runs daily at
+06:00 Asia/Taipei, generates the day's report and pushes its confirmed indicators
+into D1. **As of 2026-09-07 that store holds four days**, beginning 2026-09-04.
+
+The schedule moved off CI on 2026-09-07 for the reason this disclosure is about:
+GitHub's cron may run hours late and is disabled entirely after sixty days
+without a commit, and a day the collector misses cannot be recovered. The temporal fields are therefore computable, but four days of depth
 makes them close to meaningless in practice; `first_seen` for almost every
 indicator is simply the day the store began.
 
@@ -110,12 +113,18 @@ per four days should be expected to hit rarely. The review already accepted a lo
 hit rate provided exact hits are accurate and citable; these numbers are what
 that acceptance will be tested against.
 
-These supersede every earlier figure. They were produced on `66ca089`, after two
-corrections that changed what counts as confirmed:
+These supersede every earlier figure. They were produced on `57f3fcd`, after
+three corrections that changed what counts as confirmed:
 
 - Malware family apposition ("X ransomware") became a candidate rather than a
   confirmed claim, which is most of the drop in the `confirmed unique` column
   against figures shared earlier in review.
+- Verb-first naming requires its linking word: "tracked the loader **as**
+  BraZetsu" is the article naming something, while "Known Ransomware Groups
+  Target ..." is prose. Without that requirement the second shape produced
+  confirmed families called `Groups`, `Families`, `Samples` and `Attacks`. The
+  four families in the table survived the tightening unchanged, so it removed
+  false positives without costing a real name.
 - Registry boundaries are decided by the Public Suffix List.
 
 The boundary change altered nothing on these four days: none of the nine

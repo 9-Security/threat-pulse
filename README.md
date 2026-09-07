@@ -70,7 +70,7 @@ Manifest 保存 canonical body、正文 SHA-256、擷取 warnings、parser 版�
 - `candidate`：格式符合，但原文關係不足，必須人工複核；不計入 IoC 總數。
 - `rejected`：出版者網域、非公開 IP，或位於 Related、Latest News、References、相關文章等編輯區塊。
 
-`confirmed` 代表「來源明確聲稱」，不是 parser 對惡意性的獨立背書。惡意工具家族只在原文明確命名時入列——「tracked as X」「dubbed X」這類原文自己指名的寫法才算 confirmed。同位語（「X ransomware」）一律降為 candidate：同一個句型同時涵蓋家族名、受害企業（「Coca-Cola confirms data theft in Fairlife ransomware attack」）與形容詞（「Pro-Ukraine Ransomware Rebrand」），pattern 分不出來，就不當成原文的斷言。ATT&CK 技術必須同行出現 `ATT&CK` 或 `MITRE`。軟體版本號（如 `4.16.7.1`）與私有／迴環 IP 不會當成可操作 IoC。中文「妥協指標」「惡意網域」等標題與英文 IoC 章節同等效力。Markdown 雜訊（例如 `**Indicators of compromise (IoCs):-**`）會先正規化再比對，不會因為加粗或行尾符號就把整張表降成 candidate；內文句子提到 “indicators of compromise” 仍不當標題。IDN 網域的 `xn--` TLD 可抽取；不會只因為有 `[.]` 就把內文敘事升成 confirmed。
+`confirmed` 代表「來源明確聲稱」，不是 parser 對惡意性的獨立背書。惡意工具家族只在原文明確命名時入列——「tracked as X」「dubbed X」這類原文自己指名的寫法才算 confirmed，而且連接詞（`as` / `to be`）是必要的：少了它，「Known Ransomware Groups Target…」這種普通句子就會產出一個叫 `Groups` 的家族名。同位語（「X ransomware」）一律降為 candidate：同一個句型同時涵蓋家族名、受害企業（「Coca-Cola confirms data theft in Fairlife ransomware attack」）與形容詞（「Pro-Ukraine Ransomware Rebrand」），pattern 分不出來，就不當成原文的斷言。ATT&CK 技術必須同行出現 `ATT&CK` 或 `MITRE`。軟體版本號（如 `4.16.7.1`）與私有／迴環 IP 不會當成可操作 IoC。中文「妥協指標」「惡意網域」等標題與英文 IoC 章節同等效力。Markdown 雜訊（例如 `**Indicators of compromise (IoCs):-**`）會先正規化再比對，不會因為加粗或行尾符號就把整張表降成 candidate；內文句子提到 “indicators of compromise” 仍不當標題。IDN 網域的 `xn--` TLD 可抽取；不會只因為有 `[.]` 就把內文敘事升成 confirmed。
 
 網域的最後一段必須是 IANA root zone 實際委派的 TLD，清單以 `src/soc_news_parser/data/iana_tlds.txt` 隨套件封存（含 `xn--` punycode），不在執行期連外查詢，確保同一份正文永遠得到同一份 manifest。因此 `out.tmp`、`user.enc`、`system.drawing`、`robots.txt` 這類帶點號的檔案／識別字不會被誤判成網域而混進待封鎖清單。若該行以 `File name(s)`、`payload`、`attachment` 等字樣引導，值仍會保留並改記成 `filename` 進 hunt 清單，不會整個丟掉。更新 TLD 清單：
 
