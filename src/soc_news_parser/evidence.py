@@ -56,19 +56,34 @@ IP_VERSION_CONTEXT_RE = re.compile(
     r"(?:versions?\s+up\s+to(?:\s*,\s*and\s+including)?|\band\s+including|\bversions?\b)\s*,?\s*$",
     re.IGNORECASE,
 )
+# Only `x` is global. An `i` here would also apply to the name groups, and
+# `[A-Z]` would then match anything -- which is how "information stealer" and
+# "core" became malware families. The type keywords stay case-insensitive
+# individually, so a capitalised "Ransomware" in a headline still matches.
 FAMILY_RE = re.compile(
-    r"""(?ix)
+    r"""(?x)
     (?:
-        (?:malware(?:\s+family)?|ransomware(?:\s+family)?|backdoor|trojan|
-           botnet|wiper|stealer|rat|implant|loader|toolset|
-           threat\s+(?:group|actor)|apt(?:\s+group)?)
-        \s+(?:family\s+)?(?:known\s+as|named|called|tracked\s+as|dubbed)\s+
+        (?i:malware(?:\s+family)?|ransomware(?:\s+family)?|backdoor|trojan|
+            botnet|wiper|stealer|rat|implant|loader|toolset|
+            threat\s+(?:group|actor)|apt(?:\s+group)?)
+        \s+(?i:family\s+)?(?i:known\s+as|named|called|tracked\s+as|dubbed)\s+
         ["']?(?P<named>[A-Z][A-Za-z0-9][\w+.-]{2,40})
     )
     |
     (?:
+        # The same explicit naming with the verb first: "tracked the loader as
+        # BraZetsu". Still the article naming the thing, not apposition.
+        (?i:known|tracked|dubbed|named|called)\s+
+        (?:(?i:the|this|a|an)\s+)?
+        (?i:malware|ransomware|backdoor|trojan|botnet|wiper|stealer|rat|
+            implant|loader|toolset|campaign|family)\s+
+        (?:(?i:as|to\s+be)\s+)?
+        ["']?(?P<verb_named>[A-Z][A-Za-z0-9][\w+.-]{2,40})
+    )
+    |
+    (?:
         ["']?(?P<role_name>[A-Z][A-Za-z0-9][\w+.-]{2,40})["']?
-        \s+(?:ransomware|backdoor|stealer|wiper|botnet)\b
+        \s+(?i:ransomware|backdoor|stealer|wiper|botnet)\b
     )
     |
     (?:
@@ -77,6 +92,12 @@ FAMILY_RE = re.compile(
         ["']?(?P<zh_name>[A-Za-z0-9][\w+.-]{2,40})
     )
     """
+)
+# "Python-based loader" and "ClickFix-delivered stealer" describe how something
+# was built or shipped. Neither is the name of anything.
+CLAIM_DESCRIPTOR_RE = re.compile(
+    r"-(?:based|delivered|powered|themed|style|linked|related|driven)\Z",
+    re.IGNORECASE,
 )
 ATTACK_RE = re.compile(
     r"(?:(?:MITRE\s+)?ATT(?:&|＆)CK|MITRE)\s+(?:technique\s+)?(?:ID\s*)?(T\d{4}(?:\.\d{3})?)"
@@ -91,15 +112,19 @@ GENERIC_CLAIM_NAMES = frozenset(
         "alleged",
         "another",
         "android",
+        "attackers",
         "before",
         "claims",
         "confirms",
         "custom",
         "cyber",
         "during",
+        "element",
+        "encrypted",
         "following",
         "generic",
         "group",
+        "hackers",
         "incident",
         "into",
         "java",
@@ -110,9 +135,11 @@ GENERIC_CLAIM_NAMES = frozenset(
         "major",
         "malicious",
         "new",
+        "node.js",
         "python",
         "recent",
         "related",
+        "researchers",
         "suspected",
         "that",
         "their",
@@ -309,23 +336,31 @@ def _line_matches(line: str) -> Iterable[tuple[str, re.Match[str]]]:
             yield indicator_type, match
 
 
-def _claim_matches(line: str) -> Iterable[tuple[str, str, re.Match[str]]]:
+def _claim_matches(line: str) -> Iterable[tuple[str, str, re.Match[str], str]]:
+    """Yield claims with how firmly the source stated them.
+
+    "tracked as X" names X. "X ransomware" only places X next to the word, and
+    the same shape covers the victim in "Fairlife ransomware attack" and a
+    modifier in "Pro-Ukraine ransomware rebrand". The two cannot be told apart
+    by pattern, so apposition is reported as a candidate for human review
+    instead of as something the article asserted.
+    """
     for match in FAMILY_RE.finditer(line):
-        name = next(
-            value
-            for value in (
-                match.group("named"),
-                match.group("role_name"),
-                match.group("zh_name"),
-            )
-            if value
+        group, name = next(
+            (group, value)
+            for group in ("named", "verb_named", "role_name", "zh_name")
+            if (value := match.group(group))
         )
+        name = name.rstrip(".,;:")
         if name.lower() in GENERIC_CLAIM_NAMES:
             continue
-        yield "malware_family", name, match
+        if CLAIM_DESCRIPTOR_RE.search(name):
+            continue
+        strength = "apposition" if group == "role_name" else "explicit"
+        yield "malware_family", name, match, strength
     for match in ATTACK_RE.finditer(line):
         technique = next(value for value in match.groups() if value)
-        yield "attack_technique", technique, match
+        yield "attack_technique", technique, match, "explicit"
 
 
 def _source_host_matches(
@@ -352,6 +387,7 @@ def _classify(
     article: ParsedArticle,
     generic_type: str,
     normalized: str,
+    claim_strength: str = "explicit",
 ) -> tuple[str, str, list[str]]:
     if zone == "excluded":
         return "rejected", "machine_rejected", ["excluded_editorial_section"]
@@ -366,6 +402,8 @@ def _classify(
     if generic_type == "cve":
         return "confirmed", "source_explicit", ["explicit_cve_identifier"]
     if generic_type in {"malware_family", "attack_technique"}:
+        if claim_strength == "apposition":
+            return "candidate", "machine_candidate", ["apposition_requires_human_review"]
         return "confirmed", "source_explicit", ["explicit_source_label"]
     if zone == "ioc":
         return "confirmed", "source_explicit", ["explicit_ioc_section"]
@@ -430,12 +468,12 @@ def extract_evidence(article: ParsedArticle) -> list[Evidence]:
         before = lines[index - 2].strip() if index > 1 else ""
         after = lines[index].strip() if index < len(lines) else ""
         context = "\n".join(part for part in (before, stripped, after) if part)
-        found: list[tuple[str, str, re.Match[str]]] = [
-            (generic_type, match.group(), match)
+        found: list[tuple[str, str, re.Match[str], str]] = [
+            (generic_type, match.group(), match, "explicit")
             for generic_type, match in _line_matches(line)
         ]
         found.extend(_claim_matches(line))
-        for generic_type, raw, match in found:
+        for generic_type, raw, match, claim_strength in found:
             indicator_type = _hash_type(raw) if generic_type == "hash" else generic_type
             normalized = _normalize(raw, generic_type)
             status, assertion, reasons = _classify(
@@ -443,6 +481,7 @@ def extract_evidence(article: ParsedArticle) -> list[Evidence]:
                 article=article,
                 generic_type=generic_type,
                 normalized=normalized,
+                claim_strength=claim_strength,
             )
             results.append(
                 _evidence_item(
