@@ -94,7 +94,7 @@ curl -s https://publicsuffix.org/list/public_suffix_list.dat \
   > src/soc_news_parser/data/public_suffix_list.dat
 ```
 
-良性判定（公共 DNS、品牌 apex、註冊邊界）會在報告 JSON 的 `analyst_brief.benign_registry_version` 記下一個內容雜湊，由三份清單加 PSL 規則數推導。清單一改識別碼就變，不需要有人記得手動加版號，也就不會出現「清單動了但版號沒動」的稽核缺口。
+良性判定（公共 DNS、品牌 apex、註冊邊界）會在報告 JSON 的 `analyst_brief.benign_registry_version` 記下一個內容雜湊，由三份清單加 **PSL 解析後的規則集合**推導。取解析後的規則而非規則數，是因為一增一減的更新會讓數量不變卻真的移動了邊界；取規則集合而非整個檔案，是因為改一行註解或換行尾不該讓識別碼變動。它只在判定可能改變時才變，兩個方向都是。
 
 副檔名比對排在網域之前，所以 `.zip`、`.py`、`.mov` 這些同時是合法 TLD 的字尾會先判成檔名。`.onion`、`.i2p`、`.bit` 雖未在 root zone 委派，但它們指向真實的攻擊基礎設施，因此明確納入；`.local`、`.localhost`、`.invalid`、`.example` 這類文件／私網保留字仍排除。
 
@@ -233,6 +233,7 @@ RESEND_TO=analyst@example.com
 NVD_API_KEY=...              # 可略，只影響加值速度
 CLOUDFLARE_API_TOKEN=...     # 只需要 D1 Edit 權限
 CLOUDFLARE_ACCOUNT_ID=...
+ALERT_TO=ops@example.com     # 失敗告警收件人，與 RESEND_TO 分開；未設則不送
 ```
 
 `CLOUDFLARE_*` 缺席時報告照常寄出，只是略過 D1 推送並在日誌寫明原因——語料庫會停止成長，但當日交付不受影響。timer 帶 `Persistent=true`，主機在 06:00 關機或休眠時開機後會補跑；來源 feed 只留最近的項目，漏掉的一天補不回來。
@@ -263,7 +264,18 @@ journalctl -u threat-pulse-daily.service -n 50
 
 ```bash
 sudo install -m 0644 /home/threatpulse/app/deploy/systemd/threat-pulse-alert@.service /etc/systemd/system/
+# Without this the alert arrives saying only that the collector failed: system
+# unit logs live in the root:systemd-journal journal, and an unprivileged user
+# outside that group gets "No journal files were opened due to insufficient
+# permissions" captured into the mail body in place of the log tail.
+sudo usermod -aG systemd-journal threatpulse
 sudo systemctl daemon-reload
+```
+
+驗證告警**內容**而不只是「有寄出」——這兩件事是分開的：
+
+```bash
+sudo -u threatpulse journalctl -u threat-pulse-daily.service -n 3 --no-pager
 ```
 
 **未涵蓋的情況**：整台主機停機時沒有任何告警——死掉的機器不會通知你它死了。要涵蓋需要外部心跳（例如 healthchecks.io，逾時未 ping 即通知）。在有人真正依賴每日報告之前，「連續兩天沒收到信」本身就是可用的訊號。

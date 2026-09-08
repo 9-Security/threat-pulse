@@ -527,8 +527,12 @@ Three distinct rules exist today, each with its own basis:
 | `domain_boundary_rule` | Parent domain too broad relative to a reported subdomain |
 
 Each is now versioned. `benign_registry_version` is a digest over the contents
-of all three sets plus the public suffix rule counts, recorded on every report as
-`analyst_brief.benign_registry_version`.
+of all three sets plus the parsed public suffix rules, recorded on every report
+as `analyst_brief.benign_registry_version`. The rules rather than their counts,
+because a refresh that adds one suffix and drops another leaves the counts
+identical while moving a domain across the block/hunt line; the parsed rules
+rather than the file, because an edited comment should not claim a decision
+changed when none did.
 
 It is derived rather than hand-maintained deliberately: a manual version number
 goes stale the first time someone adds an entry without bumping it, and a stale

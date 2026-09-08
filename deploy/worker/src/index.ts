@@ -152,6 +152,11 @@ function rowToHit(row: Json, caller: Caller): Json {
     article_title: row.article_title,
     article_url: row.article_url,
     section: row.section,
+    // Names the rule that kept this off the block list, when one did. The
+    // reason string beside it is Chinese prose; a consumer deciding whether a
+    // hit is a public resolver or a registry boundary should not have to match
+    // substrings of it.
+    benign_basis: row.benign_basis ?? null,
   };
   // The context line is a verbatim source sentence. A token without the scope
   // gets the citation and can read it at the publisher.

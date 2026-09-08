@@ -177,3 +177,42 @@ def test_a_report_json_that_is_not_an_object_is_refused(tmp_path: Path) -> None:
     path.write_text("[]", encoding="utf-8")
     with pytest.raises(ValueError, match="not an object"):
         export_report(path)
+
+
+def test_benign_basis_reaches_the_database(tmp_path: Path) -> None:
+    """The rule that held a value back has to survive the export.
+
+    It was carried on the action and then dropped at the D1 boundary, so the
+    consumer the field exists for could still only substring-match a Chinese
+    reason string. Asserted through a real SQLite load of the shipped schema,
+    because "the column is in the INSERT list" is what was true before and was
+    not enough.
+    """
+    report = _report(
+        [
+            _article(
+                "Mixed indicators listed",
+                "Researchers listed the infrastructure.\n"
+                "Indicators of Compromise\n"
+                "8.8.8.8\n"
+                "github.io\n"
+                "evil-c2.com\n",
+            )
+        ]
+    )
+    sql = render_sql(json.loads(json.dumps(report.to_dict())), "2026-09-04")
+
+    db = sqlite3.connect(":memory:")
+    db.executescript(SCHEMA.read_text(encoding="utf-8"))
+    db.executescript(sql)
+    rows = dict(
+        db.execute(
+            "SELECT value, benign_basis FROM indicators WHERE indicator_type IN ('ip','domain')"
+        ).fetchall()
+    )
+
+    assert rows["8.8.8.8"] == "public_resolver_registry"
+    assert rows["github.io"] == "domain_boundary_rule"
+    # A value that was never held back carries no basis, so a consumer reading
+    # the field cannot mistake "blocked outright" for "demoted for some reason".
+    assert rows["evil-c2.com"] is None

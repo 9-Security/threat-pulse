@@ -74,20 +74,34 @@ def _load_rules(text: str) -> tuple[frozenset[str], frozenset[str], frozenset[st
     return frozenset(normal), frozenset(wildcard), frozenset(exception)
 
 
-_LIST_TEXT = _read_list()
-NORMAL_RULES, WILDCARD_RULES, EXCEPTION_RULES = _load_rules(_LIST_TEXT)
-_LIST_DIGEST = hashlib.sha256(_LIST_TEXT.encode("utf-8")).hexdigest()[:12]
+NORMAL_RULES, WILDCARD_RULES, EXCEPTION_RULES = _load_rules(_read_list())
+# Over the parsed rules, not the file. Counting rules misses a refresh that adds
+# one suffix and drops another -- every count identical, a real domain moved
+# across the block/hunt line. Hashing the file text overshoots the other way: an
+# edited comment or a CRLF checkout changes the digest while no boundary moves.
+# Callers derive a version to learn when a decision could have changed, and only
+# the rule sets decide anything.
+_RULES_DIGEST = hashlib.sha256(
+    "\n".join(
+        [
+            "N",
+            *sorted(NORMAL_RULES),
+            "W",
+            *sorted(WILDCARD_RULES),
+            "X",
+            *sorted(EXCEPTION_RULES),
+        ]
+    ).encode("utf-8")
+).hexdigest()[:12]
 
 
 def public_suffix_list_version() -> str:
-    """A digest of the bundled list, identifying which one drew a boundary.
+    """A digest of the parsed rules, identifying which list drew a boundary.
 
-    Rule counts would not do. The list churns constantly, and a refresh that
-    adds one suffix and drops another leaves every count identical while moving
-    a real domain across the block/hunt line -- which is exactly the case
-    callers derive a version to catch.
+    Changes when, and only when, a boundary decision could change: comments,
+    ordering and line endings are all absent from what is hashed.
     """
-    return f"psl-{_LIST_DIGEST}"
+    return f"psl-{_RULES_DIGEST}"
 
 
 def _labels(host: str) -> list[str]:

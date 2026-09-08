@@ -47,6 +47,10 @@ CREATE TABLE IF NOT EXISTS indicators (
     article_url     TEXT NOT NULL,
     section         TEXT,
     context         TEXT,
+    -- Which rule held this back from the block list, when one did. Without it a
+    -- consumer has to substring-match a Chinese reason string to tell a public
+    -- resolver from a registry boundary.
+    benign_basis    TEXT,
     -- Lookups arrive lower-cased from a log. Comparing LOWER(value) would make
     -- SQLite ignore the index and scan the table, so the folded form is stored.
     value_lc TEXT GENERATED ALWAYS AS (lower(value)) VIRTUAL,
