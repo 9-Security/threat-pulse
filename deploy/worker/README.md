@@ -21,6 +21,7 @@ does travel:
 | KEV, CVSS | CISA and NVD, public domain |
 | article title and URL | a citation, and it sends traffic to the publisher |
 | `context` | a verbatim source sentence, capped at 300 characters, and released only to a token holding the `context` scope |
+| `benign_basis` | which rule held a value back from the block list, so a consumer need not read Chinese prose to tell a public resolver from a registry boundary |
 
 A token with only `read` gets every hit and every citation, but no source
 sentence — it can follow the link and read it at the publisher.
@@ -59,6 +60,13 @@ npx wrangler d1 create soc-iocs          # paste database_id into wrangler.toml
 npm run schema                           # applies ../d1/schema.sql
 npx wrangler deploy
 ```
+
+`npm run schema` is `CREATE TABLE IF NOT EXISTS`, so it builds a new database
+and does nothing at all to one that already exists. A column added to
+`schema.sql` therefore reaches a fresh database and no running one, while the
+next daily push — whose `INSERT` now names it — fails against the table that
+never got it. Existing databases are updated from `../d1/migrations/`; see the
+README there.
 
 Issue a token — only its SHA-256 is stored, so keep the value you generate:
 

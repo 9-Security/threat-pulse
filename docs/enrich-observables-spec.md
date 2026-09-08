@@ -526,6 +526,12 @@ Three distinct rules exist today, each with its own basis:
 | `vendor_brand_apex` | Brand apex domains, matched as apex or subdomain |
 | `domain_boundary_rule` | Parent domain too broad relative to a reported subdomain |
 
+The basis travels with the indicator as `benign_basis` — through the daily
+report, into D1, and out of the Worker. That last part is stated because it was
+briefly untrue: the field was added to the analyst's own model and left out of
+the export, so it stopped one layer short of the only consumer it exists for. A
+test now loads the shipped schema and asserts the values arrive.
+
 Each is now versioned. `benign_registry_version` is a digest over the contents
 of all three sets plus the parsed public suffix rules, recorded on every report
 as `analyst_brief.benign_registry_version`. The rules rather than their counts,
