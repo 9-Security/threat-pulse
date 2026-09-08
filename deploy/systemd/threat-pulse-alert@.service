@@ -1,0 +1,33 @@
+[Unit]
+Description=Internal alert for a failed %i
+Documentation=https://github.com/9-Security/threat-pulse
+
+[Service]
+Type=oneshot
+User=threatpulse
+Group=threatpulse
+WorkingDirectory=/home/threatpulse/app
+EnvironmentFile=/home/threatpulse/threat-pulse.env
+# %i is the failing unit, passed by its OnFailure=. Reading the journal for it
+# means the mail carries enough to triage without opening an SSH session, which
+# is the point: a missed collection cannot be recovered later, so the person who
+# can restart it has to learn about it the same morning.
+ExecStart=/bin/bash -c '\
+  { echo "unit: %i"; \
+    echo "host: $(hostname)"; \
+    echo "when: $(date -Is)"; \
+    echo "result: $(systemctl show %i -p Result --value), exit $(systemctl show %i -p ExecMainStatus --value)"; \
+    echo; echo "--- last 40 journal lines ---"; \
+    journalctl -u %i -n 40 --no-pager --output=cat 2>&1; \
+  } | /home/threatpulse/app/deploy/alert.sh "[threat-pulse] %i FAILED on $(hostname)"'
+TimeoutStartSec=2min
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/threatpulse
+ProtectKernelTunables=true
+ProtectKernelModules=true
+RestrictSUIDSGID=true
+LockPersonality=true

@@ -246,6 +246,28 @@ systemctl list-timers threat-pulse-daily.timer
 journalctl -u threat-pulse-daily.service -n 50
 ```
 
+#### 失敗告警
+
+漏掉的一天補不回來，而失敗的自然形狀是「一封沒有寄來的信」——沒有人會注意到不存在的東西，週末尤其如此（週末報告本來就薄，少一封不覺得奇怪）。所以失敗必須主動變成一則訊息。
+
+兩條路徑分開接，因為 systemd 只看得到其中一條：
+
+- **服務失敗** → unit 的 `OnFailure=threat-pulse-alert@%n.service` 觸發，寄出失敗單元、結果碼與最後 40 行日誌。
+- **D1 推送失敗** → `OnFailure` 看不到。推送是刻意設成非致命的（信是交付物，已經寄出，不該讓整班失敗），unit 會 exit 0。這是最可能無聲跑一週的故障：報告照常來，語料悄悄停止成長。因此 `run-daily.sh` 在該路徑上自己送告警。
+
+收件人是 `ALERT_TO`，與 `RESEND_TO` **完全分開**——報告的其他收件人不該收到維運雜訊。`ALERT_TO` 未設時不送，也不會誤寄給報告收件人。
+
+`deploy/alert.sh` 刻意不使用 uv、專案 venv 或任何專案程式碼：它在「已經出事」時執行，而損壞的 venv 或失敗的 `uv sync` 正是它要回報的故障之一。只依賴 `curl` 與系統 `python3`，後者僅用於 JSON 跳脫——`python3` 不存在時仍會送出，只是少了日誌尾巴。知道壞了比知道為什麼壞了重要。
+
+安裝：
+
+```bash
+sudo install -m 0644 /home/threatpulse/app/deploy/systemd/threat-pulse-alert@.service /etc/systemd/system/
+sudo systemctl daemon-reload
+```
+
+**未涵蓋的情況**：整台主機停機時沒有任何告警——死掉的機器不會通知你它死了。要涵蓋需要外部心跳（例如 healthchecks.io，逾時未 ping 即通知）。在有人真正依賴每日報告之前，「連續兩天沒收到信」本身就是可用的訊號。
+
 #### GitHub Actions（備援）
 
 `.github/workflows/daily-deliver.yml` 跑同樣的步驟，**排程已停用**，只保留 Actions 介面的手動觸發，供主機停機時備援。兩邊同時排程會各自抓取、產生不同的 report ID，於是繞過 Resend 的冪等鍵而寄出兩封，D1 也會互相覆蓋。

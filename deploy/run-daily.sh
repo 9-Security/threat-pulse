@@ -127,4 +127,15 @@ evidence_path="$(printf '%s' "$deliver_output" \
 
 if ! push_to_d1 "$evidence_path"; then
   echo "D1 push failed; the report was still delivered" >&2
+  # systemd's OnFailure= cannot see this. The push is non-fatal on purpose --
+  # the mail is the deliverable and it already went out -- so the unit exits 0
+  # and the corpus quietly stops growing. That is the failure most likely to run
+  # for a week unnoticed, so it is alerted here rather than by the unit.
+  {
+    echo "The report for ${evidence_path:-an unnamed day} was delivered, but its"
+    echo "indicators did not reach D1. The corpus is not growing until this is fixed."
+    echo
+    echo "--- last 40 journal lines ---"
+    journalctl -u threat-pulse-daily.service -n 40 --no-pager --output=cat 2>&1 || true
+  } | "$APP_DIR/deploy/alert.sh" "[threat-pulse] D1 push failed on $(hostname)" || true
 fi

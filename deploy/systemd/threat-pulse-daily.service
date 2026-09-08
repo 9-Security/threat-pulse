@@ -4,6 +4,12 @@ Documentation=https://github.com/9-Security/threat-pulse
 After=network-online.target
 Wants=network-online.target
 
+# A missed collection cannot be recovered: source feeds carry only their most
+# recent items. Failure has to arrive as a message, because its natural shape is
+# an email that does not turn up, and nobody notices an absence -- least of all
+# on a weekend, when a thin report looks normal.
+OnFailure=threat-pulse-alert@%n.service
+
 [Service]
 Type=oneshot
 User=threatpulse
