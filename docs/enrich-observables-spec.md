@@ -21,13 +21,16 @@ The review named `last_seen`, `days_since_last_seen`, `report_count` and
 
 A durable store does exist. A systemd timer on a dedicated host runs daily at
 06:00 Asia/Taipei, generates the day's report and pushes its confirmed indicators
-into D1. **As of 2026-09-07 that store holds four days**, beginning 2026-09-04.
+into D1. **As of 2026-09-08 that store holds five days**, beginning 2026-09-04.
+The temporal fields are therefore computable, but five days of depth makes them
+close to meaningless in practice; `first_seen` for almost every indicator is
+simply the day the store began.
 
 The schedule moved off CI on 2026-09-07 for the reason this disclosure is about:
 GitHub's cron may run hours late and is disabled entirely after sixty days
-without a commit, and a day the collector misses cannot be recovered. The temporal fields are therefore computable, but four days of depth
-makes them close to meaningless in practice; `first_seen` for almost every
-indicator is simply the day the store began.
+without a commit, and a day the collector misses cannot be recovered. A failed
+run now raises an internal alert, because the natural shape of that failure is an
+email that does not arrive, and an absence goes unnoticed.
 
 The store does **not** hold candidate or rejected rows, article bodies, or
 extraction diagnostics — only confirmed indicators and report metadata. The
@@ -574,8 +577,9 @@ consumer rendering results for human clicking must defang at that boundary.
 
 ## Data handling
 
-To be published as a written policy before the pilot. The commitments the design
-already implies:
+Answered in full in [`data-handling.md`](data-handling.md), which marks every
+claim as verified against the running code, an operational commitment, or an
+open item. In summary:
 
 - Requests carry customer-derived observables and are treated as customer data.
 - Private addresses and internal hostnames are skipped, not searched, not logged
@@ -584,9 +588,20 @@ already implies:
 - Authentication is a per-client bearer token; only its SHA-256 is stored, and
   tokens are revocable individually.
 
-Still to be decided and documented: whether request values are logged at all,
-retention and deletion periods, data residency and subprocessors, tenant
-isolation guarantees, and maximum request and response sizes.
+- Request values are logged nowhere. The Worker contains no logging statement,
+  and its only write is a usage counter on the calling token; every other
+  statement is a `SELECT`, so no path exists by which a submitted value could
+  reach the corpus.
+- Cloudflare is the only subprocessor on the query path. The D1 primary is in
+  APAC but is **not pinned by configuration**, which that document states rather
+  than glosses over.
+- There is no tenant partitioning, deliberately: the corpus is published
+  third-party reporting and queries are never stored, so there is nothing
+  belonging to one caller for another to reach.
+- Two behaviours this specification promises are not implemented yet — reporting
+  `truncated`/`skipped` on over-limit batches, and skipping private addresses
+  server-side. Both are listed as open in that document rather than described as
+  working.
 
 ---
 
@@ -602,7 +617,7 @@ From the review's Recommendation, plus what the disclosures add.
 | 4 | Domain-boundary matching via PSL | done, both sides |
 | 5 | Known-benign provenance and versioning | done |
 | 6 | CVE provenance separation | specified above |
-| 7 | Data handling and retention documentation | partially answered above |
+| 7 | Data handling and retention documentation | done; `docs/data-handling.md` |
 | 8 | Remove "safe to automate" claim | done throughout |
 | 9 | **Corpus depth** | store running since 2026-09-04; accrues 1 day/day |
 | 10 | Restate measurements on current parser revision | done; see Disclosure 4 |
