@@ -20,6 +20,12 @@ on:
         description: Write the report without calling Resend
         type: boolean
         default: false
+      force_d1:
+        description: >-
+          Replace the day in D1 even if it holds more than this run collected.
+          Only for a correction that legitimately has fewer.
+        type: boolean
+        default: false
 
 concurrency:
   group: daily-soc-deliver
@@ -147,14 +153,23 @@ jobs:
           # the whole date. Both counts are compared, because a re-run that
           # still finds the headlines but can no longer read their bodies keeps
           # article_count and drops every indicator.
-          stored="$(npx --yes wrangler@3 d1 execute soc-iocs \
+          if ! stored="$(npx --yes wrangler@3 d1 execute soc-iocs \
             --config deploy/worker/wrangler.toml --remote --json \
             --command "SELECT article_count, confirmed_ioc_count FROM reports WHERE report_date = '${day}'" \
-            2>/dev/null | uv run python deploy/first_field.py article_count confirmed_ioc_count)" || stored=""
-          if [ -n "${stored}" ] && [ "${FORCE_D1:-0}" != "1" ]; then
-            collected="$(uv run python deploy/first_field.py --plain article_count confirmed_ioc_count < "${evidence}")"
+            2>/dev/null | python3 deploy/first_field.py article_count confirmed_ioc_count)"; then
+            # Exit 1 is "the answer could not be read" -- an expired token, a
+            # changed wrangler envelope -- not "nothing stored yet". Collapsing
+            # the two would replace a day on the strength of a failed lookup.
+            if [ "${FORCE_D1}" != "1" ]; then
+              echo "::warning::could not read the stored counts for ${day}; refusing to replace it unchecked. Re-run with force_d1 to override."
+              exit 0
+            fi
+            stored=""
+          fi
+          if [ -n "${stored}" ] && [ "${FORCE_D1}" != "1" ]; then
+            collected="$(python3 deploy/first_field.py --plain article_count confirmed_ioc_count < "${evidence}")"
             if [ "${collected%% *}" -lt "${stored%% *}" ] || [ "${collected##* }" -lt "${stored##* }" ]; then
-              echo "::warning::refusing to replace ${day}: D1 holds '${stored}' (articles indicators), this run collected '${collected}'. Set FORCE_D1=1 to override."
+              echo "::warning::refusing to replace ${day}: D1 holds '${stored}' (articles indicators), this run collected '${collected}'. Re-run with force_d1 to override."
               exit 0
             fi
           fi
@@ -171,6 +186,9 @@ jobs:
           DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || false }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          # Without this the guard's own override message names something the
+          # dispatch form cannot set, on the only path left when the host is down.
+          FORCE_D1: ${{ inputs.force_d1 && '1' || '0' }}
 
       - name: Upload report artifacts
         if: success()

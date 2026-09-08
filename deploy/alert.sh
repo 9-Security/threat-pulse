@@ -37,8 +37,25 @@ print(json.dumps({
 
 if [ -z "$payload" ]; then
   # python3 unavailable or refused. Send the subject alone rather than nothing:
-  # knowing the collector failed matters more than knowing why.
-  payload="{\"from\":\"${RESEND_FROM}\",\"to\":[\"${ALERT_TO}\"],\"subject\":\"${subject}\",\"text\":\"(log tail unavailable: python3 missing on the host)\"}"
+  # knowing the collector failed matters more than knowing why. Everything
+  # interpolated here is escaped, and the recipient list is split the same way
+  # the python path splits it -- a fallback that produces a 422 because it put
+  # two addresses in one string would fail in exactly the case it exists for.
+  json_escape() {
+    local text=$1
+    text=${text//\\/\\\\}
+    text=${text//\"/\\\"}
+    printf '%s' "$text"
+  }
+  recipients=""
+  IFS=',' read -ra _addrs <<< "$ALERT_TO"
+  for _addr in "${_addrs[@]}"; do
+    _addr="$(printf '%s' "$_addr" | tr -d '[:space:]')"
+    [ -z "$_addr" ] && continue
+    [ -n "$recipients" ] && recipients="${recipients},"
+    recipients="${recipients}\"$(json_escape "$_addr")\""
+  done
+  payload="{\"from\":\"$(json_escape "$RESEND_FROM")\",\"to\":[${recipients}],\"subject\":\"$(json_escape "$subject")\",\"text\":\"(log tail unavailable: python3 missing on the host)\"}"
 fi
 
 code="$(curl -sS -o /tmp/alert-response.$$ -w '%{http_code}' -m 30 \

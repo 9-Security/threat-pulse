@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # One daily run: collect, mail, then push the day's indicators to D1.
 #
-# Mirrors .github/workflows/daily-deliver.yml so a host-run day and a
-# CI-run day produce the same thing. Two differences are deliberate:
-# `reports/` and the enrichment cache persist here instead of riding a CI
-# cache that can miss, and the checkout is a pull, so a merged fix reaches
-# tonight's run the same way it reached the workflow.
+# Mirrors .github/workflows/daily-deliver.yml so a host-run day and a CI-run day
+# produce the same thing. Two differences are deliberate: `reports/` and the
+# enrichment cache persist here instead of riding a CI cache that can miss, and
+# the checkout is a pull, so a merged fix reaches tonight's run the same way it
+# reached the workflow.
 set -euo pipefail
 
 APP_DIR="${APP_DIR:-$HOME/app}"
@@ -13,6 +13,33 @@ REPORTS_DIR="${REPORTS_DIR:-$APP_DIR/reports}"
 export PATH="$HOME/.local/bin:$PATH"
 
 cd "$APP_DIR"
+
+# first_field.py is pure standard library and is what decides whether a day may
+# be overwritten, so it must not depend on the project environment: a lockfile
+# drift or a corrupted uv cache is one of the conditions it exists to survive.
+# System python3 first, the venv only as a fallback for a host without one.
+if command -v python3 >/dev/null 2>&1; then
+  run_py() { python3 "$@"; }
+else
+  run_py() { uv run python "$@"; }
+fi
+
+# Alert on anything that leaves the corpus unable to grow. Every path below that
+# ends without a push reaches this, because the observable outcome is identical
+# whatever the cause: reports keep arriving and D1 quietly stops accruing days.
+corpus_stalled() {
+  echo "corpus did not grow: $1" >&2
+  {
+    echo "The daily report was delivered, but the day's indicators did not reach D1."
+    echo "The corpus stops growing until this is fixed, and a day the collector"
+    echo "misses cannot be collected later."
+    echo
+    echo "reason: $1"
+    echo
+    echo "--- last 40 journal lines ---"
+    journalctl -u threat-pulse-daily.service -n 40 --no-pager --output=cat 2>&1 || true
+  } | "$APP_DIR/deploy/alert.sh" "[threat-pulse] corpus stalled on $(hostname)" || true
+}
 
 if [ "${SKIP_PULL:-0}" != "1" ]; then
   git pull --ff-only --quiet
@@ -30,21 +57,18 @@ if [ "${DRY_RUN:-0}" = "1" ]; then
   [ -z "${RESEND_TO:-}" ] && extra+=(--to "dry-run@dry-run.invalid")
 fi
 
-# Captured so the push can use the path deliver reports rather than guessing at
-# the directory listing. Echoed straight back out so the journal still has it.
-deliver_output="$(uv run soc-news-parser deliver \
+# Streamed to the journal as it happens and captured at the same time. A plain
+# command substitution would hold it all back until deliver exited, so a run
+# that failed would take its own summary down with it -- and that summary is
+# most of what the failure alert has to work with.
+deliver_log="$(mktemp)"
+trap 'rm -f "$deliver_log"' EXIT
+uv run soc-news-parser deliver \
   --hours 24 \
   --at 06:00 \
   --timezone Asia/Taipei \
   --output-dir "$REPORTS_DIR" \
-  "${extra[@]}")"
-printf '%s\n' "$deliver_output"
-
-# Read one field of the report JSON deliver just wrote.
-evidence_field() {
-  uv run python -c 'import json, sys
-print(json.load(open(sys.argv[1], encoding="utf-8"))[sys.argv[2]])' "$1" "$2"
-}
+  "${extra[@]}" | tee "$deliver_log"
 
 # The D1 corpus is what agents query later, but the mail is the deliverable, so a
 # push failure must be reported without failing a run that already sent it. Every
@@ -59,18 +83,27 @@ push_to_d1() {
   for name in CLOUDFLARE_API_TOKEN CLOUDFLARE_ACCOUNT_ID; do
     if [ -z "${!name:-}" ]; then
       # Both are required: without the account id wrangler enumerates
-      # /memberships and dies pointing at the wrong credential.
-      echo "$name is not set; skipping the D1 push"
+      # /memberships and dies pointing at the wrong credential. A rotated token
+      # that nobody copied into the env file looks exactly like this, and the
+      # reports keep arriving, so it is alerted rather than merely logged.
+      corpus_stalled "$name is not set, so the push was skipped"
       return 0
     fi
   done
 
   local evidence="$1" day
   if [ -z "$evidence" ] || [ ! -f "$evidence" ]; then
-    echo "deliver named no evidence file; nothing to push"
+    corpus_stalled "deliver named no readable evidence file (got '${evidence:-empty}')"
     return 0
   fi
   day="$(basename "$(dirname "$evidence")")" || return 1
+  # The date is interpolated into a SQL string and a /tmp path. It comes from
+  # deliver rather than a directory scan now, which removed the pattern filter
+  # that used to stand between an unexpected layout and both of those.
+  if ! [[ "$day" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]; then
+    corpus_stalled "evidence path does not name a dated folder: '$evidence'"
+    return 0
+  fi
 
   # Look at what is stored before replacing it. The exporter deletes and rewrites
   # the whole date, and a re-run of a window that closed hours ago collects a
@@ -83,29 +116,32 @@ push_to_d1() {
   # still finds the same headlines but can no longer read their bodies, which
   # deletes the day's indicators and re-inserts nothing.
   # FORCE_D1=1 pushes a genuine correction that legitimately has fewer.
-  local stored_json collected_articles collected_iocs
-  if stored_json="$(npx --yes wrangler@3 d1 execute soc-iocs \
+  local stored collected
+  if ! stored="$(npx --yes wrangler@3 d1 execute soc-iocs \
       --config deploy/worker/wrangler.toml --remote --json \
       --command "SELECT article_count, confirmed_ioc_count FROM reports WHERE report_date = '${day}'" \
-      2>/dev/null | uv run python "$APP_DIR/deploy/first_field.py" article_count confirmed_ioc_count)"; then
-    collected_articles="$(evidence_field "$evidence" article_count)" || return 1
-    collected_iocs="$(evidence_field "$evidence" confirmed_ioc_count)" || return 1
-    if [ -n "$stored_json" ] && [ "${FORCE_D1:-0}" != "1" ]; then
-      local stored_articles stored_iocs
-      stored_articles="${stored_json% *}"
-      stored_iocs="${stored_json#* }"
-      if [ "$collected_articles" -lt "$stored_articles" ] ||
-         [ "$collected_iocs" -lt "$stored_iocs" ]; then
-        echo "refusing to replace ${day}: D1 holds ${stored_articles} articles / ${stored_iocs} indicators," >&2
-        echo "  this run collected ${collected_articles} / ${collected_iocs}." >&2
-        echo "  The stored copy was collected closer to its window; FORCE_D1=1 overrides." >&2
-        return 0
-      fi
+      2>/dev/null | run_py "$APP_DIR/deploy/first_field.py" article_count confirmed_ioc_count)"; then
+    # Exit 1 means the answer could not be read -- an expired token, a changed
+    # wrangler envelope. That is not "nothing stored yet", and treating it as
+    # such would replace a day on the strength of a failed lookup. Refuse, and
+    # say so where someone will see it.
+    if [ "${FORCE_D1:-0}" != "1" ]; then
+      corpus_stalled "could not read the stored counts for ${day}; refusing to replace it unchecked (FORCE_D1=1 overrides)"
+      return 0
     fi
-  else
-    # No comparison was possible, so say so rather than letting an unreadable
-    # answer look like "nothing stored yet".
-    echo "could not read the stored counts for ${day}; replacing it unguarded" >&2
+    stored=""
+  fi
+
+  if [ -n "$stored" ] && [ "${FORCE_D1:-0}" != "1" ]; then
+    collected="$(run_py "$APP_DIR/deploy/first_field.py" --plain \
+      article_count confirmed_ioc_count < "$evidence")" || return 1
+    if [ "${collected%% *}" -lt "${stored%% *}" ] ||
+       [ "${collected##* }" -lt "${stored##* }" ]; then
+      echo "refusing to replace ${day}: D1 holds ${stored} (articles indicators)," >&2
+      echo "  this run collected ${collected}." >&2
+      echo "  The stored copy was collected closer to its window; FORCE_D1=1 overrides." >&2
+      return 0
+    fi
   fi
 
   uv run soc-news-parser export-d1 \
@@ -122,20 +158,9 @@ push_to_d1() {
 # deliver names the file it wrote. Scanning the output directory instead would
 # pick the lexicographically last folder, which on a run that wrote nothing is
 # some earlier day this run never collected.
-evidence_path="$(printf '%s' "$deliver_output" \
-  | uv run python "$APP_DIR/deploy/first_field.py" --plain json_output)" || evidence_path=""
+evidence_path="$(run_py "$APP_DIR/deploy/first_field.py" --plain json_output \
+  < "$deliver_log")" || evidence_path=""
 
 if ! push_to_d1 "$evidence_path"; then
-  echo "D1 push failed; the report was still delivered" >&2
-  # systemd's OnFailure= cannot see this. The push is non-fatal on purpose --
-  # the mail is the deliverable and it already went out -- so the unit exits 0
-  # and the corpus quietly stops growing. That is the failure most likely to run
-  # for a week unnoticed, so it is alerted here rather than by the unit.
-  {
-    echo "The report for ${evidence_path:-an unnamed day} was delivered, but its"
-    echo "indicators did not reach D1. The corpus is not growing until this is fixed."
-    echo
-    echo "--- last 40 journal lines ---"
-    journalctl -u threat-pulse-daily.service -n 40 --no-pager --output=cat 2>&1 || true
-  } | "$APP_DIR/deploy/alert.sh" "[threat-pulse] D1 push failed on $(hostname)" || true
+  corpus_stalled "the D1 push failed"
 fi
