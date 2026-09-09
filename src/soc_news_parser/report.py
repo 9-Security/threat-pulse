@@ -547,23 +547,38 @@ def _render_enrichment_note(report: DailyReport) -> list[str]:
     scored = data.get("cvss_count") or 0
     requested = data.get("requested_cve_count") or 0
     errors = data.get("errors") or []
-    if not requested:
-        note = ["- CVE 加值：已啟用；今日沒有明確 CVE 需要查詢"]
-        if errors:
-            note.append(
-                f"- CVE 加值有 {len(errors)} 項查詢失敗，KEV／CVSS 欄位今日可能不完整"
+    # The time budget appends a single message however many CVEs it stopped, so
+    # counting `errors` once told the reader "1 lookup failed" for hundreds that
+    # were never asked about. The two are reported separately.
+    skipped = data.get("skipped_cve_count") or 0
+    stale = data.get("stale_cache_hits") or 0
+    failures = max(len(errors) - (1 if skipped or stale else 0), 0)
+
+    def _shortfall() -> list[str]:
+        out: list[str] = []
+        if skipped:
+            out.append(
+                f"- CVE 加值未查詢 {skipped} 個 CVE：時間上限已到，"
+                "KEV 仍已套用（設定 NVD_API_KEY 可提高查詢速率）"
+            )
+        if stale:
+            out.append(
+                f"- 其中 {stale} 個 CVE 的 CVSS 取自逾期未更新的快取，分數可能不是最新"
+            )
+        if failures:
+            out.append(
+                f"- CVE 加值有 {failures} 項查詢失敗，KEV／CVSS 欄位今日可能不完整"
                 "（明細見 JSON 稽核檔）"
             )
-        return note
+        return out
+
+    if not requested:
+        return ["- CVE 加值：已啟用；今日沒有明確 CVE 需要查詢", *_shortfall()]
     detail = f"CISA KEV 與 NVD；{scored}/{requested} 個 CVE 取得 NVD CVSS"
     if released:
         detail += f"；KEV 目錄發布於 {released}"
     lines.append(f"- CVE 加值：{detail}")
-    if errors:
-        lines.append(
-            f"- CVE 加值有 {len(errors)} 項查詢失敗，KEV／CVSS 欄位今日可能不完整"
-            "（明細見 JSON 稽核檔）"
-        )
+    lines.extend(_shortfall())
     return lines
 
 

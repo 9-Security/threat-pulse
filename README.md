@@ -94,7 +94,7 @@ curl -s https://publicsuffix.org/list/public_suffix_list.dat \
   > src/soc_news_parser/data/public_suffix_list.dat
 ```
 
-良性判定（公共 DNS、品牌 apex、註冊邊界）會在報告 JSON 的 `analyst_brief.benign_registry_version` 記下一個內容雜湊，由三份清單加 **PSL 解析後的規則集合**推導。取解析後的規則而非規則數，是因為一增一減的更新會讓數量不變卻真的移動了邊界；取規則集合而非整個檔案，是因為改一行註解或換行尾不該讓識別碼變動。它只在判定可能改變時才變，兩個方向都是。
+良性判定（公共 DNS、品牌 apex、註冊邊界）會在報告 JSON 的 `analyst_brief.benign_registry_version` 記下一個內容雜湊，由三份清單加 **PSL 解析後的規則集合**推導。**2026-09-09 有一次一次性的斷點**：雜湊輸入從「PSL 規則數」改成「解析後的規則集合」，識別碼因此變動了一次，但沒有任何邊界判定改變。跨越那天比對兩份報告時，識別碼不同不代表清單動過。取解析後的規則而非規則數，是因為一增一減的更新會讓數量不變卻真的移動了邊界；取規則集合而非整個檔案，是因為改一行註解或換行尾不該讓識別碼變動。它只在判定可能改變時才變，兩個方向都是。
 
 副檔名比對排在網域之前，所以 `.zip`、`.py`、`.mov` 這些同時是合法 TLD 的字尾會先判成檔名。`.onion`、`.i2p`、`.bit` 雖未在 root zone 委派，但它們指向真實的攻擊基礎設施，因此明確納入；`.local`、`.localhost`、`.invalid`、`.example` 這類文件／私網保留字仍排除。
 
@@ -171,7 +171,7 @@ uv run soc-news-parser deliver --no-enrich
 
 關掉時報告會明講「CVE 加值：未啟用，CVSS 僅取自原文，未比對 CISA KEV」。
 
-加值本身也有時間上限（預設 15 分鐘，`NVD_BUDGET_SECONDS`）。超過就停止發出新的 NVD
+加值本身也有時間上限（預設 15 分鐘）。要調整就設 `NVD_BUDGET_SECONDS`（秒；設 `0` 表示不設上限，適合預期會長跑且有人盯著的補資料）。超過就停止發出新的 NVD
 請求，把剩下幾個 CVE 沒查記進 `enrichment.errors`，報告照常產出並寄送。停止的只有
 **網路請求**：KEV 來自單一次整份目錄查詢，會照常套用到每個 CVE；已經在快取裡的 CVSS
 也照常使用，因為讀快取不花時間。

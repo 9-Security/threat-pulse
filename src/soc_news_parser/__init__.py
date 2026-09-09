@@ -22,6 +22,7 @@ from .parser import (
 )
 from .analyst import load_previous_iocs, render_ioc_csv_from_actions
 from .enrich import (
+    NVD_BUDGET_SECONDS,
     EnrichmentReport,
     collect_cve_ids,
     default_fetcher,
@@ -46,6 +47,24 @@ from .sources import SOURCES
 DEFAULT_CACHE_DIR = ".cache/enrichment"
 
 
+def _budget_seconds() -> float | None:
+    """The enrichment time ceiling, overridable for a heavy backlog.
+
+    Documented in the README beside NVD_API_KEY, so it has to be read the same
+    way: it was a module constant while the prose implied an operator could set
+    it, and putting it in the env file did nothing. `0` disables the ceiling for
+    a run that is expected to be long and is being watched.
+    """
+    raw = os.environ.get("NVD_BUDGET_SECONDS", "").strip()
+    if not raw:
+        return NVD_BUDGET_SECONDS
+    try:
+        value = float(raw)
+    except ValueError:
+        return NVD_BUDGET_SECONDS
+    return None if value <= 0 else value
+
+
 def _resolve_intel(
     args: argparse.Namespace, report_manifests: list, parser: object | None = None
 ) -> tuple[dict, object]:
@@ -67,6 +86,7 @@ def _resolve_intel(
             fetcher=fetch,
             cache_dir=getattr(args, "cache_dir", DEFAULT_CACHE_DIR),
             api_key=os.environ.get("NVD_API_KEY") or None,
+            budget_seconds=_budget_seconds(),
         )
     finally:
         close()

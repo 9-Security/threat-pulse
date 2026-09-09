@@ -83,10 +83,15 @@ push_to_d1() {
   for name in CLOUDFLARE_API_TOKEN CLOUDFLARE_ACCOUNT_ID; do
     if [ -z "${!name:-}" ]; then
       # Both are required: without the account id wrangler enumerates
-      # /memberships and dies pointing at the wrong credential. A rotated token
-      # that nobody copied into the env file looks exactly like this, and the
-      # reports keep arriving, so it is alerted rather than merely logged.
-      corpus_stalled "$name is not set, so the push was skipped"
+      # /memberships and dies pointing at the wrong credential.
+      #
+      # Logged, not alerted. A host with no Cloudflare credentials is a
+      # documented configuration -- the report still goes out, the corpus simply
+      # is not fed -- and mailing about a state the operator chose, every
+      # morning, is how the alert that matters becomes one more thing to ignore.
+      # A credential that was set and has since stopped working fails inside
+      # wrangler instead, which does alert.
+      echo "$name is not set; skipping the D1 push"
       return 0
     fi
   done
@@ -135,6 +140,13 @@ push_to_d1() {
   if [ -n "$stored" ] && [ "${FORCE_D1:-0}" != "1" ]; then
     collected="$(run_py "$APP_DIR/deploy/first_field.py" --plain \
       article_count confirmed_ioc_count < "$evidence")" || return 1
+    # `[ x -lt y ]` on a non-integer exits 2, and an `if` reads that as false --
+    # so a malformed count would slip past the comparison instead of stopping
+    # it, which is the outcome this guard exists to prevent. Check the shape.
+    if ! [[ "$stored $collected" =~ ^[0-9]+" "[0-9]+" "[0-9]+" "[0-9]+$ ]]; then
+      corpus_stalled "counts for ${day} are not numeric (stored='${stored}' collected='${collected}'); refusing to replace it unchecked"
+      return 0
+    fi
     if [ "${collected%% *}" -lt "${stored%% *}" ] ||
        [ "${collected##* }" -lt "${stored##* }" ]; then
       echo "refusing to replace ${day}: D1 holds ${stored} (articles indicators)," >&2

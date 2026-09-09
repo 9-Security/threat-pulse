@@ -58,7 +58,11 @@ def test_build_report_email_validates_pair_and_attaches_both_files(
     assert base64.b64decode(email.payload["attachments"][0]["content"]).startswith(
         b"# Report"
     )
-    csv_text = base64.b64decode(email.payload["attachments"][2]["content"]).decode()
+    # utf-8-sig, because the attachment carries a BOM: Excel on a zh-TW Windows
+    # reads a BOM-less UTF-8 CSV as CP950 and mojibakes every Chinese field.
+    csv_text = base64.b64decode(
+        email.payload["attachments"][2]["content"]
+    ).decode("utf-8-sig")
     assert csv_text.startswith("action,priority,is_new,indicator_type")
     assert "<script>" not in email.payload["html"]
     assert len(email.idempotency_key) <= 256

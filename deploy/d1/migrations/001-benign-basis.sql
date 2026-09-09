@@ -8,3 +8,6 @@
 -- Additive and nullable: rows written before this migration keep NULL, which
 -- reads correctly as "no rule held this back".
 ALTER TABLE indicators ADD COLUMN benign_basis TEXT;
+
+INSERT OR REPLACE INTO schema_migrations (id, applied_at)
+VALUES ('001-benign-basis', datetime('now'));
