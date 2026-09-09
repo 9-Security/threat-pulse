@@ -30,6 +30,14 @@ NVD_HOST = "services.nvd.nist.gov"
 
 # NVD publishes 5 requests per rolling 30s without an API key and 50 with one.
 # Stay a little under both so a slow clock cannot trip the limit.
+# Enrichment is an enhancement; the report is the deliverable. Without a budget a
+# slow day takes the whole run down with it: on 2026-09-09 a window with 348 new
+# CVEs spent 43 minutes inside NVD's unauthenticated 5-per-30s limit, overran the
+# unit timeout, and was killed -- losing 32 already-collected articles for a day
+# that cannot be collected again. A deadline turns that into some missing CVSS
+# scores. With an API key the same 348 take about four minutes, so this ceiling
+# is reached only when something is wrong.
+NVD_BUDGET_SECONDS = 900.0
 NVD_RATE_WITHOUT_KEY = (4, 30.0)
 NVD_RATE_WITH_KEY = (45, 30.0)
 
@@ -306,6 +314,7 @@ def _load_nvd(
     now: datetime,
     errors: list[str],
     stats: dict[str, int],
+    cache_only: bool = False,
 ) -> dict[str, Any] | None:
     name = f"nvd/{cve_id}.json"
     entry = cache.read_entry(name)
@@ -317,6 +326,11 @@ def _load_nvd(
         if now - stored <= ttl:
             stats["cache_hits"] += 1
             return cached
+    if cache_only:
+        # The time budget is spent. A cache read costs nothing, so those are
+        # still served above; only the rate-limited request stops. A retry after
+        # a budget cut-off leans entirely on this.
+        return None
     limiter.wait()
     stats["lookups"] += 1
     headers = {"apiKey": api_key} if api_key else None
@@ -347,6 +361,7 @@ def enrich_cves(
     now: datetime | None = None,
     sleeper: Callable[[float], None] = time.sleep,
     clock: Callable[[], float] = time.monotonic,
+    budget_seconds: float | None = NVD_BUDGET_SECONDS,
 ) -> tuple[dict[str, CveIntel], EnrichmentReport]:
     """Look up KEV membership and NVD CVSS for each CVE.
 
@@ -371,8 +386,25 @@ def enrich_cves(
     stats = {"cache_hits": 0, "lookups": 0}
 
     intel: dict[str, CveIntel] = {}
-    for cve_id in wanted:
+    started = clock()
+    budget_spent = False
+    for index, cve_id in enumerate(wanted):
         entry = kev.get(cve_id)
+        # KEV came from one request for the whole catalogue and is what the patch
+        # list ranks on, so it keeps being applied to every CVE below. Only the
+        # per-CVE NVD request stops, and cached NVD records are still served.
+        if (
+            not budget_spent
+            and budget_seconds is not None
+            and clock() - started >= budget_seconds
+        ):
+            budget_spent = True
+            errors.append(
+                f"NVD requests stopped after {budget_seconds:.0f}s with "
+                f"{len(wanted) - index} of {len(wanted)} CVEs still to query; "
+                "KEV and cached scores still applied. Set NVD_API_KEY to raise "
+                "the request rate."
+            )
         nvd = _load_nvd(
             cve_id,
             fetcher=fetcher,
@@ -382,6 +414,7 @@ def enrich_cves(
             now=moment,
             errors=errors,
             stats=stats,
+            cache_only=budget_spent,
         )
         sources: list[str] = []
         if entry:
