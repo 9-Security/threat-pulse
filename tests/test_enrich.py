@@ -323,3 +323,76 @@ def test_an_unscored_cache_entry_is_read_once_per_lookup(tmp_path, monkeypatch) 
 
     assert report.cache_hits == 1
     assert reads.count("nvd/CVE-2026-7777.json") == 1
+
+
+def test_the_budget_stops_requests_but_keeps_kev_and_cached_scores(tmp_path) -> None:
+    """A slow day must cost some CVSS scores, not the whole report.
+
+    On 2026-09-09 a window with 348 new CVEs spent 43 minutes inside NVD's
+    unauthenticated limit, overran the unit timeout and was killed, losing 32
+    already-collected articles for a day that cannot be collected again.
+
+    KEV comes from one request for the whole catalogue and is what the patch
+    list ranks on, so it survives the cut-off; so does anything already cached,
+    because a cache read costs no time at all.
+    """
+    requested: list[str] = []
+    cves = [f"CVE-2026-70{index:02d}" for index in range(6)]
+    responses = {KEV_URL: kev_payload(cves[0], cves[4])}
+    for cve_id in cves:
+        responses[f"{NVD_URL}?cveId={cve_id}"] = nvd_payload(cve_id, 7.5, "HIGH")
+
+    def fetch(url: str, allowed_hosts: tuple[str, ...], headers):
+        requested.append(url)
+        return responses[url]
+
+    # Prime the cache for one CVE that falls after the cut-off, to prove a
+    # cached score is still served once requests have stopped.
+    enrich_cves([cves[5]], fetcher=fetch, cache_dir=tmp_path, now=NOW)
+    requested.clear()
+
+    # Two seconds per iteration against a five-second budget: the first two
+    # CVEs are queried, the rest are not.
+    ticks = iter(range(0, 400, 2))
+    intel, report = enrich_cves(
+        cves,
+        fetcher=fetch,
+        cache_dir=tmp_path,
+        now=NOW,
+        sleeper=lambda _delay: None,
+        clock=lambda: float(next(ticks)),
+        budget_seconds=5.0,
+    )
+
+    nvd_requests = [url for url in requested if url.startswith(NVD_URL)]
+    assert len(nvd_requests) < len(cves), "the budget did not stop any request"
+
+    # KEV is applied to every CVE it names, queried or not.
+    assert intel[cves[4]].kev is True
+    assert f"{NVD_URL}?cveId={cves[4]}" not in nvd_requests
+
+    # The pre-cached CVE keeps its score without a request.
+    assert intel[cves[5]].cvss_score == 7.5
+    assert f"{NVD_URL}?cveId={cves[5]}" not in nvd_requests
+
+    assert any("NVD requests stopped after" in message for message in report.errors)
+
+
+def test_no_budget_queries_everything(tmp_path) -> None:
+    """The ceiling must not fire on an ordinary day."""
+    requested: list[str] = []
+    cves = [f"CVE-2026-71{index:02d}" for index in range(4)]
+    responses = {KEV_URL: kev_payload()}
+    for cve_id in cves:
+        responses[f"{NVD_URL}?cveId={cve_id}"] = nvd_payload(cve_id, 5.0, "MEDIUM")
+
+    def fetch(url: str, allowed_hosts: tuple[str, ...], headers):
+        requested.append(url)
+        return responses[url]
+
+    _, report = enrich_cves(
+        cves, fetcher=fetch, cache_dir=tmp_path, now=NOW, budget_seconds=None
+    )
+
+    assert len([url for url in requested if url.startswith(NVD_URL)]) == len(cves)
+    assert not [m for m in report.errors if "stopped after" in m]

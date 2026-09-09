@@ -152,6 +152,10 @@ Markdown 會標「CVE 加值有 N 項查詢失敗」，報告照常寄出，只�
 NVD 未帶 API key 時限制每 30 秒 5 次請求，73 個新 CVE 大約要 9 分鐘。申請免費 key 後
 放進環境變數可提高到每 30 秒 50 次：
 
+這個差距在忙碌的日子會決定一整天有沒有報告。2026-09-09 的窗口有 348 個新 CVE：無 key
+要 43.5 分鐘、超過當時 45 分鐘的 unit 逾時，整班被 SIGTERM 砍掉，連已經收集好的 32 篇
+文章也一起沒了——而漏掉的一天補不回來。有 key 的話同樣 348 個約 3.9 分鐘。
+
 ```bash
 export NVD_API_KEY="..."
 ```
@@ -166,6 +170,14 @@ uv run soc-news-parser deliver --no-enrich
 ```
 
 關掉時報告會明講「CVE 加值：未啟用，CVSS 僅取自原文，未比對 CISA KEV」。
+
+加值本身也有時間上限（預設 15 分鐘，`NVD_BUDGET_SECONDS`）。超過就停止發出新的 NVD
+請求，把剩下幾個 CVE 沒查記進 `enrichment.errors`，報告照常產出並寄送。停止的只有
+**網路請求**：KEV 來自單一次整份目錄查詢，會照常套用到每個 CVE；已經在快取裡的 CVSS
+也照常使用，因為讀快取不花時間。
+
+這條界線的理由是不對稱：加值是加值，報告才是交付物。少幾個 CVSS 分數可以接受，
+為了它失去一整天的文章不行——那一天補不回來。
 
 ### 使用 Resend 寄送報告
 
@@ -230,7 +242,7 @@ sudo systemctl enable --now threat-pulse-daily.timer
 RESEND_API_KEY=...
 RESEND_FROM=SOC Reports <reports@your-verified-domain.example>
 RESEND_TO=analyst@example.com
-NVD_API_KEY=...              # 可略，只影響加值速度
+NVD_API_KEY=...              # 強烈建議：無 key 時的速率會讓忙碌的一天跑不完
 CLOUDFLARE_API_TOKEN=...     # 只需要 D1 Edit 權限
 CLOUDFLARE_ACCOUNT_ID=...
 ALERT_TO=ops@example.com     # 失敗告警收件人，與 RESEND_TO 分開；未設則不送

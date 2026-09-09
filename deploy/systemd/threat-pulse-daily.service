@@ -19,9 +19,16 @@ WorkingDirectory=/home/threatpulse/app
 # The unit fails loudly if it is missing rather than running unconfigured.
 EnvironmentFile=/home/threatpulse/threat-pulse.env
 ExecStart=/home/threatpulse/app/deploy/run-daily.sh
-# NVD without an API key allows 5 requests per 30s, so a day with many new CVEs
-# spends several minutes in enrichment. 45 minutes matches the CI timeout.
-TimeoutStartSec=45min
+# 45 minutes was copied from the CI timeout, where minutes are billed. Here they
+# are not, and the cost of being wrong is asymmetric: a run killed at the ceiling
+# loses articles already collected for a day that cannot be collected again. On
+# 2026-09-09 a window with 348 new CVEs spent 43 minutes inside NVD's
+# unauthenticated 5-per-30s limit and was killed with nothing written.
+#
+# Enrichment now stops itself at NVD_BUDGET_SECONDS and reports what it skipped,
+# so this ceiling should never be what ends a run. It is the backstop for
+# something genuinely stuck, and it is set well clear of any normal day.
+TimeoutStartSec=3h
 
 # The job reads public feeds and writes one directory. Nothing else is its
 # business, and this host runs other people's services.
