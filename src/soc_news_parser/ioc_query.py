@@ -212,6 +212,10 @@ def search_iocs(
                     "action": action_name or None,
                     "priority": related.get("priority"),
                     "reason": related.get("reason"),
+                    # Same field the Worker serves. `reason` is Chinese prose;
+                    # a caller telling a public resolver from a registry
+                    # boundary should not have to match substrings of it.
+                    "benign_basis": related.get("benign_basis"),
                     "kev": related.get("kev"),
                     "cvss_score": related.get("cvss_score"),
                     "article_title": title,
@@ -257,6 +261,7 @@ def lookup_indicator(
                     "action": related.get("action"),
                     "priority": related.get("priority"),
                     "reason": related.get("reason"),
+                    "benign_basis": related.get("benign_basis"),
                     "kev": related.get("kev"),
                     "kev_due_date": related.get("kev_due_date"),
                     "cvss_score": related.get("cvss_score"),

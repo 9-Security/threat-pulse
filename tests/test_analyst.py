@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import csv
+import io
 import json
 from datetime import datetime, timezone
 from pathlib import Path
@@ -527,7 +529,7 @@ def test_csv_is_one_confirmed_ioc_per_row() -> None:
         ]
     )
     lines = [line for line in csv_text.splitlines() if line]
-    assert lines[0].startswith("action,priority,is_new,indicator_type")
+    assert lines[0].lstrip("﻿").startswith("action,priority,is_new,indicator_type")
     assert len(lines) == 3
     assert "CVE-2024-1234" in csv_text
     assert "b" * 64 in csv_text
@@ -613,3 +615,43 @@ def test_every_demotion_names_the_rule_that_caused_it() -> None:
     assert by_target["accounts.google.com"].benign_basis == BENIGN_BASIS_BRAND_APEX
     assert by_target["github.io"].benign_basis == BENIGN_BASIS_DOMAIN_BOUNDARY
     assert by_target["github.io"].action == "hunt"
+
+
+def test_csv_opens_correctly_in_a_locale_that_guesses_cp950() -> None:
+    """The reported failure was mojibake, not a corrupt file.
+
+    A BOM-less UTF-8 CSV is read as CP950 by Excel on a zh-TW Windows, so every
+    Chinese field renders as garbage. Reasons are Chinese, and so are TWCERT/CC
+    and HKCERT article titles, which is why this is about the file rather than
+    about which language the reasons are written in.
+
+    Asserted at the reader's layer: a byte-level BOM check would pass on a file
+    no tool could open.
+    """
+    csv_text = render_ioc_csv(
+        [
+            build_manifest(
+                _article(
+                    "C2 infrastructure observed",
+                    "The C2 server was observed contacting victims.\n"
+                    "Indicators of Compromise\n"
+                    "8.8.8.8\n",
+                )
+            )
+        ]
+    )
+    raw = csv_text.encode("utf-8")
+
+    # What Excel needs in order not to guess.
+    assert raw.startswith(b"\xef\xbb\xbf")
+
+    # What a machine consumer gets: utf-8-sig strips the mark, so the first
+    # header is a clean field name and the Chinese reason survives intact.
+    rows = list(csv.DictReader(io.StringIO(raw.decode("utf-8-sig"))))
+    assert rows, "no rows to check"
+    assert "action" in rows[0], f"first header was mangled: {list(rows[0])[:1]}"
+    assert any("不建議直接封鎖" in row["reason"] for row in rows)
+
+    # And the failure mode itself: decoded as CP950 the Chinese is destroyed,
+    # which is what the reader was seeing.
+    assert "不建議直接封鎖" not in raw.decode("cp950", errors="replace")

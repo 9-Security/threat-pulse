@@ -45,12 +45,21 @@ if [ -z "$payload" ]; then
     local text=$1
     text=${text//\\/\\\\}
     text=${text//\"/\\\"}
+    # JSON forbids raw control characters inside a string. A newline or tab in a
+    # hostname or sender would otherwise produce a 400 and lose the alert.
+    text=${text//$'\n'/\\n}
+    text=${text//$'\r'/\\r}
+    text=${text//$'\t'/\\t}
     printf '%s' "$text"
   }
   recipients=""
   IFS=',' read -ra _addrs <<< "$ALERT_TO"
   for _addr in "${_addrs[@]}"; do
-    _addr="$(printf '%s' "$_addr" | tr -d '[:space:]')"
+    # Trim the ends only. Stripping every space mangles a display-name address
+    # -- "Ops Team <ops@example.com>" became "OpsTeam<ops@example.com>" and was
+    # rejected with 422, on the one path that exists for when python3 is gone.
+    _addr="${_addr#"${_addr%%[![:space:]]*}"}"
+    _addr="${_addr%"${_addr##*[![:space:]]}"}"
     [ -z "$_addr" ] && continue
     [ -n "$recipients" ] && recipients="${recipients},"
     recipients="${recipients}\"$(json_escape "$_addr")\""

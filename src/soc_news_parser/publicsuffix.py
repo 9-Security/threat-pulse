@@ -100,6 +100,11 @@ def public_suffix_list_version() -> str:
 
     Changes when, and only when, a boundary decision could change: comments,
     ordering and line endings are all absent from what is hashed.
+
+    One exception, and it is behind us: on 2026-09-09 the input changed from the
+    rule counts to the rules themselves, so the string moved once without any
+    boundary moving. A version compared across that date is not evidence the
+    list changed.
     """
     return f"psl-{_RULES_DIGEST}"
 

@@ -43,8 +43,10 @@ jobs:
       RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
       RESEND_FROM: ${{ secrets.RESEND_FROM }}
       RESEND_TO: ${{ secrets.RESEND_TO }}
-      # Optional. Without it NVD allows 5 requests per 30s, so a day with many
-      # new CVEs spends several minutes in enrichment.
+      # Strongly advised, not optional. Without it NVD allows 5 requests per
+      # 30s: a window with 727 new CVEs on 2026-09-09 needed 91 minutes of
+      # waiting and overran the host's ceiling. Enrichment stops itself at
+      # NVD_BUDGET_SECONDS now, so the run survives -- with most CVSS missing.
       NVD_API_KEY: ${{ secrets.NVD_API_KEY }}
     steps:
       - name: Check Resend secrets
@@ -105,12 +107,14 @@ jobs:
               extra+=(--to "dry-run@dry-run.invalid")
             fi
           fi
+          # Recorded so the push step can use the path deliver reports rather
+          # than guessing from a directory listing the cache restore repopulates.
           uv run soc-news-parser deliver \
             --hours 24 \
             --at 06:00 \
             --timezone Asia/Taipei \
             --output-dir reports \
-            "${extra[@]}"
+            "${extra[@]}" | tee deliver.json
         env:
           DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || false }}
 
@@ -137,13 +141,21 @@ jobs:
               exit 0
             fi
           done
-          # Take the folder deliver actually wrote rather than recomputing the
-          # date: a manual run in the small hours of Taipei time lands on the
-          # previous slot, and the names sort chronologically anyway.
-          day="$(ls -1 reports 2>/dev/null | grep -E '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' | sort | tail -1)"
-          evidence="reports/${day}/daily-evidence.json"
-          if [ -z "${day}" ] || [ ! -f "${evidence}" ]; then
-            echo "::warning::no dated report on disk; nothing to push"
+          # deliver names the file it wrote. Listing the directory instead picks
+          # the lexicographically last folder, and the cache restore-key above
+          # repopulates reports/ with earlier days -- so a dispatch in the small
+          # hours of Taipei time, which lands on the previous slot, would export
+          # a restored day this run never collected.
+          evidence="$(python3 deploy/first_field.py --plain json_output < deliver.json)" || evidence=""
+          if [ -z "${evidence}" ] || [ ! -f "${evidence}" ]; then
+            echo "::warning::deliver named no readable evidence file; nothing to push"
+            exit 0
+          fi
+          day="$(basename "$(dirname "${evidence}")")"
+          # The date is interpolated into SQL and a /tmp path; the listing filter
+          # that used to stand between an unexpected layout and both is gone.
+          if ! [[ "${day}" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]; then
+            echo "::warning::evidence path does not name a dated folder: ${evidence}"
             exit 0
           fi
           # The same guard deploy/run-daily.sh applies. This workflow is
@@ -168,6 +180,12 @@ jobs:
           fi
           if [ -n "${stored}" ] && [ "${FORCE_D1}" != "1" ]; then
             collected="$(python3 deploy/first_field.py --plain article_count confirmed_ioc_count < "${evidence}")"
+            # `[ x -lt y ]` on a non-integer exits 2, which an `if` reads as
+            # false, letting a malformed count past the comparison entirely.
+            if ! [[ "${stored} ${collected}" =~ ^[0-9]+" "[0-9]+" "[0-9]+" "[0-9]+$ ]]; then
+              echo "::warning::counts for ${day} are not numeric (stored='${stored}' collected='${collected}'); refusing to replace it unchecked"
+              exit 0
+            fi
             if [ "${collected%% *}" -lt "${stored%% *}" ] || [ "${collected##* }" -lt "${stored##* }" ]; then
               echo "::warning::refusing to replace ${day}: D1 holds '${stored}' (articles indicators), this run collected '${collected}'. Re-run with force_d1 to override."
               exit 0

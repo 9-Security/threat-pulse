@@ -89,6 +89,12 @@ class EnrichmentReport:
     kev_catalog_released: str | None = None
     cache_hits: int = 0
     lookups: int = 0
+    # Counted apart from `errors`: the budget appends one message, and rendering
+    # len(errors) told the analyst "1 lookup failed" when hundreds went
+    # unqueried. Only CVEs that ended with no data at all are counted -- one
+    # served from a stale cache entry lost its refresh, not its score.
+    skipped_cve_count: int = 0
+    stale_cache_hits: int = 0
     errors: list[str] = field(default_factory=list)
     sources: list[str] = field(default_factory=list)
 
@@ -317,6 +323,7 @@ def _load_nvd(
     cache_only: bool = False,
 ) -> dict[str, Any] | None:
     name = f"nvd/{cve_id}.json"
+    stale: dict[str, Any] | None = None
     entry = cache.read_entry(name)
     if entry is not None:
         cached, stored = entry
@@ -326,10 +333,16 @@ def _load_nvd(
         if now - stored <= ttl:
             stats["cache_hits"] += 1
             return cached
+        stale = cached
     if cache_only:
-        # The time budget is spent. A cache read costs nothing, so those are
-        # still served above; only the rate-limited request stops. A retry after
-        # a budget cut-off leans entirely on this.
+        # The time budget is spent, so the rate-limited request stops. Anything
+        # on disk is still served, including a record past its refresh age: the
+        # only alternative here is no score at all, and last week's 9.8 ranks a
+        # CVE far better than a null does. Refreshing it is what has been given
+        # up, not knowing it.
+        if stale is not None:
+            stats["stale_hits"] += 1
+            return stale
         return None
     limiter.wait()
     stats["lookups"] += 1
@@ -383,11 +396,13 @@ def enrich_cves(
         sleeper=sleeper,
         clock=clock,
     )
-    stats = {"cache_hits": 0, "lookups": 0}
+    stats = {"cache_hits": 0, "lookups": 0, "stale_hits": 0}
 
     intel: dict[str, CveIntel] = {}
     started = clock()
     budget_spent = False
+    budget_cut_at: int | None = None
+    unqueried = 0
     for index, cve_id in enumerate(wanted):
         entry = kev.get(cve_id)
         # KEV came from one request for the whole catalogue and is what the patch
@@ -399,12 +414,7 @@ def enrich_cves(
             and clock() - started >= budget_seconds
         ):
             budget_spent = True
-            errors.append(
-                f"NVD requests stopped after {budget_seconds:.0f}s with "
-                f"{len(wanted) - index} of {len(wanted)} CVEs still to query; "
-                "KEV and cached scores still applied. Set NVD_API_KEY to raise "
-                "the request rate."
-            )
+            budget_cut_at = index
         nvd = _load_nvd(
             cve_id,
             fetcher=fetcher,
@@ -416,6 +426,10 @@ def enrich_cves(
             stats=stats,
             cache_only=budget_spent,
         )
+        if budget_spent and nvd is None:
+            # Past the cut-off with nothing on disk either: this one really did
+            # go without. A cached hit above is not counted here.
+            unqueried += 1
         sources: list[str] = []
         if entry:
             sources.append(KEV_URL)
@@ -443,6 +457,15 @@ def enrich_cves(
         if record.has_data:
             intel[cve_id] = record
 
+    if budget_cut_at is not None:
+        errors.append(
+            f"NVD requests stopped after {budget_seconds:.0f}s at CVE "
+            f"{budget_cut_at + 1} of {len(wanted)}; {unqueried} ended with no "
+            f"score, {stats['stale_hits']} were served from a cache entry past "
+            "its refresh age. KEV still applied to all. Set NVD_API_KEY to "
+            "raise the request rate."
+        )
+
     report = EnrichmentReport(
         enabled=True,
         requested_cve_count=len(wanted),
@@ -461,6 +484,8 @@ def enrich_cves(
         ),
         cache_hits=stats["cache_hits"],
         lookups=stats["lookups"],
+        skipped_cve_count=unqueried,
+        stale_cache_hits=stats["stale_hits"],
         errors=errors,
         sources=[KEV_URL, NVD_URL],
     )

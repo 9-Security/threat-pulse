@@ -994,8 +994,19 @@ def _csv_score(value: Any) -> str:
     return f"{value:g}" if isinstance(value, (int, float)) else ""
 
 
+# Excel on a zh-TW Windows reads a BOM-less UTF-8 file as CP950 and renders every
+# Chinese field as mojibake. The reasons are Chinese, and so are TWCERT/CC and
+# HKCERT article titles, so this affects the file whatever language the reasons
+# are written in. The daily CSV is emailed as an attachment and opened by hand,
+# which makes the reader the constraint. Nothing in this project reads the CSV
+# back -- the day-over-day comparison uses the JSON -- and `utf-8-sig` or an
+# equivalent covers a machine consumer that does.
+CSV_BOM = "﻿"
+
+
 def render_ioc_csv_from_actions(actions: Iterable[AnalystAction | dict[str, Any]]) -> str:
     output = io.StringIO()
+    output.write(CSV_BOM)
     writer = csv.writer(output)
     writer.writerow(CSV_HEADER)
     for action in actions:
