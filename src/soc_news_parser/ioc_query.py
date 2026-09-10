@@ -218,6 +218,8 @@ def search_iocs(
                     "benign_basis": related.get("benign_basis"),
                     "kev": related.get("kev"),
                     "cvss_score": related.get("cvss_score"),
+                    "epss_score": related.get("epss_score"),
+                    "epss_percentile": related.get("epss_percentile"),
                     "article_title": title,
                     "article_url": url,
                 }
@@ -266,6 +268,8 @@ def lookup_indicator(
                     "kev_due_date": related.get("kev_due_date"),
                     "cvss_score": related.get("cvss_score"),
                     "cvss_severity": related.get("cvss_severity"),
+                    "epss_score": related.get("epss_score"),
+                    "epss_percentile": related.get("epss_percentile"),
                     "article_title": article.get("article_title"),
                     "article_url": article.get("article_url"),
                     "section": evidence.get("section"),

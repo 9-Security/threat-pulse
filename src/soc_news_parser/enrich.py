@@ -41,6 +41,21 @@ NVD_BUDGET_SECONDS = 900.0
 NVD_RATE_WITHOUT_KEY = (4, 30.0)
 NVD_RATE_WITH_KEY = (45, 30.0)
 
+# EPSS answers a question neither KEV nor CVSS does. KEV is "already exploited";
+# CVSS is "how bad if it is". EPSS is the probability of exploitation in the next
+# thirty days, which is what actually orders a patch list. On 2026-09-10, 68% of
+# the 345 non-KEV CVEs shared a CVSS score with another -- 33 at 9.8, 47 at 8.8,
+# 52 at 7.8 -- so severity alone left 132 of them in arbitrary order.
+#
+# Queried in batches rather than by the daily bulk file: that file decompresses
+# to 10.7 MiB against this project's 12 MiB ceiling and grows every day, so it
+# would break on a date nobody chose. Batches fetch only the CVEs in the report.
+EPSS_URL = "https://api.first.org/data/v1/epss"
+EPSS_HOST = "api.first.org"
+EPSS_BATCH = 100
+# Scores are recomputed daily, so yesterday's is stale by definition.
+EPSS_TTL = timedelta(hours=20)
+
 KEV_TTL = timedelta(hours=20)
 # A scored CVE rarely moves; one still "Awaiting Analysis" is re-checked daily.
 NVD_TTL_SCORED = timedelta(days=7)
@@ -65,12 +80,23 @@ class CveIntel:
     cvss_version: str | None = None
     cvss_vector: str | None = None
     nvd_status: str | None = None
+    # Probability of exploitation in the next 30 days, and where that sits among
+    # all scored CVEs. The percentile travels with the score because the raw
+    # number moves when the model version does.
+    epss_score: float | None = None
+    epss_percentile: float | None = None
+    epss_date: str | None = None
     sources: list[str] = field(default_factory=list)
     retrieved_at: str | None = None
 
     @property
     def has_data(self) -> bool:
-        return self.kev or self.cvss_score is not None or self.nvd_status is not None
+        return (
+            self.kev
+            or self.cvss_score is not None
+            or self.nvd_status is not None
+            or self.epss_score is not None
+        )
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -85,6 +111,7 @@ class EnrichmentReport:
     enriched_cve_count: int = 0
     kev_count: int = 0
     cvss_count: int = 0
+    epss_count: int = 0
     kev_catalog_version: str | None = None
     kev_catalog_released: str | None = None
     cache_hits: int = 0
@@ -212,6 +239,69 @@ def default_fetcher(timeout: float = 25.0) -> tuple[Fetcher, Callable[[], None]]
 
     parser = NewsParser(timeout=timeout)
     return fetcher_for(parser), parser.close
+
+
+def _load_epss(
+    cve_ids: Sequence[str],
+    *,
+    fetcher: Fetcher,
+    cache: EnrichmentCache,
+    now: datetime,
+    errors: list[str],
+    stats: dict[str, int],
+) -> dict[str, dict[str, Any]]:
+    """EPSS scores for the CVEs in this report, cached per CVE and fetched in
+    batches for whatever is left.
+
+    A CVE absent from the answer is cached as a miss, so a report that repeats it
+    tomorrow does not ask again. EPSS carries no entry for a CVE it has not
+    scored yet, and that is a fact about the CVE rather than a failed lookup.
+    """
+    scores: dict[str, dict[str, Any]] = {}
+    missing: list[str] = []
+    for cve_id in cve_ids:
+        cached = cache.read(f"epss/{cve_id}.json", EPSS_TTL, now=now)
+        if cached is None:
+            missing.append(cve_id)
+            continue
+        stats["epss_cache_hits"] += 1
+        if cached.get("epss_score") is not None:
+            scores[cve_id] = cached
+
+    for start in range(0, len(missing), EPSS_BATCH):
+        batch = missing[start : start + EPSS_BATCH]
+        stats["epss_lookups"] += 1
+        try:
+            raw = fetcher(f"{EPSS_URL}?cve={','.join(batch)}", (EPSS_HOST,), None)
+            payload = json.loads(raw.decode("utf-8"))
+        except (ParseError, ValueError, UnicodeDecodeError) as error:
+            errors.append(f"EPSS lookup failed for {len(batch)} CVEs: {error}")
+            continue
+        rows = payload.get("data") if isinstance(payload, dict) else None
+        if not isinstance(rows, list):
+            errors.append("EPSS response has no data array")
+            continue
+
+        answered: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            cve_id = str(row.get("cve") or "").upper()
+            try:
+                record = {
+                    "epss_score": float(row["epss"]),
+                    "epss_percentile": float(row["percentile"]),
+                    "epss_date": str(row.get("date") or "") or None,
+                }
+            except (KeyError, TypeError, ValueError):
+                continue
+            answered[cve_id] = record
+        for cve_id in batch:
+            record = answered.get(cve_id, {"epss_score": None})
+            cache.write(f"epss/{cve_id}.json", record, now=now)
+            if record.get("epss_score") is not None:
+                scores[cve_id] = record
+    return scores
 
 
 def _load_kev(
@@ -396,7 +486,21 @@ def enrich_cves(
         sleeper=sleeper,
         clock=clock,
     )
-    stats = {"cache_hits": 0, "lookups": 0, "stale_hits": 0}
+    stats = {
+        "cache_hits": 0,
+        "lookups": 0,
+        "stale_hits": 0,
+        # Kept apart from the NVD counters. Sharing them would report four
+        # batched EPSS calls as four NVD lookups and make the rate-limit
+        # arithmetic in the journal impossible to follow.
+        "epss_cache_hits": 0,
+        "epss_lookups": 0,
+    }
+    # One batched pass before the per-CVE loop. EPSS is not rate limited the way
+    # NVD is, so it sits outside the time budget: 327 CVEs cost four requests.
+    epss = _load_epss(
+        wanted, fetcher=fetcher, cache=cache, now=moment, errors=errors, stats=stats
+    )
 
     intel: dict[str, CveIntel] = {}
     started = clock()
@@ -435,6 +539,9 @@ def enrich_cves(
             sources.append(KEV_URL)
         if nvd:
             sources.append(f"{NVD_URL}?cveId={cve_id}")
+        epss_record = epss.get(cve_id) or {}
+        if epss_record:
+            sources.append(EPSS_URL)
         ransomware = (entry or {}).get("knownRansomwareCampaignUse")
         record = CveIntel(
             cve_id=cve_id,
@@ -451,6 +558,9 @@ def enrich_cves(
             cvss_version=(nvd or {}).get("cvss_version"),
             cvss_vector=(nvd or {}).get("cvss_vector"),
             nvd_status=(nvd or {}).get("nvd_status"),
+            epss_score=epss_record.get("epss_score"),
+            epss_percentile=epss_record.get("epss_percentile"),
+            epss_date=epss_record.get("epss_date"),
             sources=sources,
             retrieved_at=stamp,
         )
@@ -472,6 +582,7 @@ def enrich_cves(
         enriched_cve_count=len(intel),
         kev_count=sum(1 for item in intel.values() if item.kev),
         cvss_count=sum(1 for item in intel.values() if item.cvss_score is not None),
+        epss_count=sum(1 for item in intel.values() if item.epss_score is not None),
         kev_catalog_version=(
             str(kev_payload.get("catalogVersion"))
             if kev_payload.get("catalogVersion")
@@ -487,7 +598,7 @@ def enrich_cves(
         skipped_cve_count=unqueried,
         stale_cache_hits=stats["stale_hits"],
         errors=errors,
-        sources=[KEV_URL, NVD_URL],
+        sources=[KEV_URL, NVD_URL, EPSS_URL],
     )
     return intel, report
 

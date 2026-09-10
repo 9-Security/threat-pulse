@@ -115,6 +115,8 @@ def indicator_rows(payload: dict[str, Any], report_date: str) -> Iterator[tuple[
                 evidence.get("section"),
                 _clip(evidence.get("context")),
                 action.get("benign_basis"),
+                action.get("epss_score"),
+                action.get("epss_percentile"),
             )
 
 
@@ -143,7 +145,8 @@ def report_row(payload: dict[str, Any], report_date: str, ingested_at: str) -> t
 INDICATOR_COLUMNS = (
     "report_date, indicator_type, value, raw_value, status, action, priority, "
     "reason, kev, kev_due_date, cvss_score, cvss_severity, source, "
-    "article_title, article_url, section, context, benign_basis"
+    "article_title, article_url, section, context, benign_basis, "
+    "epss_score, epss_percentile"
 )
 # D1 rejects an over-long statement with SQLITE_TOOBIG. Batches are sized by
 # encoded length, not character count: a Chinese-language advisory is three
