@@ -8,7 +8,8 @@
     "schema": "wrangler d1 execute soc-iocs --remote --file ../d1/schema.sql",
     "schema:local": "wrangler d1 execute soc-iocs --local --file ../d1/schema.sql",
     "typecheck": "tsc --noEmit",
-    "psl": "node build-psl.mjs"
+    "psl": "node build-psl.mjs",
+    "test": "node --experimental-strip-types --test src/*.test.ts"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20250906.0",
