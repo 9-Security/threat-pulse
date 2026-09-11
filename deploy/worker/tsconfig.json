@@ -9,5 +9,10 @@
     "noEmit": true,
     "skipLibCheck": true
   },
-  "include": ["src/**/*.ts"]
+  "include": ["src/**/*.ts"],
+  // Tests run under node, not in the Worker: they import node:test and node:assert,
+  // which the Worker types deliberately do not describe. Checking them here would
+  // mean pulling @types/node into the Worker's type environment to describe code
+  // that never ships in the bundle. `npm test` type-strips and runs them instead.
+  "exclude": ["src/**/*.test.ts"]
 }
