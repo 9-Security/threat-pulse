@@ -140,6 +140,8 @@ CSV_HEADER = [
     "kev_due_date",
     "cvss_score",
     "cvss_severity",
+    "epss_score",
+    "epss_percentile",
 ]
 PUBLIC_DNS_REASON = "常見公共 DNS，不建議直接封鎖；改為連線／DNS hunt 複核"
 BRAND_REASON = (
@@ -253,6 +255,11 @@ class AnalystAction:
     # What the article itself printed, kept so ranking does not read a missing
     # NVD score as zero and sink an un-enriched critical CVE to the bottom.
     article_cvss_score: float | None = None
+    # Probability of exploitation in the next 30 days, and its standing among
+    # all scored CVEs. Breaks the ties CVSS leaves without ever demoting a CVE
+    # that simply has no score yet.
+    epss_score: float | None = None
+    epss_percentile: float | None = None
     # Which rule held this back from the block list, when one did. A consumer
     # should not have to substring-match a Chinese reason string to tell a
     # public-resolver hit from a registry boundary.
@@ -537,6 +544,8 @@ def _make_action(
         kev_due_date=intel.kev_due_date if intel else None,
         cvss_score=intel.cvss_score if intel else None,
         cvss_severity=intel.cvss_severity if intel else None,
+        epss_score=intel.epss_score if intel else None,
+        epss_percentile=intel.epss_percentile if intel else None,
         article_cvss_score=article_cvss,
         benign_basis=benign_basis,
     )
@@ -927,6 +936,13 @@ def _kev_first(actions: list[AnalystAction]) -> list[AnalystAction]:
             # states remote code execution, is not ranked below a known 3.1.
             0 if item.priority == "high" else 1,
             -(effective_cvss(item) or 0.0),
+            # EPSS breaks the ties CVSS leaves, and only those. On 2026-09-10,
+            # 68% of the 345 non-KEV CVEs shared a score with another -- 33 at
+            # 9.8, 47 at 8.8, 52 at 7.8 -- so severity alone left 132 of them
+            # ordered by CVE number. Placed after CVSS rather than before it so
+            # a CVE EPSS has not scored keeps the position severity gave it: a
+            # missing probability is not evidence of a low one.
+            -(item.epss_score or 0.0),
             item.kev_due_date or "9999-99-99",
             item.target,
         ),
@@ -1004,6 +1020,16 @@ def _csv_score(value: Any) -> str:
 CSV_BOM = "﻿"
 
 
+def _csv_epss(value: Any, places: int) -> str:
+    """Blank for a CVE EPSS has not scored, which is not the same as zero."""
+    if value is None:
+        return ""
+    try:
+        return f"{float(value):.{places}f}"
+    except (TypeError, ValueError):
+        return ""
+
+
 def render_ioc_csv_from_actions(actions: Iterable[AnalystAction | dict[str, Any]]) -> str:
     output = io.StringIO()
     output.write(CSV_BOM)
@@ -1027,6 +1053,8 @@ def render_ioc_csv_from_actions(actions: Iterable[AnalystAction | dict[str, Any]
                     action.kev_due_date or "",
                     _csv_score(action.cvss_score),
                     action.cvss_severity or "",
+                    _csv_epss(action.epss_score, 5),
+                    _csv_epss(action.epss_percentile, 3),
                 ]
             )
             continue
@@ -1047,6 +1075,8 @@ def render_ioc_csv_from_actions(actions: Iterable[AnalystAction | dict[str, Any]
                 action.get("kev_due_date") or "",
                 _csv_score(action.get("cvss_score")),
                 action.get("cvss_severity") or "",
+                _csv_epss(action.get("epss_score"), 5),
+                _csv_epss(action.get("epss_percentile"), 3),
             ]
         )
     return output.getvalue()

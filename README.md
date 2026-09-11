@@ -120,7 +120,7 @@ uv run soc-news-parser report \
 
 Markdown 是給 SOC／威脅分析師閱讀的值班報告：開頭是今日優先處置一句話，接著是修補、封鎖、Hunt、監控、觀察清單。每個 CVE 的 CVSS 與影響只取該指標所在文句，不會把同篇最高分套到全部漏洞。事件叢集只在同一 CVE 出現於兩篇以上來源時列出。監控／觀察只在標題或來源摘要寫成外洩、釣魚活動或勒索事件時列出；產品文正文帶過 phishing／個資不會進處置清單，文章仍留在報告後半。公共遞迴 DNS（例如 `8.8.8.8`、`1.1.1.1`、`dns.google`）與靜態清單中的品牌官網／子網域（例如 `claude.ai`、`code.claude.ai`、`microsoft.com`）若出現在 IoC 章節仍記成 confirmed，但降為 hunt 複核，不列入待封鎖。不會用「主機名含品牌字」做白名單；`claude.ai.download-app.us`、`claude-desktop.gitlab.io` 仍待封鎖。註冊邊界改由 Public Suffix List 判定（見上節）：`gitlab.io`、`github.io`、`duckdns.org`、`it.com` 是 public suffix，單獨出現也一律降為 hunt，不需要同篇有子網域伴隨——危險的是名稱本身，不是上下文。`squarespace.com` 讀起來像平台但不是 public suffix，是一般可註冊網域。PSL 之下另保留一條較弱的規則：同篇文章已有子網域時，兩標籤且左標籤 ≤ 3 的可註冊父網域改為 hunt；`download-app.us` 這類長左標籤父網域仍與子網域一併封鎖。清單只根據原文明確的 CVE、IoC 章節指標與原文影響用語產生，不把 candidate 升成 confirmed。報告後半只給有明確指標、或未能取得全文的文章完整區塊；已讀到全文但沒有指標的文章集中在「其他相關文章」，一篇一行（標題連結、來源、時間、摘要摘要至 160 字），情勢掌握仍在，但不再淹沒處置清單。所有文章都保留在報告中，完整正文與候選值見 JSON。指標的「上下文」行只在原文句子確實多於指標本身時才列出；上下文等於指標值時整行省略，以指標值開頭時去掉開頭那次重複（值就在正上方）。Markdown 中的網域、IP 與 URL 會 defang（`example[.]com`、`hxxp://`），涵蓋處置清單、今日優先那行、文章標題、來源摘要與上下文句子，避免郵件用戶端把惡意主機變成可點連結。規則只有兩條、不做猜測：中和 `http://` scheme，以及替換**當日報告自己確認的**網路指標。不會只因為字尾是合法 TLD 就 defang —— `payload.zip`、`run.sh`、`Laboo.boo` 分別是檔名、指令稿與惡意程式家族名，加括號只會破壞分析師要複製的值。來源引用連結不受影響，仍可點擊。CSV、JSON 稽核檔與 D1／MCP 保持原值，那些是機器要用的。Report ID、parser 版本、正文 hash、warnings、candidate/rejected、排除文章及來源錯誤只保留於 JSON 稽核檔。CSV 是一列一個可操作指標。JSON 會寫入 `reader_digest`（Markdown 的 SHA-256），寄送前用它核對兩份檔案仍成對，並拒絕相同輸出路徑。
 
-### CVE 加值：CISA KEV 與 NVD
+### CVE 加值：CISA KEV、NVD 與 EPSS
 
 原文常只寫 CVE 編號，不寫 CVSS，也不會說這個漏洞是否正在被攻擊。`report` 與 `deliver`
 預設會把當日所有 `confirmed` CVE 拿去比對 CISA KEV 目錄與 NVD，讓「73 個待修 CVE」變成
@@ -138,7 +138,17 @@ manifest 仍然只記錄原文明確寫了什麼，加值結果放在 JSON 的 `
 - 理由欄寫明來源，例如 `KEV 已知遭利用，CISA 修補期限 2026-09-18；CVSS 9.8 CRITICAL（NVD）`。
   原文自己寫的分數會標成 `（原文）`，兩者不會混淆。
 - 郵件主旨變成 `待修 73（KEV 3）`；報告表頭多一行「其中已知遭利用（CISA KEV）」。**該行只在 KEV 目錄確實載入成功時出現** —— 沒查到就不會寫「0 個」，因為那等於對沒檢查過的事下斷言。
-- CSV 多四欄：`kev`、`kev_due_date`、`cvss_score`、`cvss_severity`。
+- CSV 多六欄：`kev`、`kev_due_date`、`cvss_score`、`cvss_severity`、`epss_score`、`epss_percentile`。
+
+**EPSS 回答的是 KEV 與 CVSS 都沒回答的問題。** KEV 是「已經被利用」，CVSS 是「被打中有多嚴重」，EPSS 是「未來 30 天內被利用的機率」——而那正是待修清單真正該依據的排序。
+
+2026-09-10 的資料說明了為什麼需要它：345 個非 KEV 的 CVE 裡有 **68% 與別人同分**（9.8 分 33 個、8.8 分 47 個、7.8 分 52 個），也就是 132 個 CVE 只能按 CVE 編號排。EPSS 在同一批裡給出 24 個相異值。
+
+排序位置是**放在 CVSS 之後**，只打破 CVSS 留下的平手。這是刻意的：EPSS 尚未評分的 CVE（新公告通常如此）必須保住嚴重度給它的位置——**沒有機率不等於機率低**。
+
+查詢走批次 API（一次 100 個 CVE），不用每日全量檔：那個檔案解壓後 10.7 MiB、對上本專案 12 MiB 的上限，而且每天都在長，遲早會在沒人預期的某一天壞掉。EPSS 沒有速率限制，所以它不受加值時間預算約束——327 個 CVE 只要四次請求。
+
+EPSS 分數每天重算，因此快取 20 小時。`NULL` 代表 EPSS 尚未評分該 CVE，與「機率為零」不同，報告與 CSV 都留白而不是填 0。
 
 查詢全部走與抓新聞相同的加固通道（HTTPS、主機白名單、公開 IP、redirect 重新驗證、
 12 MiB 上限）。**任何加值失敗都不會中斷報告**：錯誤記在 JSON 的 `enrichment.errors`，

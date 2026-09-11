@@ -3,6 +3,7 @@ from datetime import datetime, timedelta, timezone
 
 from soc_news_parser.analyst import build_brief, render_ioc_csv_from_actions
 from soc_news_parser.enrich import (
+    EPSS_URL,
     KEV_URL,
     NVD_URL,
     CveIntel,
@@ -60,6 +61,25 @@ def nvd_payload(cve_id: str, score: float | None, severity: str = "CRITICAL") ->
     ).encode()
 
 
+def epss_payload(*rows: tuple[str, float, float]) -> bytes:
+    """An EPSS batch answer. Empty by default: a CVE EPSS has not scored is
+    absent from the response, which is a fact about the CVE and not an error."""
+    return json.dumps(
+        {
+            "status": "OK",
+            "data": [
+                {
+                    "cve": cve_id,
+                    "epss": f"{score:.9f}",
+                    "percentile": f"{pct:.9f}",
+                    "date": "2026-09-04",
+                }
+                for cve_id, score, pct in rows
+            ],
+        }
+    ).encode("utf-8")
+
+
 def make_fetcher(responses: dict[str, bytes], calls: list[str] | None = None):
     def fetch(url: str, allowed_hosts: tuple[str, ...], headers):
         if calls is not None:
@@ -67,6 +87,11 @@ def make_fetcher(responses: dict[str, bytes], calls: list[str] | None = None):
         for prefix, payload in responses.items():
             if url.startswith(prefix):
                 return payload
+        # Every run queries EPSS now. A test that says nothing about it gets an
+        # empty answer rather than an error, because "EPSS has not scored this"
+        # is the ordinary case and must not read as a failed lookup.
+        if url.startswith(EPSS_URL):
+            return epss_payload()
         raise ParseError(f"unexpected URL {url}")
 
     return fetch
@@ -136,7 +161,8 @@ def test_a_second_run_on_the_same_day_makes_no_request(tmp_path) -> None:
             now=NOW,
         )
 
-    assert len(calls) == 2  # one KEV plus one NVD, both from the first run
+    # KEV, NVD and the batched EPSS call, all from the first run.
+    assert len(calls) == 3
     _, second = enrich_cves(
         ["CVE-2026-1111"], fetcher=make_fetcher(responses, calls), cache_dir=tmp_path, now=NOW
     )
@@ -272,8 +298,10 @@ CVE-2026-1111
 
     csv_text = render_ioc_csv_from_actions(brief.actions)
     header, first, *_ = csv_text.splitlines()
-    assert header.endswith("kev,kev_due_date,cvss_score,cvss_severity")
-    assert first.endswith("true,2026-09-04,9.8,CRITICAL")
+    assert header.endswith("kev,kev_due_date,cvss_score,cvss_severity,epss_score,epss_percentile")
+    # The EPSS columns are empty: this fixture's answer scores nothing, and a
+    # CVE EPSS has not scored must read as blank rather than as zero.
+    assert first.endswith("true,2026-09-04,9.8,CRITICAL,,")
 
 
 def test_nvd_cvss_replaces_a_weaker_score_read_from_the_article() -> None:
@@ -344,6 +372,8 @@ def test_the_budget_stops_requests_but_keeps_kev_and_cached_scores(tmp_path) -> 
 
     def fetch(url: str, allowed_hosts: tuple[str, ...], headers):
         requested.append(url)
+        if url.startswith(EPSS_URL):
+            return epss_payload()
         return responses[url]
 
     # Prime the cache for one CVE that falls after the cut-off, to prove a
@@ -388,6 +418,8 @@ def test_no_budget_queries_everything(tmp_path) -> None:
 
     def fetch(url: str, allowed_hosts: tuple[str, ...], headers):
         requested.append(url)
+        if url.startswith(EPSS_URL):
+            return epss_payload()
         return responses[url]
 
     _, report = enrich_cves(
@@ -396,3 +428,73 @@ def test_no_budget_queries_everything(tmp_path) -> None:
 
     assert len([url for url in requested if url.startswith(NVD_URL)]) == len(cves)
     assert not [m for m in report.errors if "stopped after" in m]
+
+
+def test_epss_orders_cves_that_share_a_cvss_score(tmp_path) -> None:
+    """The tie is where the whole value is.
+
+    On 2026-09-10, 68% of the 345 non-KEV CVEs shared a CVSS score with another
+    -- 33 at 9.8, 47 at 8.8, 52 at 7.8 -- so severity left 132 of them ordered by
+    CVE number. All three below score 8.8; only EPSS separates them.
+    """
+    # A KEV has to be present for the patch list to be ranked at all -- see
+    # _kev_first -- so one leads and the three tied 8.8s follow it.
+    cves = ["CVE-2026-8000", "CVE-2026-8001", "CVE-2026-8002", "CVE-2026-8003"]
+    responses = {KEV_URL: kev_payload("CVE-2026-8000")}
+    for cve_id in cves:
+        responses[f"{NVD_URL}?cveId={cve_id}"] = nvd_payload(cve_id, 8.8, "HIGH")
+    # Deliberately the reverse of CVE-number order, so a pass cannot come from
+    # the alphabetical tiebreak that used to decide this.
+    responses[EPSS_URL] = epss_payload(
+        ("CVE-2026-8001", 0.00306, 0.241),
+        ("CVE-2026-8002", 0.00975, 0.600),
+        ("CVE-2026-8003", 0.02167, 0.812),
+    )
+    intel, report = enrich_cves(
+        cves, fetcher=make_fetcher(responses), cache_dir=tmp_path, now=NOW
+    )
+    assert report.epss_count == 3
+
+    body = "## Indicators of Compromise\n" + "\n".join(cves) + "\n"
+    brief = build_brief([build_manifest(article_with_cves(body))], intel=intel)
+    ordered = [a.target for a in brief.actions if a.action == "patch"]
+
+    assert ordered == [
+        "CVE-2026-8000",  # KEV leads regardless
+        "CVE-2026-8003",
+        "CVE-2026-8002",
+        "CVE-2026-8001",
+    ]
+
+
+def test_a_cve_without_epss_keeps_the_place_severity_gave_it(tmp_path) -> None:
+    """A missing probability is not evidence of a low one.
+
+    EPSS sits after CVSS in the sort for this reason: a CVE it has not scored
+    yet -- which a fresh advisory usually is -- must not sink below a lower
+    severity that happens to carry a score.
+    """
+    lead = "CVE-2026-8100"
+    scored, unscored, weaker = "CVE-2026-8101", "CVE-2026-8102", "CVE-2026-8103"
+    responses = {
+        KEV_URL: kev_payload(lead),
+        f"{NVD_URL}?cveId={lead}": nvd_payload(lead, 6.0, "MEDIUM"),
+        f"{NVD_URL}?cveId={scored}": nvd_payload(scored, 7.5, "HIGH"),
+        f"{NVD_URL}?cveId={unscored}": nvd_payload(unscored, 9.8, "CRITICAL"),
+        f"{NVD_URL}?cveId={weaker}": nvd_payload(weaker, 5.0, "MEDIUM"),
+        # Only the 7.5 and the 5.0 have an EPSS score; the 9.8 has none.
+        EPSS_URL: epss_payload((scored, 0.5, 0.99), (weaker, 0.9, 0.999)),
+    }
+    intel, _ = enrich_cves(
+        [lead, scored, unscored, weaker],
+        fetcher=make_fetcher(responses),
+        cache_dir=tmp_path,
+        now=NOW,
+    )
+    body = f"## Indicators of Compromise\n{lead}\n{scored}\n{unscored}\n{weaker}\n"
+    brief = build_brief([build_manifest(article_with_cves(body))], intel=intel)
+    ordered = [a.target for a in brief.actions if a.action == "patch"]
+
+    # The 9.8 leads on severity despite having no EPSS at all, and the 5.0 stays
+    # last despite carrying the highest probability in the set.
+    assert ordered == [lead, unscored, scored, weaker]

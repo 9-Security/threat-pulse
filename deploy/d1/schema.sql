@@ -42,6 +42,11 @@ CREATE TABLE IF NOT EXISTS indicators (
     kev_due_date    TEXT,
     cvss_score      REAL,
     cvss_severity   TEXT,
+    -- Probability of exploitation in the next 30 days. KEV says "already"; CVSS
+    -- says "how bad"; this is the one that orders a patch list of near-identical
+    -- severities.
+    epss_score      REAL,
+    epss_percentile REAL,
     source          TEXT,
     article_title   TEXT,
     article_url     TEXT NOT NULL,

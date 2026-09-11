@@ -157,6 +157,8 @@ function rowToHit(row: Json, caller: Caller): Json {
     // hit is a public resolver or a registry boundary should not have to match
     // substrings of it.
     benign_basis: row.benign_basis ?? null,
+    epss_score: row.epss_score ?? null,
+    epss_percentile: row.epss_percentile ?? null,
   };
   // The context line is a verbatim source sentence. A token without the scope
   // gets the citation and can read it at the publisher.

@@ -574,7 +574,10 @@ def _render_enrichment_note(report: DailyReport) -> list[str]:
 
     if not requested:
         return ["- CVE 加值：已啟用；今日沒有明確 CVE 需要查詢", *_shortfall()]
+    epss = data.get("epss_count") or 0
     detail = f"CISA KEV 與 NVD；{scored}/{requested} 個 CVE 取得 NVD CVSS"
+    if epss:
+        detail += f"；{epss} 個取得 EPSS 利用機率"
     if released:
         detail += f"；KEV 目錄發布於 {released}"
     lines.append(f"- CVE 加值：{detail}")
