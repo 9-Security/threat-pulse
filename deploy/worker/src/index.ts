@@ -427,38 +427,19 @@ function rpcError(id: unknown, code: number, message: string, status = 200): Res
  * neither does anything useful here -- the operator learns nothing from a
  * retried cron, and an exception loop would bury the one message that matters.
  */
-async function runHeartbeat(env: Env): Promise<void> {
-  let state: HeartbeatState;
-  try {
-    const row = await env.DB.prepare(
-      `SELECT MAX(report_date) AS newest, COUNT(*) AS total FROM reports`,
-    ).first<{ newest: string | null; total: number }>();
-    state = { newest: row?.newest ?? null, totalDays: Number(row?.total ?? 0) };
-  } catch (error) {
-    // D1 unreachable is its own outage, and the corpus may be perfectly fine.
-    // Log it; do not mail a stall that has not been shown to exist.
-    console.error(`heartbeat: could not read D1: ${String(error)}`);
-    return;
-  }
+async function readHeartbeatState(env: Env): Promise<HeartbeatState> {
+  const row = await env.DB.prepare(
+    `SELECT MAX(report_date) AS newest, COUNT(*) AS total FROM reports`,
+  ).first<{ newest: string | null; total: number }>();
+  return { newest: row?.newest ?? null, totalDays: Number(row?.total ?? 0) };
+}
 
-  const today = taipeiDate(new Date());
-  const verdict = assess(state, today);
-  console.log(
-    `heartbeat: newest=${state.newest ?? "none"} today=${today} ` +
-      `behind=${verdict.daysBehind} stale=${verdict.stale}`,
-  );
-  const mail = renderHeartbeat(verdict, state, today);
-  if (!mail) return;
-
+/** Never throws; the caller gets a description either way. */
+async function sendAlertMail(env: Env, mail: { subject: string; body: string }): Promise<string> {
   if (!env.RESEND_API_KEY || !env.RESEND_FROM || !env.ALERT_TO) {
-    // Loud in the log, because in this state the alarm is armed and mute.
-    console.error(
-      `heartbeat: ${mail.subject} -- but RESEND_API_KEY, RESEND_FROM or ALERT_TO ` +
-        `is unset on the Worker, so no mail was sent`,
-    );
-    return;
+    // Loud, because in this state the alarm is armed and mute.
+    return "not sent: RESEND_API_KEY, RESEND_FROM or ALERT_TO is unset on the Worker";
   }
-
   try {
     const response = await fetch("https://api.resend.com/emails", {
       method: "POST",
@@ -476,13 +457,91 @@ async function runHeartbeat(env: Env): Promise<void> {
       }),
     });
     if (!response.ok) {
-      console.error(`heartbeat: Resend returned ${response.status}: ${await response.text()}`);
-      return;
+      return `not sent: Resend returned ${response.status}: ${(await response.text()).slice(0, 300)}`;
     }
-    console.log(`heartbeat: alerted ${env.ALERT_TO}: ${mail.subject}`);
+    return "sent";
   } catch (error) {
-    console.error(`heartbeat: could not send the alert: ${String(error)}`);
+    return `not sent: ${String(error)}`;
   }
+}
+
+async function runHeartbeat(env: Env): Promise<void> {
+  let state: HeartbeatState;
+  try {
+    state = await readHeartbeatState(env);
+  } catch (error) {
+    // D1 unreachable is its own outage, and the corpus may be perfectly fine.
+    // Log it; do not mail a stall that has not been shown to exist.
+    console.error(`heartbeat: could not read D1: ${String(error)}`);
+    return;
+  }
+
+  const today = taipeiDate(new Date());
+  const verdict = assess(state, today);
+  console.log(
+    `heartbeat: newest=${state.newest ?? "none"} today=${today} ` +
+      `behind=${verdict.daysBehind} stale=${verdict.stale}`,
+  );
+  const mail = renderHeartbeat(verdict, state, today);
+  if (!mail) return;
+
+  const outcome = await sendAlertMail(env, mail);
+  const line = `heartbeat: ${mail.subject} -- ${outcome}`;
+  if (outcome === "sent") console.log(line);
+  else console.error(line);
+}
+
+/**
+ * GET reports the verdict and sends nothing. POST sends a test mail, labelled as
+ * one, whatever the verdict says -- the point is to prove the mail path on a day
+ * when the corpus is healthy, which is every day the alarm is not needed.
+ */
+async function handleHeartbeatProbe(request: Request, env: Env, caller: Caller): Promise<Response> {
+  let state: HeartbeatState;
+  try {
+    state = await readHeartbeatState(env);
+  } catch (error) {
+    return Response.json({ error: `could not read D1: ${String(error)}` }, { status: 502 });
+  }
+  const today = taipeiDate(new Date());
+  const verdict = assess(state, today);
+  const mail = renderHeartbeat(verdict, state, today);
+  const body: Json = {
+    today_taipei: today,
+    newest_report: state.newest,
+    corpus_days: state.totalDays,
+    days_behind: verdict.daysBehind,
+    stale: verdict.stale,
+    reason: verdict.reason,
+    // Whether the alarm can speak, without disclosing what it was told.
+    alerting_configured: Boolean(env.RESEND_API_KEY && env.RESEND_FROM && env.ALERT_TO),
+    would_send: mail ? mail.subject : null,
+  };
+
+  if (request.method === "GET") return Response.json(body);
+  if (request.method !== "POST") {
+    return new Response("method not allowed", { status: 405, headers: { allow: "GET, POST" } });
+  }
+
+  const outcome = await sendAlertMail(env, {
+    subject: "[threat-pulse] heartbeat test, no action needed",
+    body: [
+      `This is a test of the heartbeat alarm, sent on request by ${caller.label}.`,
+      "Nothing is wrong. It exists so the mail path can be proved on a healthy day,",
+      "because the real alarm fires only when the collector has already stopped --",
+      "which would otherwise make the day it is most needed the first time it ran.",
+      "",
+      `Corpus right now: newest report ${state.newest ?? "none"}, ${state.totalDays} days held.`,
+      `Today in Taipei is ${today}; the alarm reads that as ${verdict.reason}.`,
+      "",
+      mail
+        ? `A real alert would be sent now, with the subject: ${mail.subject}`
+        : "No real alert is due.",
+    ].join("\n"),
+  });
+  body.test_send = outcome;
+  console.log(`heartbeat: test send by ${caller.label} -- ${outcome}`);
+  return Response.json(body, { status: outcome === "sent" ? 200 : 502 });
 }
 
 export default {
@@ -496,6 +555,27 @@ export default {
     if (url.pathname === "/health") {
       return Response.json({ ok: true, server: "iocs" });
     }
+
+    // An alarm that has never fired is an alarm nobody knows works, and this one
+    // fires only when the collector has already stopped -- so it would first be
+    // exercised on the day it is most needed. GET reports what the cron would
+    // decide right now and sends nothing; POST sends a labelled test so the mail
+    // path itself can be proved on a healthy day.
+    //
+    // The recipient is ALERT_TO, read from the Worker's own secrets. A caller
+    // cannot name one, so a leaked token cannot turn this into a way to mail
+    // anyone but the operator.
+    if (url.pathname === "/heartbeat") {
+      const caller = await authenticate(request, env);
+      if (!caller) {
+        return new Response("unauthorized", {
+          status: 401,
+          headers: { "www-authenticate": 'Bearer realm="iocs"' },
+        });
+      }
+      return handleHeartbeatProbe(request, env, caller);
+    }
+
     if (url.pathname !== "/mcp") {
       return new Response("not found", { status: 404 });
     }
