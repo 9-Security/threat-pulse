@@ -30,6 +30,8 @@ from .enrich import (
     disabled_report,
     enrich_cves,
 )
+from .backtest import read_values, run_backtest
+from .backtest import render_markdown as render_backtest_markdown
 from .export_d1 import export_report
 from .report import collect_report, serialize_report
 from .resend import ResendClient, ResendError, build_report_email
@@ -251,6 +253,19 @@ def _arguments() -> argparse.Namespace:
         "--date", help="report date key; defaults to the report's own window end"
     )
     export_d1.add_argument("--output", help="write SQL here instead of stdout")
+
+    backtest = subcommands.add_parser(
+        "backtest",
+        help="measure a consumer's own observables and CVEs against the corpus",
+    )
+    backtest.add_argument(
+        "--observables",
+        help="file of observables, one per line; a CSV export works, first field taken",
+    )
+    backtest.add_argument("--cves", help="file of CVE ids, one per line")
+    backtest.add_argument("--reports-dir", help="corpus root (default: reports/)")
+    backtest.add_argument("--output", help="write the full JSON result here")
+    backtest.add_argument("--markdown-output", help="write a readable summary here")
 
     schedule = subcommands.add_parser(
         "schedule",
@@ -591,6 +606,27 @@ def main() -> None:
             )
         )
         return
+    if args.command == "backtest":
+        if not args.observables and not args.cves:
+            print("error: give --observables, --cves, or both", file=sys.stderr)
+            raise SystemExit(2)
+        try:
+            result = run_backtest(
+                observables=read_values(args.observables) if args.observables else None,
+                cves=read_values(args.cves) if args.cves else None,
+                reports_dir=args.reports_dir,
+            )
+        except (OSError, ValueError) as error:
+            print(f"error: {error}", file=sys.stderr)
+            raise SystemExit(1) from error
+        summary = render_backtest_markdown(result)
+        if args.output:
+            _atomic_write(args.output, json.dumps(result, ensure_ascii=False, indent=2))
+        if args.markdown_output:
+            _atomic_write(args.markdown_output, summary)
+        print(summary)
+        return
+
     if args.command == "export-d1":
         try:
             sql = export_report(args.json_report, report_date=args.date)
