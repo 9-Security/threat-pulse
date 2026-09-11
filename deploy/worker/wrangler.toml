@@ -12,3 +12,10 @@ database_id = "819cd0ac-bd1a-43bd-91fd-9a21a9d34dd3"
 
 [observability]
 enabled = true
+
+# 04:00 UTC is 12:00 Asia/Taipei. The collector starts at 06:00 Taipei and its
+# unit cannot run past a 3h timeout, so a healthy corpus holds today's report
+# three hours before this fires. Earlier would race a slow day and alarm on a
+# run that was still going.
+[triggers]
+crons = ["0 4 * * *"]

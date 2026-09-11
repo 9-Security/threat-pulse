@@ -154,3 +154,46 @@ npx wrangler dev --local
 ```
 
 Seed a local token the same way, with `--local` added.
+
+## The heartbeat
+
+Every other alert this project sends is sent by the host that is failing: the
+systemd `OnFailure=` unit, the corpus-stall mail, the source-health mail. All
+three need that host to be alive and its network to work. A host that is powered
+off, wedged, or cut off sends nothing — and no mail looks exactly like a quiet
+week.
+
+So a cron trigger on this Worker asks D1, at 04:00 UTC (12:00 Asia/Taipei),
+whether today's report arrived. The collector starts at 06:00 Taipei and its unit
+cannot run past a 3h timeout, so a healthy corpus holds today's date three hours
+before the check fires.
+
+It reads the corpus rather than accepting a ping on purpose. A ping proves a
+timer fired; a row proves the day was collected, enriched and pushed. Those come
+apart — a host can boot, run, collect nothing and ping happily.
+
+One day behind is already the alarm. Feeds carry only their most recent items,
+so a day missed today cannot be collected tomorrow, and waiting for a second day
+of silence to be sure costs a second day permanently. It repeats every day while
+stale, unlike the source-health mail's doubling: a collector that is not
+collecting is the failure this exists to catch.
+
+Three secrets arm it. Without them the check still runs and logs, but sends
+nothing:
+
+```bash
+npx wrangler secret put RESEND_API_KEY
+npx wrangler secret put RESEND_FROM
+npx wrangler secret put ALERT_TO
+```
+
+`ALERT_TO` is the operational address, never the daily report's recipients.
+Note that this puts the Resend key in a second place — it already lives in the
+host's `EnvironmentFile`. That is the cost of having an alarm that does not
+depend on the host, and the token should be scoped to sending only.
+
+Check what it decided without waiting for the cron:
+
+```bash
+npx wrangler tail --format pretty   # look for lines starting "heartbeat:"
+```
