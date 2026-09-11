@@ -34,6 +34,12 @@ from .backtest import read_values, run_backtest
 from .backtest import render_markdown as render_backtest_markdown
 from .export_d1 import export_report
 from .report import collect_report, serialize_report
+from .source_health import (
+    DEFAULT_LOOKBACK_DAYS,
+    render_alert,
+    render_summary,
+    source_streaks,
+)
 from .resend import ResendClient, ResendError, build_report_email
 from .schedule import (
     DEFAULT_CLOCK,
@@ -266,6 +272,27 @@ def _arguments() -> argparse.Namespace:
     backtest.add_argument("--reports-dir", help="corpus root (default: reports/)")
     backtest.add_argument("--output", help="write the full JSON result here")
     backtest.add_argument("--markdown-output", help="write a readable summary here")
+
+    source_health = subcommands.add_parser(
+        "source-health",
+        help="report sources that have failed on every run for consecutive days",
+    )
+    source_health.add_argument("--reports-dir", help="archive root (default: reports/)")
+    source_health.add_argument(
+        "--lookback",
+        type=int,
+        default=DEFAULT_LOOKBACK_DAYS,
+        help="how many recent reports to read",
+    )
+    source_health.add_argument(
+        "--alert-only",
+        action="store_true",
+        help="print a mail body only when a streak is due, nothing otherwise; "
+        "always exits 0, so a caller can pipe it straight to an alert script",
+    )
+    source_health.add_argument(
+        "--hostname", default="", help="named in the alert body, for a multi-host operator"
+    )
 
     schedule = subcommands.add_parser(
         "schedule",
@@ -625,6 +652,28 @@ def main() -> None:
         if args.markdown_output:
             _atomic_write(args.markdown_output, summary)
         print(summary)
+        return
+
+    if args.command == "source-health":
+        try:
+            streaks = source_streaks(args.reports_dir, lookback=max(1, args.lookback))
+        except OSError as error:
+            # Never fatal. This runs at the end of a run that already delivered,
+            # and an unreadable archive must not turn a delivered day into a
+            # failed unit -- which would fire the failure alert for the wrong
+            # reason and bury the one this exists to send.
+            print(f"source-health: could not read the archive: {error}", file=sys.stderr)
+            return
+        if args.alert_only:
+            body = render_alert(streaks, hostname=args.hostname)
+            if body:
+                print(body)
+            return
+        print(render_summary(streaks))
+        for item in streaks:
+            mark = " (reporting)" if item.should_notify else ""
+            print(f"  {item.key}: {item.days} consecutive, since {item.since}{mark}")
+            print(f"    {item.last_error or '(no message recorded)'}")
         return
 
     if args.command == "export-d1":

@@ -176,3 +176,37 @@ evidence_path="$(run_py "$APP_DIR/deploy/first_field.py" --plain json_output \
 if ! push_to_d1 "$evidence_path"; then
   corpus_stalled "the D1 push failed"
 fi
+
+# A source that stops answering fails nothing: the run exits zero, the mail goes
+# out, and the only record is a field in the day's JSON. CISA's advisory feed was
+# 403 for four consecutive days and the report for the fourth carried a single
+# patch item, with no alert -- corpus_stalled watches D1, and D1 was growing.
+#
+# Runs last and cannot fail the unit. This is a report about a day that has
+# already been delivered; turning that day into a failed unit would fire the
+# OnFailure alert for the wrong reason and bury this one.
+check_source_health() {
+  if [ "${DRY_RUN:-0}" = "1" ]; then
+    uv run soc-news-parser source-health --reports-dir "$REPORTS_DIR" || true
+    echo "dry run; not alerting on source health"
+    return 0
+  fi
+
+  # The summary goes to the journal every day, due or not, so a streak that is
+  # building is visible before it reaches a reporting point.
+  uv run soc-news-parser source-health --reports-dir "$REPORTS_DIR" || true
+
+  local body
+  # stdout only: a traceback on stderr belongs in the journal, not in a mail
+  # that would then be indistinguishable from a real streak report.
+  body="$(uv run soc-news-parser source-health \
+    --reports-dir "$REPORTS_DIR" --alert-only --hostname "$(hostname)")" || {
+    echo "source-health could not be read; no source alert this run" >&2
+    return 0
+  }
+  [ -z "$body" ] && return 0
+  printf '%s\n' "$body" |
+    "$APP_DIR/deploy/alert.sh" "[threat-pulse] source failing on $(hostname)" || true
+}
+
+check_source_health

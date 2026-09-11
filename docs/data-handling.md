@@ -152,7 +152,11 @@ Separate from the query path, and it receives nothing from callers.
   terms, and no query needs it.
 - Reports are emailed through Resend to `RESEND_TO`. Operational failure alerts
   go to `ALERT_TO`, a separate address, so report recipients receive no
-  operational noise.
+  operational noise. Three conditions alert: the unit failing, the corpus not
+  growing, and a source that has failed on every run for consecutive days. The
+  last is reported at two days and at each doubling, because a source failing is
+  not urgent — the report still goes out — but must not be able to stay broken
+  silently, which it did for four days.
 - Credentials live in an `EnvironmentFile` owned by the service account at mode
   `0600` and are never passed on a command line.
 
