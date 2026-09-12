@@ -56,6 +56,12 @@ INTERNAL_SUFFIXES = (".local", ".internal", ".corp", ".lan", ".home.arpa", ".loc
 #: rate against a rule written for something narrower.
 HEADLINE_METHODS = ("exact", "parent_domain", "same_host")
 
+#: Types a caller may declare. Anything else is reported and ignored rather than
+#: trusted: an arbitrary or misspelled label was previously carried straight
+#: through, creating its own bucket in the per-type rates and reaching the
+#: lookup with whatever normalisation the fallback happened to apply.
+KNOWN_TYPES = ("domain", "ip", "url", "md5", "sha1", "sha256", "cve")
+
 RESULT_COLUMNS = [
     "sample_id",
     "value",
@@ -163,33 +169,50 @@ DEFANG_RULES = (
 DEFANG_SCHEMES = (("hxxps", "https"), ("hxxp", "http"), ("fxp", "ftp"))
 
 
+DEFANG_TOKEN_RE = re.compile(
+    "|".join(re.escape(token) for token, _ in DEFANG_RULES), re.IGNORECASE
+)
+DEFANG_REPLACEMENTS = {token.lower(): real for token, real in DEFANG_RULES}
+
+
 def undefang(value: str) -> tuple[str, list[str]]:
     """Return the real value and the normalizations that were applied.
 
     Every change is named in `normalization_applied` rather than performed
     silently: a value that was altered before lookup is a value the caller
     should be able to see was altered.
+
+    Matching is case-insensitive -- `[Dot]` is as common in a ticket as `[dot]`
+    -- and the two passes alternate until the value stops changing, because
+    `hxxp[:]//` needs the punctuation restored before the scheme is recognisable
+    and a single ordered pass could only ever fix one of the two.
     """
     text = value.strip()
     applied: list[str] = []
 
-    lowered = text.lower()
-    for fanged, real in DEFANG_SCHEMES:
-        if lowered.startswith(fanged + "://"):
-            text = real + text[len(fanged) :]
-            applied.append("defang_scheme")
+    for _ in range(4):
+        before = text
+
+        replaced = DEFANG_TOKEN_RE.sub(
+            lambda match: DEFANG_REPLACEMENTS[match.group(0).lower()], text
+        )
+        if replaced != text:
+            text = replaced
+            if "defang" not in applied:
+                applied.append("defang")
+
+        lowered = text.lower()
+        for fanged, real in DEFANG_SCHEMES:
+            if lowered.startswith(fanged + "://"):
+                text = real + text[len(fanged) :]
+                if "defang_scheme" not in applied:
+                    applied.append("defang_scheme")
+                break
+
+        if text == before:
             break
 
-    replaced = text
-    for fanged, real in DEFANG_RULES:
-        if fanged in replaced or fanged.upper() in replaced:
-            replaced = replaced.replace(fanged, real).replace(fanged.upper(), real)
-    if replaced != text:
-        applied.append("defang")
-        text = replaced
-
-    if text != text.strip():
-        text = text.strip()
+    text = text.strip()
     if text.endswith(".") and "://" not in text:
         text = text.rstrip(".")
         applied.append("trailing_dot")
@@ -351,6 +374,11 @@ def recompute_corpus_version(snapshot: dict[str, Any]) -> str:
     than the version it is, and every result carries that claim forward into
     your records.
 
+    It covers the values, the excluded set, the CVE records and the full Public
+    Suffix List rules -- everything a match can depend on. An earlier version
+    hashed only the PSL *version string*, which left the boundary rules
+    themselves editable while the check still passed.
+
     This is an integrity check, not an authenticity one: it proves the file is
     internally consistent and has not been altered or truncated since it was
     built. It cannot prove who built it. A digest that travels in the same
@@ -362,7 +390,13 @@ def recompute_corpus_version(snapshot: dict[str, Any]) -> str:
             "values": snapshot.get("values") or {},
             "excluded": snapshot.get("excluded") or {},
             "cve_intel": snapshot.get("cve_intel") or {},
-            "psl": snapshot.get("public_suffix_list_version"),
+            # The rules, not the string that names them. Hashing only the
+            # version left the boundary rules editable without detection, and
+            # they are what decides where a parent-domain match stops: remove
+            # `github.io` from the normal set, keep the version, and unrelated
+            # tenants begin matching each other with the check still passing.
+            "psl_rules": snapshot.get("public_suffix_rules") or {},
+            "psl_version": snapshot.get("public_suffix_list_version"),
         },
         sort_keys=True,
         ensure_ascii=False,
@@ -452,6 +486,13 @@ def _evaluate_row(row: dict[str, str], corpus: Corpus, out: dict[str, Any]) -> d
     value, applied = undefang(raw)
     supplied = (row.get("type") or "").strip().lower()
     detected = detect_type(value)
+    unknown_label = ""
+    if supplied and supplied not in KNOWN_TYPES:
+        # Reported, then discarded. Trusting it produced a statistics bucket
+        # named after the typo and let the value be matched under a type that
+        # does not exist.
+        unknown_label = supplied
+        supplied = ""
     used = supplied or detected
     out.update(
         {
@@ -461,7 +502,9 @@ def _evaluate_row(row: dict[str, str], corpus: Corpus, out: dict[str, Any]) -> d
             "normalization_applied": ",".join(applied),
         }
     )
-    if supplied and detected != "unknown" and supplied != detected:
+    if unknown_label:
+        out["reason"] = f"unknown_supplied_type:{unknown_label[:32]}"
+    elif supplied and detected != "unknown" and supplied != detected:
         # Reported, not resolved. A value whose declared type disagrees with
         # its shape is worth an analyst's attention either way.
         out["reason"] = f"type_mismatch:supplied={supplied},detected={detected}"

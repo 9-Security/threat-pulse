@@ -15,6 +15,18 @@ Requires Python 3.9 or later. No installation.
 python3 validate.py --input observables.csv --output results.csv --summary summary.json
 ```
 
+Check the tool before you trust its output:
+
+```bash
+python3 test_validate.py
+```
+
+15 tests, shipped in this bundle, building their own corpus rather than reading
+the snapshot — so they check the tool's behaviour independently of the data we
+sent. One of them parses `validate.py` and asserts it imports no network,
+subprocess or dynamic-execution module, so the central claim is checked
+mechanically rather than by reading.
+
 ## Input
 
 ```csv
@@ -37,10 +49,17 @@ supplied type *and* the detected one, and a skip from either wins. A private
 address labelled `domain` is skipped as `non_public_ip`, not looked up and
 returned as a miss.
 
-**Defanged input is accepted.** `evil[.]com`, `evil(.)com`, `evil[dot]com`,
-`hxxp://` and `hxxps://` are restored before anything else happens, and every
-change is named in the `normalization_applied` column — `defang`,
-`defang_scheme`, `trailing_dot`. Nothing is altered silently.
+**Defanged input is accepted**, case-insensitively. `evil[.]com`, `evil(.)com`,
+`evil[Dot]com`, `hxxp://`, `hxxps://` and combinations such as `hxxp[:]//` are
+restored before anything else happens — the passes alternate until the value
+stops changing, because the punctuation has to be restored before the scheme is
+recognisable. Every change is named in the `normalization_applied` column —
+`defang`, `defang_scheme`, `trailing_dot`. Nothing is altered silently.
+
+**An unrecognised `type` is reported and discarded**, not trusted. A misspelled
+or invented label previously became its own bucket in the per-type rates and
+reached the lookup under a type that does not exist. The row now carries
+`unknown_supplied_type:<label>` in `reason` and is classified by detection.
 
 Do not send internal hostnames, private or reserved addresses, or live
 unresolved indicators. The validator skips them and says so, but the safest
@@ -162,9 +181,14 @@ open them, because it does not open anything.
 ## Integrity
 
 **The validator recomputes `corpus_version` from the snapshot's own contents
-before it does anything else, and refuses to run if it does not match.** It also
-checks that the number of values the snapshot claims to hold is the number it
-carries. A truncated, partially written or edited snapshot is rejected rather
+before it does anything else, and refuses to run if it does not match.** The
+digest covers the values, the excluded set, the CVE records **and the full
+Public Suffix List rules** — not merely the version string that names them.
+Hashing only the version would leave the boundary rules editable while the check
+still passed, and those rules are what decide where a parent-domain match stops:
+remove a registry from the list and unrelated tenants beneath it begin matching
+each other. It also checks that the number of values the snapshot claims to hold
+is the number it carries. A truncated, partially written or edited snapshot is rejected rather
 than quietly producing results that look ordinary.
 
 This is an integrity check, not an authenticity one. It proves the file is
