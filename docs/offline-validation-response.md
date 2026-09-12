@@ -99,16 +99,33 @@ three relations above. Widening the definition would move the number against a
 rule set for something narrower. Both figures appear in the summary:
 `hit_rate` and `hit_rate_including_child_domain`.
 
-**`source_count` will be 1 for nearly every network indicator.** This is
-Disclosure 3 from the specification and it is structural, not a sampling
-artefact: publishers republish each other's CVE numbers, not each other's C2
-infrastructure. Please do not read a corroboration count of 1 as a weak result on
-that path; it is the only value available there.
+**`source_count` above 1 is not evidence of independent corroboration, and on
+the network path it never has been.** Over the nine days, 9 of 305 network
+indicators carry more than one publisher. Every one of the nine is the same
+shape: an aggregator (`Cyber Security News`) carrying an original researcher's
+report (`Securelist by Kaspersky`, five; `Microsoft Security Blog`, four). That
+is republication, not two parties independently finding the same infrastructure.
+
+We could have let the field read as corroboration and said nothing. Instead the
+results now carry a `publishers` column listing every name, so you can judge
+independence yourself rather than trusting a count — and the bundle's README says
+this outright.
+
+On the CVE path the counts are larger and more meaningful: 300 of 1,671 CVEs
+were named by more than one publisher, with a long tail up to ten. Whether that
+is worth anything to you given your existing enrichment is your call, not ours.
 
 **Source failures travel with the corpus.** `days_with_source_failures` in the
 summary lists any day in the window where a publisher could not be read. A value
 absent because its source was unreachable that day is not a value nobody
 reported, and nothing else in the output would distinguish the two.
+
+You should know the number before you see it: **7 of the 9 days carry at least
+one failed source.** Most are single-day timeouts, but CISA's advisory feed
+returned 403 on four consecutive days (2026-09-04 to 09-07) and its advisories
+are absent from those four reports. We found this while preparing your sample
+and have since added an alert for a source that fails on consecutive runs; the
+gap in those four days cannot be backfilled.
 
 ## Rates and interpretation
 
@@ -134,8 +151,17 @@ there.
 | | |
 |---|---|
 | days | 9 (2026-09-04 → 2026-09-12) |
-| confirmed values | 3,023 (CVE 2,560 / network 463) |
+| unique confirmed values | 1,976 |
+| — CVE | 1,671 |
+| — network indicators | 305 (domain 182, sha256 61, url 21, ip 19, md5 17, sha1 5) |
+| excluded values | 29 |
+| CVE intel records | 1,655 |
 | sources | 26 configured |
+| corpus_version | `2026-09-12.8a4b49478adb` |
+
+An earlier note of ours quoted 3,023 confirmed values. That figure counted
+occurrences across days, not distinct values; 1,976 is the number the validator
+will agree with. The correction is downward and ours to make before you find it.
 
 Depth accrues one day per day and cannot be backfilled. A snapshot built later
 covers more days; `corpus_version` identifies exactly which corpus produced a

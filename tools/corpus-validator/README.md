@@ -91,7 +91,8 @@ narrower. `summary.json` carries both: `hit_rate` and
 `sample_id`, `value`, `type_supplied`, `type_detected`, `type_used`,
 `normalized_value`, `status`, `reason`, `match_method`, `matched_value`,
 `report_count`, `source_count`, `first_seen`, `last_seen`, `publication_date`,
-`citation_url`, `citation_publisher`, `citation_count`, `action`, `priority`,
+`citation_url`, `citation_publisher`, `citation_count`, `publishers`, `action`,
+`priority`,
 `benign_basis`, `kev`, `kev_due_date`, `cvss_score`, `cvss_severity`,
 `cvss_version`, `epss_score`, `epss_percentile`, `epss_date`, `cve_provenance`,
 `cve_observed_on`.
@@ -100,6 +101,11 @@ narrower. `summary.json` carries both: `hit_rate` and
 - `source_count` — how many distinct publishers named it. Expect `1` for almost
   every network indicator: publishers republish each other's CVE numbers, not
   each other's C2 infrastructure.
+- `publishers` — all of them, semicolon-separated. **Read this before treating
+  `source_count` above 1 as corroboration.** The count cannot tell independent
+  reporting from republication, and in this corpus every network indicator with
+  more than one publisher so far has been an aggregator carrying an original
+  researcher's report — not two parties finding the same thing.
 - `publication_date` — when the article was published, not when we collected it.
 - `cve_provenance` — the URLs the KEV/CVSS/EPSS record was retrieved from, so a
   score can be traced rather than taken on trust.

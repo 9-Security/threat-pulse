@@ -238,3 +238,42 @@ def test_the_summary_states_what_it_does_not_measure(tmp_path: Path) -> None:
     joined = " ".join(summary["not_measured_here"])
     assert "at the time of each alert" in joined
     assert "not detection performance" in joined
+
+
+def test_every_publisher_is_listed_not_just_the_first(tmp_path: Path) -> None:
+    """`source_count` cannot tell corroboration from republication.
+
+    In the real corpus every network indicator with more than one publisher is
+    an aggregator carrying an original researcher's report. A reader needs the
+    names to see that, so a count alone would overstate what was independent.
+    """
+    root = _corpus(tmp_path)
+    folder = root / "2026-09-05"
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "daily-evidence.json").write_text(
+        json.dumps(
+            {
+                "articles": [
+                    {
+                        "source": "Cyber Security News",
+                        "article_title": "Republished",
+                        "article_url": "https://cybersecuritynews.example/1",
+                        "published_at": "2026-09-05T09:00:00+00:00",
+                        "evidence": [
+                            {"indicator_type": "domain", "normalized_value": "evil.example.com",
+                             "status": "confirmed"}
+                        ],
+                    }
+                ],
+                "analyst_brief": {"actions": []},
+            }
+        ),
+        encoding="utf-8",
+    )
+    bundle = tmp_path / "bundle"
+    write_bundle(bundle, root)
+
+    results, _ = _run_validator(bundle, ["value,type,sample_id", "evil.example.com,domain,S1"])
+
+    assert results[0]["source_count"] == "2"
+    assert results[0]["publishers"] == "The Hacker News; Cyber Security News"

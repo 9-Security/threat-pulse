@@ -74,6 +74,7 @@ RESULT_COLUMNS = [
     "citation_url",
     "citation_publisher",
     "citation_count",
+    "publishers",
     "action",
     "priority",
     "benign_basis",
@@ -341,6 +342,12 @@ def evaluate(rows: list[dict[str, str]], corpus: Corpus) -> list[dict[str, Any]]
                 "citation_url": first.get("article_url", ""),
                 "citation_publisher": first.get("publisher", ""),
                 "citation_count": len(citations),
+                # Every publisher, not just the first. `source_count` alone
+                # cannot tell corroboration from republication: in this corpus
+                # every network indicator with more than one publisher is an
+                # aggregator carrying an original researcher's report, and you
+                # need the names to see that.
+                "publishers": "; ".join(record.get("publishers") or []),
                 "action": record.get("action", ""),
                 "priority": record.get("priority", ""),
                 "benign_basis": record.get("benign_basis", "") or "",

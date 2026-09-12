@@ -89,9 +89,9 @@ than values submitted.
 | | |
 |---|---|
 | days held | 9 (2026-09-04 → 2026-09-12) |
-| confirmed values | 3,023 |
-| — CVE | 2,560 |
-| — network indicators | 463 |
+| unique confirmed values | 1,976 |
+| — CVE | 1,671 |
+| — network indicators | 305 |
 | sources | 26 configured, all answering as of today |
 
 Depth accrues one day per day and **cannot be backfilled** — the feeds carry
