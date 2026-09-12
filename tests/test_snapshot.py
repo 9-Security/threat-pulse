@@ -490,3 +490,111 @@ def test_an_untouched_snapshot_verifies(tmp_path: Path) -> None:
     _, summary = _run_validator(bundle, ["value,type,sample_id", "evil.example.com,domain,S1"])
 
     assert summary["corpus_version"] == summary["corpus_version_recomputed"]
+
+
+def test_editing_the_boundary_rules_is_caught(tmp_path: Path) -> None:
+    """The digest covered the PSL *version string*, not the rules.
+
+    That left the one part of the bundle which decides where a parent match
+    stops editable without detection. Remove `github.io` from the normal set,
+    keep the version string, and every tenant beneath it starts matching every
+    other tenant -- with the integrity check still passing and the results
+    looking ordinary.
+    """
+    root = _corpus(tmp_path)
+    _day(root, "2026-09-05",
+         [{"indicator_type": "domain", "normalized_value": "tenant.github.io", "status": "confirmed"}])
+    bundle = tmp_path / "bundle"
+    write_bundle(bundle, root)
+    path = bundle / "corpus-snapshot.json"
+    payload = json.loads(path.read_text(encoding="utf-8"))
+
+    rules = payload["public_suffix_rules"]["normal"]
+    assert "github.io" in rules, "fixture assumption: the registry is in the list"
+    payload["public_suffix_rules"]["normal"] = [r for r in rules if r != "github.io"]
+    # The version string is left untouched, which is the whole point.
+    path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+    (bundle / "input.csv").write_text(
+        "value,type,sample_id\nsomeone-else.github.io,domain,S1\n", encoding="utf-8")
+    result = subprocess.run(
+        [sys.executable, str(bundle / "validate.py"),
+         "--input", str(bundle / "input.csv"), "--snapshot", str(path),
+         "--output", str(bundle / "r.csv"), "--summary", str(bundle / "s.json")],
+        capture_output=True, text=True,
+    )
+
+    assert result.returncode != 0
+    assert "integrity check failed" in (result.stdout + result.stderr)
+    assert not (bundle / "r.csv").exists()
+
+
+def test_an_unknown_supplied_type_is_reported_and_discarded(tmp_path: Path) -> None:
+    """A typo used to become a statistics bucket.
+
+    `banana` was carried straight through into `type_used`, creating its own row
+    in the per-type rates and reaching the lookup with whatever normalisation
+    the fallback happened to apply.
+    """
+    bundle = tmp_path / "bundle"
+    write_bundle(bundle, _corpus(tmp_path))
+
+    results, summary = _run_validator(
+        bundle,
+        ["value,type,sample_id",
+         "evil.example.com,banana,S1",
+         "10.1.2.3,banana,S2"],
+    )
+
+    by_id = {row["sample_id"]: row for row in results}
+    assert by_id["S1"]["type_used"] == "domain"  # detection, not the label
+    assert "unknown_supplied_type:banana" in by_id["S1"]["reason"]
+    assert by_id["S1"]["status"] == "hit"
+    # And the bad label cannot smuggle a private address past the skip either.
+    assert by_id["S2"]["status"] == "skipped"
+    assert "banana" not in summary["by_type"]
+
+
+def test_defanging_is_case_insensitive_and_settles(tmp_path: Path) -> None:
+    """`[Dot]` is as common in a ticket as `[dot]`, and `hxxp[:]//` needs two passes.
+
+    The first implementation matched only all-lower and all-upper forms, and ran
+    scheme restoration before punctuation restoration -- so a value that needed
+    both was left half-converted and classified unsupported.
+    """
+    bundle = tmp_path / "bundle"
+    write_bundle(bundle, _corpus(tmp_path))
+
+    results, _ = _run_validator(
+        bundle,
+        ["value,type,sample_id",
+         "evil[Dot]example[DOT]com,,S1",
+         "hxxp[:]//evil.example.com/a,,S2",
+         "EVIL[.]example[.]COM,,S3"],
+    )
+
+    by_id = {row["sample_id"]: row for row in results}
+    assert by_id["S1"]["normalized_value"] == "evil.example.com"
+    assert by_id["S1"]["status"] == "hit"
+    assert by_id["S2"]["type_detected"] == "url"
+    assert by_id["S2"]["normalized_value"] == "evil.example.com"
+    assert "defang_scheme" in by_id["S2"]["normalization_applied"]
+    assert by_id["S3"]["status"] == "hit"
+
+
+def test_the_bundle_ships_its_own_test_file(tmp_path: Path) -> None:
+    """They said they could not independently verify the claim that tests pass.
+
+    So the tests travel with the tool, and run without the project: a claim the
+    consumer cannot check is a claim they are right to discount.
+    """
+    bundle = tmp_path / "bundle"
+    write_bundle(bundle, _corpus(tmp_path))
+    shipped = bundle / "test_validate.py"
+    assert shipped.is_file()
+
+    result = subprocess.run(
+        [sys.executable, str(shipped)], capture_output=True, text=True, cwd=str(bundle)
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr

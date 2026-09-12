@@ -231,7 +231,14 @@ def _corpus_version(snapshot: dict[str, Any]) -> str:
             "values": snapshot["values"],
             "excluded": snapshot["excluded"],
             "cve_intel": snapshot["cve_intel"],
-            "psl": snapshot["public_suffix_list_version"],
+            # The rules themselves, not the version string that names them.
+            # Hashing only the version left the one part of the bundle that
+            # decides where a parent match stops editable without detection:
+            # drop `github.io` from the normal set, keep the version, and every
+            # tenant beneath it starts matching every other tenant, with the
+            # integrity check still passing.
+            "psl_rules": snapshot["public_suffix_rules"],
+            "psl_version": snapshot["public_suffix_list_version"],
         },
         sort_keys=True,
         ensure_ascii=False,
@@ -242,7 +249,8 @@ def _corpus_version(snapshot: dict[str, Any]) -> str:
 
 
 def write_bundle(destination: str | Path, reports_dir: str | Path | None = None) -> dict[str, Any]:
-    """Write the snapshot plus the validator that reads it, ready to hand over."""
+    """Write the snapshot, the validator that reads it, and the validator's own
+    tests, ready to hand over."""
     out = Path(destination)
     out.mkdir(parents=True, exist_ok=True)
     snapshot = build_snapshot(reports_dir)
@@ -252,7 +260,10 @@ def write_bundle(destination: str | Path, reports_dir: str | Path | None = None)
     )
 
     validator = Path(__file__).resolve().parents[2] / "tools" / "corpus-validator"
-    for name in ("validate.py", "README.md"):
+    # The tests travel with the tool. The reviewers could not verify a claim
+    # that 202 tests passed, because none of them was in the bundle -- and a
+    # claim the consumer cannot check is one they are right to discount.
+    for name in ("validate.py", "README.md", "test_validate.py"):
         source = validator / name
         if source.is_file():
             # Newline is forced: the file is written on Windows and read on the
