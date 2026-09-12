@@ -34,6 +34,7 @@ from .backtest import read_values, run_backtest
 from .backtest import render_markdown as render_backtest_markdown
 from .export_d1 import export_report
 from .report import collect_report, serialize_report
+from .snapshot import build_snapshot, write_bundle
 from .source_health import (
     DEFAULT_LOOKBACK_DAYS,
     render_alert,
@@ -293,6 +294,13 @@ def _arguments() -> argparse.Namespace:
     source_health.add_argument(
         "--hostname", default="", help="named in the alert body, for a multi-host operator"
     )
+
+    snapshot = subcommands.add_parser(
+        "snapshot",
+        help="build a self-contained corpus bundle a consumer can match against offline",
+    )
+    snapshot.add_argument("--output", required=True, help="directory to write the bundle into")
+    snapshot.add_argument("--reports-dir", help="corpus root (default: reports/)")
 
     schedule = subcommands.add_parser(
         "schedule",
@@ -652,6 +660,21 @@ def main() -> None:
         if args.markdown_output:
             _atomic_write(args.markdown_output, summary)
         print(summary)
+        return
+
+    if args.command == "snapshot":
+        try:
+            built = write_bundle(args.output, args.reports_dir)
+        except OSError as error:
+            print(f"error: {error}", file=sys.stderr)
+            raise SystemExit(1) from error
+        corpus = built["corpus"]
+        print(
+            f"corpus_version {built['corpus_version']}: {corpus['days']} days "
+            f"({corpus['first_date']} to {corpus['last_date']}), "
+            f"{corpus['confirmed_values']} confirmed, {corpus['excluded_values']} excluded, "
+            f"{corpus['cve_records']} CVE records -> {args.output}"
+        )
         return
 
     if args.command == "source-health":
