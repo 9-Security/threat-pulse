@@ -167,8 +167,12 @@ Depth accrues one day per day and cannot be backfilled. A snapshot built later
 covers more days; `corpus_version` identifies exactly which corpus produced a
 given result, and the same version over the same input reproduces it.
 
-Tell us when you would like the bundle cut, and we will build it against the
-corpus as of that date.
+The bundle is built and tested as of today; we are holding it rather than
+attaching it, so that you receive one cut against the deepest corpus available
+once you have confirmed the specification. Say the word and we will rebuild and
+send — it is one command, not a lead time. It is roughly 130 KB compressed, so
+it travels as an ordinary attachment with a published SHA-256; no download link,
+nothing to expire, and no access log to account for.
 
 ## Not started, as requested
 
