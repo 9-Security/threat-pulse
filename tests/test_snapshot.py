@@ -277,3 +277,216 @@ def test_every_publisher_is_listed_not_just_the_first(tmp_path: Path) -> None:
 
     assert results[0]["source_count"] == "2"
     assert results[0]["publishers"] == "The Hacker News; Cyber Security News"
+
+
+def test_defanged_input_is_undefanged_and_the_change_is_named(tmp_path: Path) -> None:
+    """The documents promised this and the code did not do it.
+
+    `docs/data-handling.md` and the specification both state that defanged input
+    is accepted. A value exported from a ticket as `evil[.]com` was classified
+    `unsupported_type` and dropped from the denominator instead -- a documented
+    promise the code did not keep, which the reviewers found by reading both.
+    """
+    bundle = tmp_path / "bundle"
+    write_bundle(bundle, _corpus(tmp_path))
+
+    results, summary = _run_validator(
+        bundle,
+        ["value,type,sample_id",
+         "evil[.]example[.]com,,S1",
+         "hxxps://evil.example.com/path,,S2"],
+    )
+
+    by_id = {row["sample_id"]: row for row in results}
+    assert by_id["S1"]["status"] == "hit"
+    assert by_id["S1"]["normalized_value"] == "evil.example.com"
+    assert "defang" in by_id["S1"]["normalization_applied"]
+    assert by_id["S2"]["status"] == "hit"
+    assert "defang_scheme" in by_id["S2"]["normalization_applied"]
+    # And it must not be quietly counted as unsupported any more.
+    assert "unknown" not in summary["by_type"]
+
+
+def test_a_wrong_type_label_cannot_defeat_a_safety_skip(tmp_path: Path) -> None:
+    """A private address declared as `domain` was looked up and reported `miss`.
+
+    That put it in the denominator and answered "not found" for a value that was
+    never eligible -- the exact thing the review's hard requirement forbids. Skip
+    checks now run against the supplied type and the detected one, and a skip
+    from either wins.
+    """
+    bundle = tmp_path / "bundle"
+    write_bundle(bundle, _corpus(tmp_path))
+
+    results, summary = _run_validator(
+        bundle,
+        ["value,type,sample_id",
+         "10.1.2.3,domain,S1",
+         "dc01.corp.local,ip,S2"],
+    )
+
+    by_id = {row["sample_id"]: row for row in results}
+    assert by_id["S1"]["status"] == "skipped"
+    assert "non_public_ip" in by_id["S1"]["reason"]
+    assert "type_mismatch" in by_id["S1"]["reason"]
+    assert by_id["S2"]["status"] == "skipped"
+    # Neither reaches a denominator.
+    assert summary["network_combined"]["processed"] == 0
+
+
+def test_one_bad_row_produces_an_error_row_not_a_dead_run(tmp_path: Path) -> None:
+    """`status=error` was documented and unreachable.
+
+    There was no per-row guard, so a value that raised took the whole run with
+    it: the promise was a row per input, and the behaviour was a traceback and
+    no output at all.
+    """
+    bundle = tmp_path / "bundle"
+    write_bundle(bundle, _corpus(tmp_path))
+
+    results, _ = _run_validator(
+        bundle,
+        ["value,type,sample_id",
+         "evil.example.com,domain,S1",
+         "http://[::1,url,S2",
+         "CVE-2026-1111,cve,S3"],
+    )
+
+    assert len(results) == 3
+    by_id = {row["sample_id"]: row for row in results}
+    assert by_id["S1"]["status"] == "hit"
+    assert by_id["S3"]["status"] == "hit"
+    assert by_id["S2"]["status"] == "error"
+    assert "ValueError" in by_id["S2"]["reason"]
+
+
+def test_a_value_that_cannot_be_cited_is_not_a_hit(tmp_path: Path) -> None:
+    """The specification requires it; only the data made it true by accident.
+
+    A hit with a blank citation column satisfies "one row per value" and breaks
+    the rule the row exists to enforce, so the check belongs in the code rather
+    than in an invariant nobody asserts.
+    """
+    root = tmp_path / "reports"
+    folder = root / "2026-09-04"
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "daily-evidence.json").write_text(
+        json.dumps(
+            {
+                "articles": [
+                    {
+                        "source": "The Hacker News",
+                        "article_title": "No link on this item",
+                        "article_url": None,
+                        "published_at": "2026-09-04T09:00:00+00:00",
+                        "evidence": [
+                            {"indicator_type": "domain", "normalized_value": "uncited.example.com",
+                             "status": "confirmed"}
+                        ],
+                    }
+                ],
+                "analyst_brief": {"actions": []},
+            }
+        ),
+        encoding="utf-8",
+    )
+    bundle = tmp_path / "bundle"
+    write_bundle(bundle, root)
+
+    results, _ = _run_validator(bundle, ["value,type,sample_id", "uncited.example.com,domain,S1"])
+
+    assert results[0]["status"] == "error"
+    assert "missing_citation" in results[0]["reason"]
+    assert results[0]["citation_url"] == ""
+
+
+def test_a_full_url_matches_whole_before_it_is_reduced_to_a_host(tmp_path: Path) -> None:
+    """Corpus URLs were unreachable and host matches were labelled `same_host`.
+
+    The stronger relation existed in the data and could never be reported,
+    because the submitted URL was reduced to its host before anything was tried.
+    """
+    root = _corpus(tmp_path)
+    folder = root / "2026-09-05"
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "daily-evidence.json").write_text(
+        json.dumps(
+            {
+                "articles": [
+                    {
+                        "source": "The Hacker News",
+                        "article_title": "With a URL indicator",
+                        "article_url": "https://thehackernews.com/2026-09-05",
+                        "published_at": "2026-09-05T09:00:00+00:00",
+                        "evidence": [
+                            {"indicator_type": "url",
+                             "normalized_value": "https://evil.example.com/payload",
+                             "status": "confirmed"}
+                        ],
+                    }
+                ],
+                "analyst_brief": {"actions": []},
+            }
+        ),
+        encoding="utf-8",
+    )
+    bundle = tmp_path / "bundle"
+    write_bundle(bundle, root)
+
+    results, _ = _run_validator(
+        bundle,
+        ["value,type,sample_id",
+         "https://evil.example.com/payload,url,S1",
+         "https://evil.example.com/other,url,S2"],
+    )
+
+    by_id = {row["sample_id"]: row for row in results}
+    assert by_id["S1"]["match_method"] == "exact"
+    assert by_id["S1"]["matched_value"] == "https://evil.example.com/payload"
+    # A different path still finds the host, and is labelled as the weaker match.
+    assert by_id["S2"]["match_method"] == "same_host"
+    assert by_id["S2"]["matched_value"] == "evil.example.com"
+
+
+def test_an_altered_snapshot_is_refused_rather_than_trusted(tmp_path: Path) -> None:
+    """corpus_version was read and believed.
+
+    A truncated or edited snapshot then reports the version it claims rather
+    than the version it is, and every result carries that claim into the
+    consumer's records.
+    """
+    bundle = tmp_path / "bundle"
+    write_bundle(bundle, _corpus(tmp_path))
+    path = bundle / "corpus-snapshot.json"
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["values"]["planted.example.com"] = {
+        "value": "planted.example.com", "type": "domain", "report_dates": ["2026-09-04"],
+        "publishers": ["The Hacker News"], "citations": [], "report_count": 1,
+        "source_count": 1, "first_seen": "2026-09-04", "last_seen": "2026-09-04",
+    }
+    path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+    (bundle / "input.csv").write_text("value,type,sample_id\nplanted.example.com,domain,S1\n",
+                                      encoding="utf-8")
+    result = subprocess.run(
+        [sys.executable, str(bundle / "validate.py"),
+         "--input", str(bundle / "input.csv"),
+         "--snapshot", str(path),
+         "--output", str(bundle / "r.csv"),
+         "--summary", str(bundle / "s.json")],
+        capture_output=True, text=True,
+    )
+
+    assert result.returncode != 0
+    assert "integrity check failed" in (result.stdout + result.stderr)
+    assert not (bundle / "r.csv").exists()
+
+
+def test_an_untouched_snapshot_verifies(tmp_path: Path) -> None:
+    """The guard has to pass on the real artefact, or it is just a blocker."""
+    bundle = tmp_path / "bundle"
+    write_bundle(bundle, _corpus(tmp_path))
+
+    _, summary = _run_validator(bundle, ["value,type,sample_id", "evil.example.com,domain,S1"])
+
+    assert summary["corpus_version"] == summary["corpus_version_recomputed"]

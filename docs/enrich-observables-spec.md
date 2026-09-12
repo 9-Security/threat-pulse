@@ -619,18 +619,28 @@ open item. In summary:
 
 From the review's Recommendation, plus what the disclosures add.
 
-| # | item | status |
-|---|---|---|
-| 1 | Response provenance and partial-failure fields | specified above |
-| 2 | Citation completeness | specified above |
-| 3 | `report_count` vs `source_count` semantics | specified; see Disclosure 3 |
-| 4 | Domain-boundary matching via PSL | done, both sides |
-| 5 | Known-benign provenance and versioning | done |
-| 6 | CVE provenance separation | specified above |
-| 7 | Data handling and retention documentation | done; `docs/data-handling.md` |
-| 8 | Remove "safe to automate" claim | done throughout |
-| 9 | **Corpus depth** | store running since 2026-09-04; accrues 1 day/day |
-| 10 | Restate measurements on current parser revision | done; see Disclosure 4 |
+One column per deliverable, because a single "status" column was read as a
+claim that all eight were finished, and three of them are not. The reviewers
+caught the contradiction between this table and the section below it; the table
+was wrong and this replaces it.
+
+| # | item | offline validator | `enrich_observables` endpoint |
+|---|---|---|---|
+| 1 | Response provenance and partial-failure fields | **implemented** — `status` per row, per-row `error`, `days_with_source_failures` | specified, **not implemented** |
+| 2 | Citation completeness | **implemented** — a value that cannot be cited is returned `error`, never `hit` | specified, **not implemented** |
+| 3 | `report_count` vs `source_count` semantics | **implemented**, with every publisher named; see Disclosure 3 | specified |
+| 4 | Domain-boundary matching via PSL | **implemented** | **implemented** |
+| 5 | Known-benign provenance and versioning | **implemented** | **implemented** |
+| 6 | CVE provenance separation | **implemented** — `cve_provenance`, `cve_observed_on` | specified, **not implemented** |
+| 7 | Data handling and retention documentation | **written**; `docs/data-handling.md` | written, with open items named in it |
+| 8 | Remove "safe to automate" claim | **done** | **done** |
+| 9 | **Corpus depth** | accrues 1 day/day since 2026-09-04; cannot be backfilled | same |
+| 10 | Restate measurements on current parser revision | **done**; see Disclosure 4 | done |
+
+**Nothing here claims eight of eight.** Items 1, 2 and 6 are implemented for the
+offline validation and remain unbuilt in the endpoint, which is the only place
+they were ever promised as response fields. The endpoint column is what gates an
+endpoint pilot; the validator column is what gates the coverage exercise.
 
 Items 9 and 10 are not in the review because the reviewers could not have known
 about them. Item 9 is not an engineering task — the collector already runs daily

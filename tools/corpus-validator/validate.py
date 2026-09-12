@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import ipaddress
 import json
 import re
@@ -62,6 +63,7 @@ RESULT_COLUMNS = [
     "type_detected",
     "type_used",
     "normalized_value",
+    "normalization_applied",
     "status",
     "reason",
     "match_method",
@@ -144,6 +146,56 @@ class Boundaries:
 # ------------------------------------------------------------ classifying ---
 
 
+#: Defanging this undoes, and nothing else. `docs/data-handling.md` and the
+#: specification both state that defanged input is accepted, so the validator
+#: has to actually accept it -- a value exported from a ticket as `evil[.]com`
+#: was otherwise classified `unsupported_type` and dropped from the denominator,
+#: which is a documented promise the code did not keep.
+DEFANG_RULES = (
+    ("[.]", "."),
+    ("(.)", "."),
+    ("{.}", "."),
+    ("[:]", ":"),
+    ("[://]", "://"),
+    ("[dot]", "."),
+    ("(dot)", "."),
+)
+DEFANG_SCHEMES = (("hxxps", "https"), ("hxxp", "http"), ("fxp", "ftp"))
+
+
+def undefang(value: str) -> tuple[str, list[str]]:
+    """Return the real value and the normalizations that were applied.
+
+    Every change is named in `normalization_applied` rather than performed
+    silently: a value that was altered before lookup is a value the caller
+    should be able to see was altered.
+    """
+    text = value.strip()
+    applied: list[str] = []
+
+    lowered = text.lower()
+    for fanged, real in DEFANG_SCHEMES:
+        if lowered.startswith(fanged + "://"):
+            text = real + text[len(fanged) :]
+            applied.append("defang_scheme")
+            break
+
+    replaced = text
+    for fanged, real in DEFANG_RULES:
+        if fanged in replaced or fanged.upper() in replaced:
+            replaced = replaced.replace(fanged, real).replace(fanged.upper(), real)
+    if replaced != text:
+        applied.append("defang")
+        text = replaced
+
+    if text != text.strip():
+        text = text.strip()
+    if text.endswith(".") and "://" not in text:
+        text = text.rstrip(".")
+        applied.append("trailing_dot")
+    return text, applied
+
+
 def detect_type(value: str) -> str:
     text = value.strip()
     if not text:
@@ -186,8 +238,7 @@ def normalize(value: str, kind: str) -> str:
     return text.lower()
 
 
-def skip_reason(value: str, kind: str) -> str | None:
-    """Why a value must not be looked up -- never conflated with "not found"."""
+def _skip_reason_for(value: str, kind: str) -> str | None:
     if kind == "empty":
         return "empty_value"
     if kind == "unknown":
@@ -203,8 +254,39 @@ def skip_reason(value: str, kind: str) -> str | None:
         host = normalize(value, kind)
         if not host:
             return "unparseable_host"
+        try:
+            # A bare address arriving under a domain label is still an address.
+            address = ipaddress.ip_address(host)
+        except ValueError:
+            pass
+        else:
+            if not address.is_global:
+                return "non_public_ip"
         if host.endswith(INTERNAL_SUFFIXES) or "." not in host:
             return "internal_hostname"
+    return None
+
+
+def skip_reason(value: str, supplied: str, detected: str) -> str | None:
+    """Why a value must not be looked up -- never conflated with "not found".
+
+    Checked against the supplied type *and* the detected one, and a skip from
+    either wins. A private address declared as `domain` otherwise passed every
+    guard, was looked up, and came back `miss` -- entering the denominator and
+    being reported as not-found, which is exactly what the review's hard
+    requirement forbids. Safety checks do not defer to a caller's label.
+    """
+    reasons = [
+        _skip_reason_for(value, kind)
+        for kind in dict.fromkeys(filter(None, (supplied, detected)))
+    ]
+    for reason in reasons:
+        # `unsupported_type` is the weakest answer: if either reading of the
+        # value yields a usable type, the value is usable.
+        if reason and reason != "unsupported_type":
+            return reason
+    if reasons and all(reason == "unsupported_type" for reason in reasons):
+        return "unsupported_type"
     return None
 
 
@@ -226,9 +308,19 @@ class Corpus:
                 continue
             self.by_registrable[self.boundaries.registrable(key)].append(key)
 
-    def match(self, normalized: str, kind: str) -> tuple[str | None, str | None]:
-        """(match_method, matched_key), or (None, None) for a miss."""
+    def match(self, normalized: str, kind: str, original: str = "") -> tuple[str | None, str | None]:
+        """(match_method, matched_key), or (None, None) for a miss.
+
+        A submitted URL is tried whole before it is reduced to its host. The
+        corpus does hold some full URLs, and reducing first made those
+        unreachable while labelling a host-level match `same_host` -- so the
+        stronger relation existed in the data and could never be reported.
+        """
         key = normalized.lower()
+        if kind == "url" and original:
+            whole = original.strip().rstrip("/").lower()
+            if whole in self.values:
+                return "exact", whole
         if key in self.values:
             return ("same_host" if kind == "url" else "exact"), key
         if kind not in ("domain", "url"):
@@ -246,6 +338,61 @@ class Corpus:
         if children:
             return "child_domain", sorted(children)[0]
         return None, None
+
+
+# ------------------------------------------------------------- integrity ---
+
+
+def recompute_corpus_version(snapshot: dict[str, Any]) -> str:
+    """Rebuild `corpus_version` from the snapshot's own contents.
+
+    The field was previously read and trusted. Trusting it means a truncated,
+    edited or partially-written snapshot reports the version it claims rather
+    than the version it is, and every result carries that claim forward into
+    your records.
+
+    This is an integrity check, not an authenticity one: it proves the file is
+    internally consistent and has not been altered or truncated since it was
+    built. It cannot prove who built it. A digest that travels in the same
+    message as the file proves neither -- ask for the digest through a channel
+    that is not the one the file arrived on.
+    """
+    material = json.dumps(
+        {
+            "values": snapshot.get("values") or {},
+            "excluded": snapshot.get("excluded") or {},
+            "cve_intel": snapshot.get("cve_intel") or {},
+            "psl": snapshot.get("public_suffix_list_version"),
+        },
+        sort_keys=True,
+        ensure_ascii=False,
+    )
+    digest = hashlib.sha256(material.encode("utf-8")).hexdigest()[:12]
+    last = (snapshot.get("corpus") or {}).get("last_date") or "unknown"
+    return f"{last}.{digest}"
+
+
+def verify_snapshot(snapshot: dict[str, Any]) -> str:
+    """Refuse to run on a snapshot that does not match its own contents."""
+    claimed = str(snapshot.get("corpus_version") or "")
+    actual = recompute_corpus_version(snapshot)
+    if not claimed:
+        raise SystemExit("snapshot carries no corpus_version; refusing to run")
+    if claimed != actual:
+        raise SystemExit(
+            "snapshot integrity check failed: it claims corpus_version "
+            f"{claimed} but its contents produce {actual}. The file has been "
+            "altered or truncated since it was built; do not use these results."
+        )
+    counts = snapshot.get("corpus") or {}
+    stated = counts.get("confirmed_values")
+    held = len(snapshot.get("values") or {})
+    if stated is not None and int(stated) != held:
+        raise SystemExit(
+            f"snapshot says it holds {stated} confirmed values but carries {held}; "
+            "refusing to run"
+        )
+    return actual
 
 
 # ---------------------------------------------------------------- running ---
@@ -279,100 +426,125 @@ def read_input(path: Path) -> list[dict[str, str]]:
 
 
 def evaluate(rows: list[dict[str, str]], corpus: Corpus) -> list[dict[str, Any]]:
+    """One result row per input row, whatever happens to it.
+
+    Every row is evaluated inside its own guard. A malformed value previously
+    raised out of the loop and ended the run, which meant the documented
+    `status=error` could not occur: the promise was a row, and the behaviour was
+    a traceback and no output at all.
+    """
     results: list[dict[str, Any]] = []
     for row in rows:
-        value = row["value"]
-        supplied = (row.get("type") or "").strip().lower()
-        detected = detect_type(value)
-        used = supplied or detected
         out: dict[str, Any] = {column: "" for column in RESULT_COLUMNS}
-        out.update(
-            {
-                "sample_id": row["sample_id"],
-                "value": value,
-                "type_supplied": supplied,
-                "type_detected": detected,
-                "type_used": used,
-            }
-        )
-        if supplied and detected != "unknown" and supplied != detected:
-            # Reported, not resolved. A value whose declared type disagrees with
-            # its shape is worth an analyst's attention either way.
-            out["reason"] = f"type_mismatch:supplied={supplied},detected={detected}"
-
-        reason = skip_reason(value, used)
-        if reason:
-            out["status"] = "skipped"
-            out["reason"] = "; ".join(filter(None, (out["reason"], reason)))
+        out["sample_id"] = row.get("sample_id", "")
+        out["value"] = row.get("value", "")
+        try:
+            results.append(_evaluate_row(row, corpus, out))
+        except Exception as error:  # one bad row must not end the run
+            out["status"] = "error"
+            out["reason"] = f"{type(error).__name__}: {error}"[:200]
             results.append(out)
-            continue
-
-        normalized = normalize(value, used)
-        out["normalized_value"] = normalized
-
-        excluded = corpus.excluded.get(normalized.lower())
-        if excluded:
-            # "We looked and ruled this out" is not "we have never seen it".
-            out["status"] = "excluded"
-            out["reason"] = "; ".join(
-                filter(None, (out["reason"], ",".join(excluded.get("reason_codes") or [])))
-            )
-            results.append(out)
-            continue
-
-        method, key = corpus.match(normalized, used)
-        if not method or key is None:
-            out["status"] = "miss"
-            results.append(out)
-            continue
-
-        record = corpus.values[key]
-        citations = record.get("citations") or []
-        first = citations[0] if citations else {}
-        out.update(
-            {
-                "status": "hit",
-                "match_method": method,
-                "matched_value": record.get("value", key),
-                "report_count": record.get("report_count", ""),
-                "source_count": record.get("source_count", ""),
-                "first_seen": record.get("first_seen", ""),
-                "last_seen": record.get("last_seen", ""),
-                "publication_date": first.get("published_at", ""),
-                "citation_url": first.get("article_url", ""),
-                "citation_publisher": first.get("publisher", ""),
-                "citation_count": len(citations),
-                # Every publisher, not just the first. `source_count` alone
-                # cannot tell corroboration from republication: in this corpus
-                # every network indicator with more than one publisher is an
-                # aggregator carrying an original researcher's report, and you
-                # need the names to see that.
-                "publishers": "; ".join(record.get("publishers") or []),
-                "action": record.get("action", ""),
-                "priority": record.get("priority", ""),
-                "benign_basis": record.get("benign_basis", "") or "",
-            }
-        )
-        intel = corpus.cve_intel.get(normalized.upper()) if used == "cve" else None
-        if intel:
-            out.update(
-                {
-                    "kev": intel.get("kev", ""),
-                    "kev_due_date": intel.get("kev_due_date", "") or "",
-                    "cvss_score": intel.get("cvss_score", "") if intel.get("cvss_score") is not None else "",
-                    "cvss_severity": intel.get("cvss_severity", "") or "",
-                    "cvss_version": intel.get("cvss_version", "") or "",
-                    "epss_score": intel.get("epss_score", "") if intel.get("epss_score") is not None else "",
-                    "epss_percentile": intel.get("epss_percentile", "")
-                    if intel.get("epss_percentile") is not None
-                    else "",
-                    "epss_date": intel.get("epss_date", "") or "",
-                    "cve_provenance": " ".join(intel.get("provenance") or []),
-                    "cve_observed_on": intel.get("observed_on", "") or "",
-                }
-            )
-        results.append(out)
     return results
+
+
+def _evaluate_row(row: dict[str, str], corpus: Corpus, out: dict[str, Any]) -> dict[str, Any]:
+    raw = row["value"]
+    value, applied = undefang(raw)
+    supplied = (row.get("type") or "").strip().lower()
+    detected = detect_type(value)
+    used = supplied or detected
+    out.update(
+        {
+            "type_supplied": supplied,
+            "type_detected": detected,
+            "type_used": used,
+            "normalization_applied": ",".join(applied),
+        }
+    )
+    if supplied and detected != "unknown" and supplied != detected:
+        # Reported, not resolved. A value whose declared type disagrees with
+        # its shape is worth an analyst's attention either way.
+        out["reason"] = f"type_mismatch:supplied={supplied},detected={detected}"
+
+    reason = skip_reason(value, supplied, detected)
+    if reason:
+        out["status"] = "skipped"
+        out["reason"] = "; ".join(filter(None, (out["reason"], reason)))
+        return out
+
+    normalized = normalize(value, used)
+    out["normalized_value"] = normalized
+
+    excluded = corpus.excluded.get(normalized.lower())
+    if excluded:
+        # "We looked and ruled this out" is not "we have never seen it".
+        out["status"] = "excluded"
+        out["reason"] = "; ".join(
+            filter(None, (out["reason"], ",".join(excluded.get("reason_codes") or [])))
+        )
+        return out
+
+    method, key = corpus.match(normalized, used, original=value)
+    if not method or key is None:
+        out["status"] = "miss"
+        return out
+
+    record = corpus.values[key]
+    citations = [c for c in (record.get("citations") or []) if c.get("article_url")]
+    if not citations:
+        # The specification requires that a value which cannot be cited is not
+        # reported as a hit. Emitting one with a blank citation column would
+        # satisfy the letter of "one row per value" and break the rule the row
+        # exists to enforce.
+        out["status"] = "error"
+        out["reason"] = "; ".join(filter(None, (out["reason"], "missing_citation")))
+        out["matched_value"] = record.get("value", key)
+        out["match_method"] = method
+        return out
+    first = citations[0]
+    out.update(
+        {
+            "status": "hit",
+            "match_method": method,
+            "matched_value": record.get("value", key),
+            "report_count": record.get("report_count", ""),
+            "source_count": record.get("source_count", ""),
+            "first_seen": record.get("first_seen", ""),
+            "last_seen": record.get("last_seen", ""),
+            "publication_date": first.get("published_at", ""),
+            "citation_url": first.get("article_url", ""),
+            "citation_publisher": first.get("publisher", ""),
+            "citation_count": len(citations),
+            # Every publisher, not just the first. `source_count` alone cannot
+            # tell corroboration from republication: in this corpus every
+            # network indicator with more than one publisher is an aggregator
+            # carrying an original researcher's report, and you need the names
+            # to see that.
+            "publishers": "; ".join(record.get("publishers") or []),
+            "action": record.get("action", ""),
+            "priority": record.get("priority", ""),
+            "benign_basis": record.get("benign_basis", "") or "",
+        }
+    )
+    intel = corpus.cve_intel.get(normalized.upper()) if used == "cve" else None
+    if intel:
+        out.update(
+            {
+                "kev": intel.get("kev", ""),
+                "kev_due_date": intel.get("kev_due_date", "") or "",
+                "cvss_score": intel.get("cvss_score", "") if intel.get("cvss_score") is not None else "",
+                "cvss_severity": intel.get("cvss_severity", "") or "",
+                "cvss_version": intel.get("cvss_version", "") or "",
+                "epss_score": intel.get("epss_score", "") if intel.get("epss_score") is not None else "",
+                "epss_percentile": intel.get("epss_percentile", "")
+                if intel.get("epss_percentile") is not None
+                else "",
+                "epss_date": intel.get("epss_date", "") or "",
+                "cve_provenance": " ".join(intel.get("provenance") or []),
+                "cve_observed_on": intel.get("observed_on", "") or "",
+            }
+        )
+    return out
 
 
 def summarize(results: list[dict[str, Any]], snapshot: dict[str, Any]) -> dict[str, Any]:
@@ -427,6 +599,7 @@ def summarize(results: list[dict[str, Any]], snapshot: dict[str, Any]) -> dict[s
 
     return {
         "corpus_version": snapshot.get("corpus_version"),
+        "corpus_version_recomputed": recompute_corpus_version(snapshot),
         "corpus": snapshot.get("corpus"),
         "corpus_generated_at": snapshot.get("generated_at"),
         "public_suffix_list_version": snapshot.get("public_suffix_list_version"),
@@ -457,6 +630,9 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: no snapshot at {snapshot_path}", file=sys.stderr)
         return 2
     snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
+    # Before anything else: a snapshot that does not match its own contents
+    # produces results that look ordinary and are not.
+    verified = verify_snapshot(snapshot)
 
     rows = read_input(Path(args.input))
     if not rows:
@@ -476,7 +652,7 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     combined = summary["network_combined"]
-    print(f"corpus {summary['corpus_version']} covering {summary['corpus']['days']} days")
+    print(f"corpus {verified} covering {summary['corpus']['days']} days (integrity verified)")
     print(f"rows {len(results)} -> {args.output}")
     for kind in sorted(summary["by_type"]):
         bucket = summary["by_type"][kind]

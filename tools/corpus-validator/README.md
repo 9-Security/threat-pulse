@@ -29,7 +29,18 @@ CVE-2026-1234,cve,S000004
 When `type` is absent it is detected from the value's shape. When it is present
 and disagrees with detection, both are reported in `type_supplied` and
 `type_detected`, a `type_mismatch` note is added to `reason`, and the supplied
-type is used. A disagreement is a finding, not something to resolve silently.
+type is used for the lookup. A disagreement is a finding, not something to
+resolve silently.
+
+**A supplied type cannot defeat a safety skip.** The skip checks run against the
+supplied type *and* the detected one, and a skip from either wins. A private
+address labelled `domain` is skipped as `non_public_ip`, not looked up and
+returned as a miss.
+
+**Defanged input is accepted.** `evil[.]com`, `evil(.)com`, `evil[dot]com`,
+`hxxp://` and `hxxps://` are restored before anything else happens, and every
+change is named in the `normalization_applied` column — `defang`,
+`defang_scheme`, `trailing_dot`. Nothing is altered silently.
 
 Do not send internal hostnames, private or reserved addresses, or live
 unresolved indicators. The validator skips them and says so, but the safest
@@ -46,7 +57,16 @@ can rejoin to your own records. `status` is one of:
 | `miss` | this corpus, over the days it covers, does not name it |
 | `excluded` | the pipeline saw it and ruled it out; `reason` gives the codes |
 | `skipped` | not looked up at all; `reason` says why |
-| `error` | the row could not be processed |
+| `error` | the row could not be processed, **or the match cannot be cited** |
+
+A hit that has no citation is returned as `error` with reason `missing_citation`,
+never as a hit with an empty citation column. The specification requires a hit to
+be citable; enforcing that in the reader rather than trusting the data is the
+difference between a rule and an assumption.
+
+Every input row produces exactly one output row. A value that raises while being
+processed becomes an `error` row naming the exception — one bad row cannot end
+the run and cost you the other results.
 
 **`skipped` is never reported as `miss`.** A private address or an internal
 hostname cannot appear in a corpus of published reporting, so answering "not
@@ -65,6 +85,10 @@ Only these three count toward the headline rate:
 | `exact` | the normalized values are identical |
 | `parent_domain` | the submitted host is beneath a domain the corpus named |
 | `same_host` | a submitted URL's host is a value the corpus named |
+
+A submitted URL is tried **whole first**, so a full URL the corpus holds is
+matched as `exact`. Only if that fails is the URL reduced to its host and tried
+again, which is `same_host`. The two are never conflated.
 
 Parent matching **stops at the registrable domain**, using the Public Suffix
 List embedded in the snapshot — the same list, by content digest, that the
@@ -89,7 +113,8 @@ narrower. `summary.json` carries both: `hit_rate` and
 ### Columns
 
 `sample_id`, `value`, `type_supplied`, `type_detected`, `type_used`,
-`normalized_value`, `status`, `reason`, `match_method`, `matched_value`,
+`normalized_value`, `normalization_applied`, `status`, `reason`, `match_method`,
+`matched_value`,
 `report_count`, `source_count`, `first_seen`, `last_seen`, `publication_date`,
 `citation_url`, `citation_publisher`, `citation_count`, `publishers`, `action`,
 `priority`,
@@ -134,12 +159,28 @@ the original alerts can make.
 Citations are checked for existence, not reachability: the validator does not
 open them, because it does not open anything.
 
+## Integrity
+
+**The validator recomputes `corpus_version` from the snapshot's own contents
+before it does anything else, and refuses to run if it does not match.** It also
+checks that the number of values the snapshot claims to hold is the number it
+carries. A truncated, partially written or edited snapshot is rejected rather
+than quietly producing results that look ordinary.
+
+This is an integrity check, not an authenticity one. It proves the file is
+internally consistent and unaltered since it was built; it cannot prove who
+built it. **A SHA-256 that arrives in the same message as the file proves
+neither** — if origin matters to you, ask us for the digest over a channel the
+file did not travel on, or ask for a detached signature and we will arrange a
+key exchange.
+
 ## Reproducibility
 
-`corpus_version` appears in `summary.json` and identifies the corpus state. The
-same version over the same input produces the same result — it is a digest of
-the values, counts, citations, excluded set and boundary rules, and deliberately
-not of the time the snapshot was built.
+`corpus_version` appears in `summary.json`, alongside
+`corpus_version_recomputed`, and identifies the corpus state. The same version
+over the same input produces the same result — it is a digest of the values,
+counts, citations, excluded set and boundary rules, and deliberately not of the
+time the snapshot was built.
 
 `days_with_source_failures` lists any day in the window where a source could not
 be read. A value absent because its publisher was unreachable that day is not
