@@ -3,9 +3,11 @@
 **Date:** 2026-09-12
 **Subject:** measured corpus coverage, and the one input we need from you
 
-Your review of `enrich_observables` set eight conditions and said you would
-proceed with a limited validation pilot once they were addressed. All eight are
-now addressed — the status table is at the end of this note.
+Your review of `enrich_observables` set eight conditions. Five are implemented;
+three — response provenance, citation completeness and CVE provenance separation
+— are specified but not built in the endpoint, because their shape depends on
+what the validation shows. The table at the end says which is which, per
+deliverable.
 
 Before asking you to spend pilot time, we ran our own backtest. One of the two
 numbers is bad, and we would rather you heard it from us first.
@@ -104,16 +106,16 @@ than by severity alone.
 
 ## Status of the eight conditions from your review
 
-| # | item | status |
-|---|---|---|
-| 1 | Response provenance and partial-failure fields | specified |
-| 2 | Citation completeness | specified |
-| 3 | `report_count` vs `source_count` semantics | specified |
-| 4 | Domain-boundary matching via Public Suffix List | implemented, both sides |
-| 5 | Known-benign provenance and versioning | implemented |
-| 6 | CVE provenance separation | specified |
-| 7 | Data handling and retention documentation | written (`docs/data-handling.md`) |
-| 8 | "Safe to automate" claim removed | done throughout |
+| # | item | offline validator | endpoint |
+|---|---|---|---|
+| 1 | Response provenance and partial-failure fields | implemented | **not implemented** |
+| 2 | Citation completeness | implemented | **not implemented** |
+| 3 | `report_count` vs `source_count` semantics | implemented | specified |
+| 4 | Domain-boundary matching via Public Suffix List | implemented | implemented |
+| 5 | Known-benign provenance and versioning | implemented | implemented |
+| 6 | CVE provenance separation | implemented | **not implemented** |
+| 7 | Data handling and retention documentation | written | written, open items named |
+| 8 | "Safe to automate" claim removed | done | done |
 
 The revised specification is `docs/enrich-observables-spec.md`.
 
