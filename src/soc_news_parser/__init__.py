@@ -34,6 +34,7 @@ from .backtest import read_values, run_backtest
 from .backtest import render_markdown as render_backtest_markdown
 from .export_d1 import export_report
 from .report import collect_report, serialize_report
+from .reanalyze import attach_provenance, reanalyze
 from .snapshot import build_snapshot, write_bundle
 from .source_health import (
     DEFAULT_LOOKBACK_DAYS,
@@ -301,6 +302,25 @@ def _arguments() -> argparse.Namespace:
     )
     snapshot.add_argument("--output", required=True, help="directory to write the bundle into")
     snapshot.add_argument("--reports-dir", help="corpus root (default: reports/)")
+
+    reanalysis = subcommands.add_parser(
+        "reanalyze",
+        help="rebuild a stored day's report from its saved article bodies, with the current parser",
+    )
+    reanalysis.add_argument(
+        "--json-report", required=True, help="the stored daily-evidence.json to re-analyse"
+    )
+    reanalysis.add_argument(
+        "--output-dir", required=True, help="directory for the rebuilt report; never the archive itself"
+    )
+    reanalysis.add_argument("--previous-json", help="the previous day's report, for new-IoC marking")
+    reanalysis.add_argument(
+        "--no-enrich",
+        dest="enrich",
+        action="store_false",
+        help="skip KEV/NVD/EPSS lookups",
+    )
+    reanalysis.add_argument("--cache-dir", default=DEFAULT_CACHE_DIR)
 
     schedule = subcommands.add_parser(
         "schedule",
@@ -660,6 +680,66 @@ def main() -> None:
         if args.markdown_output:
             _atomic_write(args.markdown_output, summary)
         print(summary)
+        return
+
+    if args.command == "reanalyze":
+        source = Path(args.json_report)
+        out = Path(args.output_dir)
+        if out.resolve() == source.resolve().parent:
+            # Writing beside the input would overwrite the only copy being
+            # re-analysed before anyone has compared the two.
+            print("error: --output-dir must not be the stored report's own folder", file=sys.stderr)
+            raise SystemExit(2)
+        try:
+            payload = json.loads(source.read_text(encoding="utf-8"))
+            previous = load_previous_iocs(args.previous_json) if args.previous_json else None
+            result = reanalyze(
+                payload,
+                source_path=source,
+                previous_iocs=previous,
+                enricher=lambda manifests: _resolve_intel(args, manifests),
+            )
+        except (OSError, ValueError, json.JSONDecodeError) as error:
+            print(f"error: {error}", file=sys.stderr)
+            raise SystemExit(1) from error
+        out.mkdir(parents=True, exist_ok=True)
+        json_content, markdown_content = serialize_report(result.report)
+        json_content = attach_provenance(json_content, result.provenance)
+        json_output, markdown_output = _write_report_pair(
+            str(out / "daily-evidence.json"),
+            str(out / "daily-report.md"),
+            json_content,
+            markdown_content,
+        )
+        csv_output = _atomic_write(
+            str(out / "iocs.csv"),
+            render_ioc_csv_from_actions(result.report.analyst_brief.actions),
+        )
+        rebuilt = result.report
+        print(
+            json.dumps(
+                {
+                    "report_id": rebuilt.report_id,
+                    "window_start": rebuilt.window_start,
+                    "window_end": rebuilt.window_end,
+                    "collected_article_count": rebuilt.collected_article_count,
+                    "article_count": rebuilt.article_count,
+                    "excluded_article_count": rebuilt.excluded_article_count,
+                    "confirmed_ioc_count": rebuilt.confirmed_ioc_count,
+                    "patch_count": rebuilt.analyst_brief.patch_count,
+                    "block_count": rebuilt.analyst_brief.block_count,
+                    "hunt_count": rebuilt.analyst_brief.hunt_count,
+                    "original": result.provenance["original"],
+                    "stored_articles_with_body": result.provenance["stored_articles_with_body"],
+                    "unknown_sources_skipped": result.provenance["unknown_sources_skipped"],
+                    "json_output": json_output,
+                    "markdown_output": markdown_output,
+                    "csv_output": csv_output,
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
         return
 
     if args.command == "snapshot":
