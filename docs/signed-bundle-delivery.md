@@ -1,3 +1,7 @@
+> **Not sent.** This note was prepared for the 2026-09-12 bundle, which was never
+> delivered: two of its days were incomplete copies. It is superseded by
+> `signed-bundle-delivery-2026-09-14.md`. Do not send it.
+
 # Signed bundle: delivery
 
 **Date:** 2026-09-12
