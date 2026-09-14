@@ -9,6 +9,8 @@
 
 import pslRules from "./psl.json";
 import { assess, renderHeartbeat, taipeiDate, type HeartbeatState } from "./heartbeat";
+import { classifySearchText, MAX_BATCH, partition, type Skipped } from "./guard";
+import { lookupAccepted, statusOf, type LookupError } from "./lookup";
 
 export interface Env {
   DB: D1Database;
@@ -30,8 +32,15 @@ const PSL_EXCEPTION = new Set(pslRules.exception);
 const PROTOCOL_VERSION = "2025-06-18";
 const MAX_LIMIT = 200;
 const DEFAULT_LIMIT = 40;
-/** A log can name many hosts; cap the batch so one call cannot scan forever. */
-const MAX_BATCH = 100;
+/**
+ * Wall-clock budget for one lookup call. D1 caps a single query at 30 s; this caps
+ * the whole call well below that, so a slow database produces an explicit partial
+ * response the caller can act on instead of a hung request. It is checked before
+ * each D1 query, so a call can overrun it by at most one query.
+ */
+const LOOKUP_BUDGET_MS = 10_000;
+/** Largest JSON-RPC body accepted. A full batch at the per-value length cap fits several times over. */
+const MAX_BODY_BYTES = 256 * 1024;
 
 type Json = Record<string, unknown>;
 
@@ -195,7 +204,7 @@ const TOOLS = [
   {
     name: "search_confirmed_iocs",
     description:
-      "Search confirmed indicators across every ingested day. Filter by text, action (patch/block/hunt), indicator_type, or a single date.",
+      "Search confirmed indicators across every ingested day. Filter by text, action (patch/block/hunt), indicator_type, or a single date. A query that is a private or reserved address, an internal hostname, or a URL with credentials is refused with status skipped rather than searched.",
     inputSchema: {
       type: "object",
       properties: {
@@ -211,7 +220,7 @@ const TOOLS = [
   {
     name: "lookup_ioc",
     description:
-      "Look one indicator up across every day. For a hostname it also tries each parent domain, so a log's FQDN still matches a report's apex.",
+      "Look one indicator up across every day. For a hostname it also tries each parent domain, so a log's FQDN still matches a report's apex. A private or reserved address, internal hostname or URL with credentials is returned with status skipped and is never looked up.",
     inputSchema: {
       type: "object",
       properties: {
@@ -224,7 +233,7 @@ const TOOLS = [
   {
     name: "lookup_iocs",
     description:
-      "Look up many indicators at once - the values pulled out of a log - and get every day each one was reported. Up to 100 per call.",
+      "Look up to 100 indicators at once - the values pulled out of a log. Every submitted value comes back exactly once, in items, skipped or errors, with its input_index. Private and reserved addresses, internal hostnames, URLs with credentials and values past the 100th are skipped with a reason and never looked up; a value whose lookup did not complete is an error, never a miss. status is complete, partial or failed.",
     inputSchema: {
       type: "object",
       properties: {
@@ -285,6 +294,10 @@ async function searchIocs(env: Env, args: Json, caller: Caller): Promise<Json> {
     binds.push(args.indicator_type.toLowerCase());
   }
   if (typeof args.query === "string" && args.query.trim()) {
+    // A pasted private address or internal name is refused before it reaches a
+    // query. Plain words are search terms and pass.
+    const refused = classifySearchText(args.query);
+    if (refused) return { status: "skipped", reason: refused, count: 0, truncated: false, items: [] };
     clauses.push("(value LIKE ? OR article_title LIKE ? OR reason LIKE ?)");
     const like = `%${args.query.trim()}%`;
     binds.push(like, like, like);
@@ -297,81 +310,71 @@ async function searchIocs(env: Env, args: Json, caller: Caller): Promise<Json> {
     .bind(...binds, limit)
     .all<Json>();
   return {
+    status: "complete",
     count: results.length,
     truncated: results.length >= limit,
     items: results.map((row) => rowToHit(row, caller)),
   };
 }
 
-async function lookupMany(env: Env, values: string[], since: string | null, caller: Caller) {
-  const wanted = values
-    .filter((v) => typeof v === "string" && v.trim())
-    .slice(0, MAX_BATCH)
-    .map((v) => v.trim());
+interface LookupOutcome {
+  status: "complete" | "partial" | "failed";
+  truncated: boolean;
+  requested: number;
+  items: Json[];
+  skipped: Skipped[];
+  errors: LookupError[];
+}
 
-  const candidateMap = new Map<string, string[]>();
-  const allCandidates = new Set<string>();
-  for (const value of wanted) {
-    // A hash or CVE is matched as given; only hosts expand upward. The
-    // expansion walks ~10,300 suffix rules, so it is computed inside the branch
-    // that uses it -- a batch of 100 hashes previously paid for 100 walks and
-    // discarded every one, on a Worker billed per request.
-    const list = /^[0-9a-f]{32,64}$/i.test(value) || /^cve-/i.test(value)
-      ? [value.toLowerCase()]
-      : hostCandidates(value);
-    candidateMap.set(value, list);
-    list.forEach((c) => allCandidates.add(c));
-  }
-  if (allCandidates.size === 0) return [];
-
-  // D1 allows 100 bound parameters per query, and one hostname expands to a
-  // candidate per label, so 40 FQDNs already overrun a single statement.
-  const PARAMS_PER_QUERY = 90;
-  const byValue = new Map<string, Json[]>();
-  const candidates = [...allCandidates];
-  for (let start = 0; start < candidates.length; start += PARAMS_PER_QUERY) {
-    const chunk = candidates.slice(start, start + PARAMS_PER_QUERY);
-    const placeholders = chunk.map(() => "?").join(",");
-    const binds: unknown[] = [...chunk];
-    // value_lc is indexed; wrapping the column in LOWER() would force a scan.
-    let sql = `SELECT * FROM indicators WHERE value_lc IN (${placeholders})`;
-    if (since) {
-      sql += " AND report_date >= ?";
-      binds.push(since);
-    }
-    sql += " ORDER BY report_date DESC";
-    const { results } = await env.DB.prepare(sql).bind(...binds).all<Json>();
-    for (const row of results) {
-      const key = String(row.value).toLowerCase();
-      if (!byValue.has(key)) byValue.set(key, []);
-      byValue.get(key)!.push(row);
-    }
-  }
-
-  return wanted.map((value) => {
-    const candidates = candidateMap.get(value) ?? [];
-    const hits: Json[] = [];
-    let matchedOn: string | null = null;
-    for (const candidate of candidates) {
-      const rows = byValue.get(candidate);
-      if (rows && rows.length) {
-        matchedOn = candidate;
-        hits.push(...rows.map((row) => rowToHit(row, caller)));
-        break; // the most specific match wins
+/**
+ * Look submitted values up. Skipping happens first, in guard.ts, so a private
+ * address or internal hostname never reaches a statement; the rules for what counts
+ * as looked up, failed or out of time live in lookup.ts, where they are tested
+ * against a fake database. This function only supplies the real one.
+ */
+async function lookupMany(
+  env: Env,
+  values: unknown,
+  since: string | null,
+  caller: Caller,
+): Promise<LookupOutcome> {
+  const split = partition(values, MAX_BATCH);
+  const { items, errors } = await lookupAccepted<Json>(split.accepted, {
+    // A hash or CVE is matched as given; only hosts expand upward. The expansion
+    // walks ~10,300 suffix rules, so it is computed only where it is used.
+    expand: (value) =>
+      /^[0-9a-f]{32,64}$/i.test(value) || /^cve-/i.test(value)
+        ? [value.toLowerCase()]
+        : hostCandidates(value),
+    query: async (chunk) => {
+      const binds: unknown[] = [...chunk];
+      // value_lc is indexed; wrapping the column in LOWER() would force a scan.
+      let sql = `SELECT * FROM indicators WHERE value_lc IN (${chunk.map(() => "?").join(",")})`;
+      if (since) {
+        sql += " AND report_date >= ?";
+        binds.push(since);
       }
-    }
-    const dates = [...new Set(hits.map((h) => String(h.report_date)))].sort();
-    return {
-      value,
-      found: hits.length > 0,
-      matched_on: matchedOn,
-      exact: matchedOn !== null && matchedOn === value.toLowerCase(),
-      first_seen: dates[0] ?? null,
-      last_seen: dates[dates.length - 1] ?? null,
-      seen_on: dates,
-      hits,
-    };
+      sql += " ORDER BY report_date DESC";
+      const { results } = await env.DB.prepare(sql).bind(...binds).all<Json>();
+      return results;
+    },
+    keyOf: (row) => String(row.value).toLowerCase(),
+    toHit: (row) => rowToHit(row, caller),
+    now: () => Date.now(),
+    budgetMs: LOOKUP_BUDGET_MS,
+    // D1 allows 100 bound parameters per statement, and one hostname expands to a
+    // candidate per label, so 40 FQDNs already overrun a single statement. 90 leaves
+    // room for the date bound.
+    chunkSize: 90,
   });
+  return {
+    status: statusOf(items.length, errors.length),
+    truncated: split.truncated,
+    requested: split.requested,
+    items,
+    skipped: split.skipped,
+    errors,
+  };
 }
 
 /* ------------------------------------------------------------ dispatch --- */
@@ -385,20 +388,43 @@ async function callTool(name: string, args: Json, env: Env, caller: Caller): Pro
     case "search_confirmed_iocs":
       return searchIocs(env, args, caller);
     case "lookup_ioc": {
-      const value = typeof args.value === "string" ? args.value : "";
-      if (!value) return { error: "value is required" };
-      const [only] = await lookupMany(env, [value], validDate(args.since), caller);
-      return only ?? { value, found: false, hits: [] };
+      if (typeof args.value !== "string" || !args.value.trim()) return { error: "value is required" };
+      const outcome = await lookupMany(env, [args.value], validDate(args.since), caller);
+      // A skipped or failed lookup carries no `found` field at all, so no caller
+      // can read it as a miss.
+      if (outcome.skipped.length) {
+        const { value, reason } = outcome.skipped[0];
+        return { status: "skipped", value, reason };
+      }
+      if (outcome.errors.length) {
+        const { value, reason } = outcome.errors[0];
+        return { status: "failed", value, reason };
+      }
+      return { status: "complete", ...outcome.items[0] };
     }
     case "lookup_iocs": {
-      const values = Array.isArray(args.values) ? (args.values as string[]) : [];
-      if (!values.length) return { error: "values must be a non-empty array" };
-      const items = await lookupMany(env, values, validDate(args.since), caller);
+      if (!Array.isArray(args.values) || !args.values.length) {
+        return { error: "values must be a non-empty array" };
+      }
+      const outcome = await lookupMany(env, args.values, validDate(args.since), caller);
+      const found = outcome.items.filter((i) => i.found).length;
       return {
-        requested: values.length,
-        examined: items.length,
-        found: items.filter((i) => i.found).length,
-        items,
+        status: outcome.status,
+        truncated: outcome.truncated,
+        counts: {
+          requested: outcome.requested,
+          processed: outcome.items.length,
+          skipped: outcome.skipped.length,
+          failed: outcome.errors.length,
+          found,
+        },
+        items: outcome.items,
+        skipped: outcome.skipped,
+        errors: outcome.errors,
+        // Kept for callers written against the earlier response shape.
+        requested: outcome.requested,
+        examined: outcome.items.length,
+        found,
       };
     }
     default:
@@ -591,9 +617,15 @@ export default {
       );
     }
 
+    const tooLarge = () =>
+      rpcError(null, -32600, `request body exceeds ${MAX_BODY_BYTES} bytes`, 413);
+    if (Number(request.headers.get("content-length") ?? "0") > MAX_BODY_BYTES) return tooLarge();
     let body: Json;
     try {
-      body = (await request.json()) as Json;
+      // Read as text first: the content-length header is optional and can lie.
+      const raw = await request.text();
+      if (new TextEncoder().encode(raw).length > MAX_BODY_BYTES) return tooLarge();
+      body = JSON.parse(raw) as Json;
     } catch {
       return rpcError(null, -32700, "parse error");
     }
@@ -623,7 +655,7 @@ export default {
           const result = await callTool(name, args, env, caller);
           return rpcResult(id, {
             content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
-            isError: Boolean((result as Json).error),
+            isError: Boolean((result as Json).error) || (result as Json).status === "failed",
           });
         } catch (error) {
           return rpcResult(id, {

@@ -463,8 +463,12 @@ hostnames are returned in `skipped`, not searched and not reported as `unseen`.
 | `reason_code` | **NEW** — stable code so consumers never parse prose. |
 | `reason` | Human text alongside the code. |
 
-Skipped reason codes: `unsupported_type`, `invalid_value`, `private_ip`,
-`internal_hostname`, `sensitive_url`, `request_limit`.
+Skipped reason codes, shared with the hosted query service and defined in
+[`query-service-limits.md`](query-service-limits.md): `empty_value`,
+`invalid_value`, `non_public_ip`, `internal_hostname`, `sensitive_url`,
+`request_limit`. The first draft's `unsupported_type` and `private_ip` are gone:
+the service does not classify observable types, and `non_public_ip` is the name
+the offline validator already uses.
 
 ---
 
@@ -592,26 +596,27 @@ claim as verified against the running code, an operational commitment, or an
 open item. In summary:
 
 - Requests carry customer-derived observables and are treated as customer data.
-- Private addresses and internal hostnames are skipped, not searched, not logged
-  as corpus input.
+- Addresses that are not globally reachable, internal hostnames and URLs carrying
+  credentials are skipped server-side, before any database statement is built.
 - Submitted values are **not** used to build or improve the corpus.
 - Authentication is a per-client bearer token; only its SHA-256 is stored, and
   tokens are revocable individually.
 
-- Request values are logged nowhere. The Worker contains no logging statement,
-  and its only write is a usage counter on the calling token; every other
+- Request values are logged nowhere. The Worker's per-request invocation logs are
+  disabled, its only console output is the heartbeat's, which carries no request
+  data, and its only write is a usage counter on the calling token; every other
   statement is a `SELECT`, so no path exists by which a submitted value could
   reach the corpus.
-- Cloudflare is the only subprocessor on the query path. The D1 primary is in
-  APAC but is **not pinned by configuration**, which that document states rather
-  than glosses over.
+- Cloudflare is the only subprocessor on the query path. Where a request is
+  processed and where the corpus is stored **cannot be pinned on this account**;
+  that document says exactly what is and is not controlled.
 - There is no tenant partitioning, deliberately: the corpus is published
   third-party reporting and queries are never stored, so there is nothing
   belonging to one caller for another to reach.
-- Two behaviours this specification promises are not implemented yet — reporting
-  `truncated`/`skipped` on over-limit batches, and skipping private addresses
-  server-side. Both are listed as open in that document rather than described as
-  working.
+- Over-limit values are returned in `skipped` with `request_limit` and flagged
+  `truncated`, and every lookup reports `status` with per-value `errors` instead of
+  silent misses. Both were open and are implemented; the limits, timeouts and error
+  rules are in [`query-service-limits.md`](query-service-limits.md).
 
 ---
 

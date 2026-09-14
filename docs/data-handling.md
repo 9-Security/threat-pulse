@@ -1,15 +1,20 @@
 # Data handling for the IoC query service
 
-**Status:** answers prerequisite 7 of the `enrich_observables` review
+**Status:** answers prerequisite 7 of the `enrich_observables` review; revised
+2026-09-14 for the three items the review listed as blockers for an endpoint pilot
 **Scope:** the query path — the Cloudflare Worker at `deploy/worker/` and the D1
 database behind it. The daily collector and report email are a separate path and
 are described at the end.
 **Audience:** whoever has to sign off on sending observables to this service.
 
-Claims below are marked **verified** where they were checked against the code
-that runs, and **operational** where they are a commitment rather than something
-the code enforces. One item is marked **to confirm** because it depends on an
-account setting rather than this repository.
+Claims below are marked **verified** where they were checked against the code that
+runs or the account it runs on, **operational** where they are a commitment rather
+than something the code enforces, and **not controllable** where this account cannot
+enforce them. Limits, timeouts and error rules are in
+[`query-service-limits.md`](query-service-limits.md).
+
+The service runs on a Cloudflare **Workers Free** account. Where a statement depends
+on the plan, it is stated for that plan.
 
 ---
 
@@ -17,50 +22,63 @@ account setting rather than this repository.
 
 **Not by this service. Verified.**
 
-The Worker contains no logging statement of any kind — there is no `console.*`
-call in `deploy/worker/src/index.ts`. Nothing writes a submitted value to a log,
-a table, or a file.
+The query path contains no logging statement. The only `console` output in the Worker
+comes from the daily heartbeat check and its test endpoint, and neither includes a
+submitted value: they record the newest report date and, for a test send, the calling
+token's label. Nothing writes a submitted value to a log, a table or a file.
 
-Cloudflare Workers Logs is enabled (`[observability] enabled = true` in
-`wrangler.toml`). It captures invocation metadata and uncaught exceptions, not
-request bodies. Observables travel in the body of `POST /mcp`, never in a URL or
-query string, so they are outside what that captures.
+**Per-request invocation logs are disabled** (`invocation_logs = false` under
+`[observability.logs]` in `wrangler.toml`). Cloudflare describes invocation logs as
+recording "the Request, Response, and related metadata" without saying which request
+headers that includes, so a Bearer token may have been among them. Rather than depend
+on an unverified reading of what was captured, they are off.
 
-One honest limit: the service's own error text does not interpolate submitted
-values — the error strings are fixed (`"value is required"`,
-`"values must be a non-empty array"`, `"unknown tool: …"`). An *unexpected*
-runtime exception is returned as `tool <name> failed: <the exception's own
-message>`, and that message is written by the runtime rather than by this
-service. No case of a D1 error carrying a bound parameter has been observed, but
-this is stated as a limit rather than claimed impossible.
+**Not established:** whether invocation logs written before that change held the
+`Authorization` header. On this plan logs are kept for 3 days, so any such entries
+expire within 3 days of the change being deployed. The one client token in use should
+be rotated after that.
+
+Observables travel in the body of `POST /mcp`, never in a URL or query string.
+
+A lookup whose database statement fails returns the fixed reason `lookup_failed`; the
+database's message is neither returned nor logged. Other tools can still return an
+unexpected runtime exception as `tool <name> failed: <message>`, written by the
+runtime rather than by this service. No case of that message carrying a bound
+parameter has been observed, and it is stated as a limit rather than claimed
+impossible.
 
 ## Log retention and deletion
 
-**To confirm.** Workers Logs retention is a Cloudflare account and plan setting,
-not something this repository configures. It governs invocation metadata and
-exception text only; there are no request values in it to retain.
+**Verified for this account.** Workers Logs keeps what it stores for **3 days** on the
+Free plan (7 days on Paid). With invocation logs off, what it stores is the
+heartbeat's console lines, which carry no request data. The Worker has no Logpush
+export (`logpush: false` in its settings).
 
-D1 holds no request values at all, so there is nothing to retain or delete
-there. See the next section.
-
-If the reviewing party would prefer no invocation logging at all, setting
-`enabled = false` under `[observability]` removes it entirely, at the cost of
-losing the ability to diagnose a fault after the fact.
+D1 holds no request values, so there is nothing to retain or delete there.
 
 ## Data residency and subprocessors
 
-**Subprocessor on the query path: Cloudflare, Inc.** — Workers for execution, D1
-for storage. There is no other.
+**Subprocessor on the query path: Cloudflare, Inc.** — Workers for execution, D1 for
+storage. There is no other.
 
-**Residency:** the D1 primary is in Cloudflare's APAC region; queries from Taiwan
-are served by the Tokyo (NRT) colo. **No `location_hint` is configured**, so the
-primary was selected by Cloudflare at database creation and is not pinned by
-this repository. Reads may be served from other locations. If residency must be
-guaranteed rather than observed, the database has to be recreated with an
-explicit location hint — this is a real limitation, not a formality.
+**Where a request is processed: not controllable on this account.** A Worker runs in
+whichever Cloudflare data center receives the request. Restricting that to a region
+is Cloudflare's Regional Services, an Enterprise add-on this account does not have. A
+submitted value exists only in memory for the duration of the request; it is not
+stored and, as above, not logged.
 
-Email delivery of the daily report uses Resend, which is **not** on the query
-path and never receives a submitted observable.
+**Where the corpus is stored: observed, not enforced.** The D1 database runs in APAC
+with read replication disabled, so there is a single copy. No stronger statement is
+available: a D1 location hint is best-effort by Cloudflare's own description, the
+jurisdictions D1 offers are the EU and FedRAMP with none for APAC, and a jurisdiction
+cannot be added to a database after it is created. The corpus is derived from
+published reporting and contains no customer data.
+
+**Where residency has to be guaranteed**, the offline validation bundle already does
+it: the corpus travels to the consumer and submitted values never leave their network.
+
+Email delivery of the daily report uses Resend, which is **not** on the query path and
+never receives a submitted observable.
 
 ## Whether submitted values build or improve the corpus
 
@@ -74,69 +92,73 @@ UPDATE tokens SET last_used_at = ?, call_count = call_count + 1
   WHERE token_sha256 = ?
 ```
 
-Every other statement is a `SELECT`. Submitted values become bound parameters in
-a comparison and are discarded when the response is returned. There is no code
-path by which a queried value could reach the corpus, because there is no
-insert to reach.
+Every other statement is a `SELECT`. Submitted values become bound parameters in a
+comparison and are discarded when the response is returned. There is no code path by
+which a queried value could reach the corpus, because there is no insert to reach.
 
-The corpus is built solely by the daily collector, from published vendor and
-CERT reporting. Nothing a caller sends influences it.
+The corpus is built solely by the daily collector, from published vendor and CERT
+reporting. Nothing a caller sends influences it.
 
 ## Authentication and tenant isolation
 
 **Authentication.** A bearer token per client. Only its SHA-256 is stored; the
-plaintext is displayed once at issue and cannot be recovered. Tokens carry
-scopes (`read`, `context`) and are revoked individually, so a leak invalidates
-one caller rather than all of them. `last_used_at` and `call_count` make an
-unused or runaway token visible.
+plaintext is displayed once at issue and cannot be recovered. Tokens carry scopes
+(`read`, `context`) and are revoked individually, so a leak invalidates one caller
+rather than all of them. `last_used_at` and `call_count` make an unused or runaway
+token visible.
 
-**Tenant isolation — stated plainly, because the honest answer is not "yes".**
-There is no tenant partitioning: every valid token reads the same corpus. That
-is deliberate. The corpus is published third-party reporting; it contains no
-customer-specific data, so there is nothing belonging to one caller for another
-to reach.
+**Tenant isolation — stated plainly, because the honest answer is not "yes".** There
+is no tenant partitioning: every valid token reads the same corpus. That is
+deliberate. The corpus is published third-party reporting; it contains no
+customer-specific data, so there is nothing belonging to one caller for another to
+reach.
 
-The isolation question that does matter is whether one caller's *queries* are
-visible to another. They are not, because they are not stored — see the previous
-section. What one token can learn about another is limited to nothing: token
-rows are never read back through the API.
+The isolation question that does matter is whether one caller's *queries* are visible
+to another. They are not, because they are not stored — see the sections above. What
+one token can learn about another is limited to nothing: token rows are never read
+back through the API.
 
-`context` — a verbatim source sentence, capped at 300 characters — is released
-only to a token holding that scope. A `read`-only token receives every hit and
-every citation link and follows it to the publisher.
+`context` — a verbatim source sentence, capped at 300 characters — is released only to
+a token holding that scope. A `read`-only token receives every hit and every citation
+link and follows it to the publisher.
 
 ## Maximum request and response sizes
 
-| limit | value | constant |
+| limit | value | when exceeded |
 |---|---|---|
-| values per batch | 100 | `MAX_BATCH` |
-| rows per response | 200 | `MAX_LIMIT` |
-| rows by default | 40 | `DEFAULT_LIMIT` |
+| values per `lookup_iocs` call | 100 | values from position 100 on are returned in `skipped` with `request_limit`, and `truncated` is true |
+| characters per value | 512 | skipped, `invalid_value` |
+| dot-separated labels per value | 16 | skipped, `invalid_value` |
+| request body | 256 KiB | HTTP 413; nothing is looked up |
+| rows per search response | 200, default 40 | `truncated` is true |
 | `context` per row | 300 characters | export-time cap |
 
-**A known gap:** values beyond 100 are currently dropped silently
-(`.slice(0, MAX_BATCH)`). The specification promises a `truncated` field and a
-`skipped` bucket so a caller can tell; the current implementation does neither.
-This is listed as a prerequisite rather than described as working.
+**Verified by test.** The earlier gap — values past the 100th dropped with nothing to
+say which — is closed. Every submitted value now comes back exactly once, in `items`,
+`skipped` or `errors`, with its position.
 
-## URLs containing credentials, query strings, fragments, or tokens
+## Values the service will not look up
 
-**Today, a value is matched exactly as given.** The service lowercases it and
-normalises defanging (`evil[.]com`, `hxxp://`); it does not strip anything else.
-A URL submitted whole is used as a lookup key including its query string.
+**Skipped before any database statement is built. Verified by test.**
 
-Because nothing is stored, a credential in a submitted URL is not retained — but
-it does travel to Cloudflare in the request body, and that is avoidable at the
-caller's end.
+- addresses that are not globally reachable — private, loopback, link-local, shared,
+  documentation, reserved, unique-local and the like — reason `non_public_ip`;
+- internal hostnames — single-label names and names under `.local`, `.internal`,
+  `.corp`, `.lan`, `.home.arpa`, `.localdomain` or `.intranet` — reason
+  `internal_hostname`;
+- URLs carrying a username or password — reason `sensitive_url`.
 
-**Callers should strip credentials, query strings and fragments** unless exact
-full-URL matching is genuinely required. The specification also calls for
-private addresses and clearly internal hostnames to be returned in a `skipped`
-bucket rather than searched, so an internal hostname never leaves the caller's
-own inference — **that behaviour is specified and not yet implemented.**
+A test composes the input guard with the lookup against a fake database and asserts
+that none of these reaches a statement. The first two use the same classification and
+the same reason codes as the offline validator. Free-text search refuses a query that
+is plainly one of these, but not a single word: `ransomware` and `dc01` are searched,
+`dc01.corp` is refused.
 
-Until it is, the recommendation stands as caller guidance rather than a
-server-side guarantee, and it is described that way here on purpose.
+**Still sent as given:** a URL's query string and fragment are not stripped, and
+defanged values such as `evil[.]com` are not restored — the hosted service matches the
+value it receives, lowercased. Callers should send real values and strip query strings
+and fragments unless exact full-URL matching is needed. The offline validator, by
+contrast, does restore defanged values.
 
 ---
 
@@ -144,19 +166,18 @@ server-side guarantee, and it is described that way here on purpose.
 
 Separate from the query path, and it receives nothing from callers.
 
-- The collector reads public RSS/Atom feeds and article pages over HTTPS,
-  restricted to configured hosts and public IP addresses, with redirects
-  re-validated and a 12 MiB decompressed ceiling.
+- The collector reads public RSS/Atom feeds and article pages over HTTPS, restricted
+  to configured hosts and public IP addresses, with redirects re-validated and a
+  12 MiB decompressed ceiling.
 - Full article bodies stay in the audit JSON on the collecting host. They are
-  **never** uploaded to D1 — 26 publishers' text, several under redistribution
-  terms, and no query needs it.
-- Reports are emailed through Resend to `RESEND_TO`. Operational failure alerts
-  go to `ALERT_TO`, a separate address, so report recipients receive no
-  operational noise. Three conditions alert: the unit failing, the corpus not
-  growing, and a source that has failed on every run for consecutive days. The
-  last is reported at two days and at each doubling, because a source failing is
-  not urgent — the report still goes out — but must not be able to stay broken
-  silently, which it did for four days.
+  **never** uploaded to D1 — 26 publishers' text, several under redistribution terms,
+  and no query needs it.
+- Reports are emailed through Resend to `RESEND_TO`. Operational failure alerts go to
+  `ALERT_TO`, a separate address, so report recipients receive no operational noise.
+  Three conditions alert from the collecting host: the unit failing, the corpus not
+  growing, and a source that has failed on every run for consecutive days. A fourth
+  runs on Cloudflare and alerts when the day's report has not arrived, because the
+  first three need the host alive to send them.
 - Credentials live in an `EnvironmentFile` owned by the service account at mode
   `0600` and are never passed on a command line.
 
@@ -168,8 +189,14 @@ Listed together so none of it has to be inferred from the prose above.
 
 | item | state |
 |---|---|
-| Workers Logs retention period | to confirm from the Cloudflare account |
-| D1 residency pinned by configuration | no — observed APAC, not enforced |
-| `truncated` / `skipped` reporting on over-limit batches | specified, not implemented |
-| Server-side skipping of private IPs and internal hostnames | specified, not implemented |
+| Region where a request is processed | **not controllable** on this account; an Enterprise add-on |
+| D1 location pinned by configuration | **not possible** — location hints are best-effort, there is no APAC jurisdiction, and one cannot be added after creation; observed APAC, single copy |
+| Whether pre-change invocation logs held the `Authorization` header | not established; they expire within 3 days of deployment, after which the client token is rotated |
+| Defanged values and URL query strings on the hosted service | sent and matched as given, not normalised server-side |
+| Per-token rate limiting | not implemented |
+| CPU limit on a maximum-size batch | 10 ms on this plan; a full batch is not guaranteed to complete — see `query-service-limits.md` |
 | Tenant partitioning of the corpus | not present, and deliberately so |
+
+No longer in this table, as of this revision: reporting of `truncated` and `skipped`
+on over-limit batches, and server-side skipping of private addresses and internal
+hostnames. Both are implemented and tested.

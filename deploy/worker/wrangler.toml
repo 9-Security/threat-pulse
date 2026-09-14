@@ -13,6 +13,14 @@ database_id = "819cd0ac-bd1a-43bd-91fd-9a21a9d34dd3"
 [observability]
 enabled = true
 
+# Invocation logs record "the Request, Response, and related metadata" of every
+# call, kept for up to 7 days, and Cloudflare's documentation does not say which
+# request headers that includes. A Bearer token could be among them. Rather than
+# depend on an unverified reading of what is captured, the per-request log is off.
+# The heartbeat's own console lines, which carry no request data, are still kept.
+[observability.logs]
+invocation_logs = false
+
 # 04:00 UTC is 12:00 Asia/Taipei. The collector starts at 06:00 Taipei and its
 # unit cannot run past a 3h timeout, so a healthy corpus holds today's report
 # three hours before this fires. Earlier would race a slow day and alarm on a
