@@ -39,6 +39,32 @@ not carry the ZIP**, as required. A key that arrives in the same message as the
 file it authenticates establishes nothing: an attacker who can replace the file
 can replace the key beside it.
 
+### What to compare
+
+Compare the **entire public key line**, or the SHA-256 of that line, against the
+value received on the separate channel. Compute the hash from the key you actually
+verified the bundle with:
+
+```bash
+printf %s '<the key line you verified the bundle with>' | sha256sum
+```
+
+Nothing shorter authenticates the key:
+
+- **The Key ID is not a fingerprint.** It is eight bytes stored beside the Ed25519
+  key, not derived from it. We generated a throwaway key carrying this project's
+  Key ID and signed a file with it; minisign verified both the signature and the
+  trusted comment. A matching Key ID only says which key a signature *claims*.
+- **The leading characters of the key line are not a fingerprint either.** They
+  encode the algorithm and the Key ID; the forged key's line began with the same
+  thirteen characters as ours.
+
+If the key you verified with was received alongside the bundle, the signature
+still proves the bundle is unaltered relative to that key. It says nothing about
+origin until the full key or its SHA-256 has been confirmed on the separate
+channel. That confirmation can happen after verification; nothing needs to be
+re-signed.
+
 Once you hold the key, keep it. Later deliveries are verified against the key
 you already have, not against one that arrives with them. If a delivery ever
 carries a different key, that is not a key rotation — treat it as a failed
