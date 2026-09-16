@@ -36,7 +36,7 @@ wrong match as if it were the right one.
 
 | limit | Workers Free |
 |---|---|
-| CPU time per request | 10 ms |
+| CPU time per request | 10 ms documented; measured behaviour below |
 | D1 statements per invocation | 50 |
 | D1 statement duration | 30 s |
 | D1 bound parameters per statement | 100 |
@@ -65,23 +65,36 @@ count and expand anyway.
 
 ### CPU time: the one limit that cannot become a partial response
 
-On the Free plan a request that uses more than 10 ms of CPU is terminated by the
-platform. The caller receives a Cloudflare error rather than a JSON-RPC response, so
-there is no `status`, no `errors` and no way to tell which values were looked up.
+CPU is the one limit this service cannot turn into a `partial` response. If the
+platform ends a request for using too much CPU, the caller gets a Cloudflare error
+instead of a JSON-RPC response: no `status`, no `errors`, and no way to tell which
+values were looked up.
 
-Measured before this change was deployed, from one host:
+Measured 2026-09-14 against the deployed service (version `d0068328`), as timed
+groups of requests read back from Cloudflare's request analytics:
 
-- a batch of 100 three-label hostnames completed in 0.39–0.71 s with a 24.8 KB
-  response, three runs out of three;
-- over the previous week, 24 calls: CPU p50 1.0 ms and p99 7.1 ms, wall time p50
-  1.7 ms and p99 1.08 s.
+| request | CPU p50 | CPU p90–p99 | wall time | response |
+|---|---|---|---|---|
+| 100 values × 16 labels — the worst case, 17 D1 statements | 13.9 ms | 23.2 ms | 1.0–1.4 s | 35 KB |
+| 6 mixed values | 2.4 ms | 4.5 ms | — | — |
+| 300 KB body rejected with 413 | 3.6 ms | 5.9 ms | — | — |
 
-A p99 of 7.1 ms is close enough to 10 ms that a maximum-size batch is **not
-guaranteed** to complete. These are single-host measurements, not the pilot's latency
-figures, and the worst case is to be measured again against the deployed change.
+All 13 worst-case requests returned a normal response; none was terminated. Only that
+worst-case batch goes over 10 ms at all, and a typical batch stays several times
+inside it.
+
+An earlier revision of this page said a request over 10 ms "is terminated by the
+platform". That was written from the documented limit rather than from a measurement,
+and the measurement contradicts it. What remains true is that 10 ms is the documented
+limit and exceeding it is not something a caller can rely on: these numbers describe
+what was observed on one day, not a guarantee.
 
 **What a caller should do:** treat a platform error or a timeout as *every value in
 the call unknown* — never as misses — and retry with a smaller batch.
+
+**Before an endpoint pilot** the account is to be moved to Workers Paid, where CPU
+per request defaults to 30 s and D1 allows 1000 statements per invocation. This page
+will carry the numbers of whichever plan is in effect when the endpoint is used.
 
 ## Timeouts
 
@@ -219,3 +232,11 @@ it as a miss.
 A query is refused only where the text is plainly an address that is not globally
 reachable, an internal dotted name, or a URL carrying credentials. A single word is a
 search term: `ransomware` and `dc01` are searched; `dc01.corp` and `10.0.0.5` are not.
+
+## Checking a change after it is deployed
+
+A deploy does not reach every location at once. Of 14 checks run within seconds of the
+2026-09-14 deploy, one was answered by the previous version and returned the old
+response shape; five retries of the same check minutes later were all correct. A live
+check that disagrees with the code just deployed should be repeated before it is
+recorded as a failure.

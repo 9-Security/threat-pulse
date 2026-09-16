@@ -194,7 +194,7 @@ Listed together so none of it has to be inferred from the prose above.
 | Whether pre-change invocation logs held the `Authorization` header | not established; they expire within 3 days of deployment, after which the client token is rotated |
 | Defanged values and URL query strings on the hosted service | sent and matched as given, not normalised server-side |
 | Per-token rate limiting | not implemented |
-| CPU limit on a maximum-size batch | 10 ms on this plan; a full batch is not guaranteed to complete — see `query-service-limits.md` |
+| CPU limit on a maximum-size batch | 10 ms documented on this plan; a maximum-size batch measured 13.9 ms p50 / 23.2 ms p99 and completed in all 13 attempts, so the limit is not an observed cutoff — but it is not guaranteed either. See `query-service-limits.md` |
 | Tenant partitioning of the corpus | not present, and deliberately so |
 
 No longer in this table, as of this revision: reporting of `truncated` and `skipped`
