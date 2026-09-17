@@ -34,9 +34,15 @@ headers that includes, so a Bearer token may have been among them. Rather than d
 on an unverified reading of what was captured, they are off.
 
 **Not established:** whether invocation logs written before that change held the
-`Authorization` header. On this plan logs are kept for 3 days, so any such entries
-expire within 3 days of the change being deployed. The one client token in use should
-be rotated after that.
+`Authorization` header. On this plan logs are kept for 3 days. The question no longer
+reaches a working credential:
+
+- the one client token was last used on 2026-09-05, so any entry carrying it expired
+  by 2026-09-08; it was revoked on 2026-09-17;
+- every token issued since for a check was revoked within a minute of being created.
+
+No client token is active now. One is issued per client when that client needs it, so
+a leak revokes one caller.
 
 Observables travel in the body of `POST /mcp`, never in a URL or query string.
 
@@ -191,12 +197,13 @@ Listed together so none of it has to be inferred from the prose above.
 |---|---|
 | Region where a request is processed | **not controllable** on this account; an Enterprise add-on |
 | D1 location pinned by configuration | **not possible** — location hints are best-effort, there is no APAC jurisdiction, and one cannot be added after creation; observed APAC, single copy |
-| Whether pre-change invocation logs held the `Authorization` header | not established; they expire within 3 days of deployment, after which the client token is rotated |
 | Defanged values and URL query strings on the hosted service | sent and matched as given, not normalised server-side |
 | Per-token rate limiting | not implemented |
 | CPU limit on a maximum-size batch | 10 ms documented on this plan; a maximum-size batch measured 13.9 ms p50 / 23.2 ms p99 and completed in all 13 attempts, so the limit is not an observed cutoff — but it is not guaranteed either. See `query-service-limits.md` |
 | Tenant partitioning of the corpus | not present, and deliberately so |
 
-No longer in this table, as of this revision: reporting of `truncated` and `skipped`
-on over-limit batches, and server-side skipping of private addresses and internal
-hostnames. Both are implemented and tested.
+No longer in this table: reporting of `truncated` and `skipped` on over-limit
+batches, and server-side skipping of private addresses and internal hostnames, both
+implemented and tested; and whether pre-change invocation logs held the
+`Authorization` header, which is still not established but no longer matters,
+because every token that could appear in them is revoked.
