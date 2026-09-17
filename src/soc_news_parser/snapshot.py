@@ -65,13 +65,22 @@ def _iter_days(reports_dir: str | Path | None):
             yield folder.name, payload
 
 
-def _action_index(payload: dict[str, Any]) -> dict[str, dict[str, Any]]:
-    """The analyst action per target, so a hit can carry what was decided."""
-    out: dict[str, dict[str, Any]] = {}
+def _action_index(payload: dict[str, Any]) -> dict[tuple[str, str], dict[str, Any]]:
+    """The analyst action per (type, target), so a hit can carry what was decided.
+
+    Keyed by type as well: the same string can be extracted as both a filename and
+    a domain, with a different action for each. Keyed by target alone, the first
+    one listed won, and on 2026-09-10 the domain `pf.ch` carried its filename
+    twin's `hunt` instead of its own `block`. The hosted service matches by type,
+    and found the difference.
+    """
+    out: dict[tuple[str, str], dict[str, Any]] = {}
     for action in (payload.get("analyst_brief") or {}).get("actions") or []:
         target = str(action.get("target") or "")
         if target:
-            out.setdefault(target.lower(), action)
+            out.setdefault((str(action.get("target_type") or ""), target.lower()), action)
+            # Any-type fallback, for an action recorded without a type.
+            out.setdefault(("", target.lower()), action)
     return out
 
 
@@ -160,7 +169,7 @@ def build_snapshot(reports_dir: str | Path | None = None) -> dict[str, Any]:
                 ):
                     row["citations"].append({**citation, "report_date": date})
 
-                action = actions.get(key)
+                action = actions.get((kind, key)) or actions.get(("", key))
                 if action:
                     row["action"] = action.get("action")
                     row["priority"] = action.get("priority")

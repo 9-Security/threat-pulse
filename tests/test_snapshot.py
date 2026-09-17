@@ -626,3 +626,25 @@ def test_refreshing_the_tools_refuses_a_snapshot_that_fails_its_own_check(tmp_pa
     with pytest.raises(ValueError, match="refusing to ship"):
         refresh_tools(bundle)
     assert (bundle / "validate.py").read_text(encoding="utf-8") == "# untouched\n"
+
+
+def test_a_value_carries_the_action_for_its_own_type(tmp_path: Path) -> None:
+    """The same string as a filename and as a domain has two actions; the domain keeps its own."""
+    root = tmp_path / "reports"
+    _day(
+        root,
+        "2026-09-10",
+        [
+            {"indicator_type": "filename", "normalized_value": "pf.ch", "status": "confirmed"},
+            {"indicator_type": "domain", "normalized_value": "pf.ch", "status": "confirmed"},
+            {"indicator_type": "domain", "normalized_value": "untyped.example", "status": "confirmed"},
+        ],
+        actions=[
+            {"target_type": "filename", "target": "pf.ch", "action": "hunt", "priority": "medium"},
+            {"target_type": "domain", "target": "pf.ch", "action": "block", "priority": "medium"},
+            {"target": "untyped.example", "action": "monitor", "priority": "low"},
+        ],
+    )
+    values = build_snapshot(root)["values"]
+    assert values["pf.ch"]["action"] == "block", "took the filename's action before"
+    assert values["untyped.example"]["action"] == "monitor", "an untyped action still applies"
