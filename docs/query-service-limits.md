@@ -221,6 +221,7 @@ The database's own error message is neither returned nor logged.
 | situation | HTTP | body |
 |---|---|---|
 | missing, unknown, revoked or expired token | 401 | `{"error":"unauthorized"}` |
+| `User-Agent` is Python's `urllib` default, or present but empty | 403 from Cloudflare, before the service | plain text `error code: 1010` — send any other `User-Agent`. Checked 2026-09-17: `python-requests`, `python-httpx`, `aiohttp`, `Go-http-client`, `node`, `undici`, `axios`, `Java`, `okhttp`, and no header at all, all reach the service |
 | path other than `/mcp` | 404 | plain text |
 | method other than `POST` on `/mcp` | 405 | plain text |
 | body over 256 KiB | 413 | JSON-RPC error `-32600` |
