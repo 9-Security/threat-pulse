@@ -601,3 +601,21 @@ test("duplicates are answered at each position", async () => {
   const { out } = await run(["evil.example.com", "EVIL.example.com", "evil.example.com"], { seeds: MATCHING });
   assert.deepEqual(out.hits.map((h: Json) => h.input_index), [0, 1, 2]);
 });
+
+/* ------------------------------------------------- the contract's examples --- */
+
+test("every example in the contract conforms to the output schema", () => {
+  const dir = new URL("../../../docs/examples/enrich_observables/", import.meta.url);
+  let checked = 0;
+  for (const name of ["response-complete.json", "response-partial.json", "response-failed.simulated.json"]) {
+    const body = JSON.parse(readFileSync(new URL(name, dir), "utf8"));
+    const structured = body.result.structuredContent;
+    assertShape(structured);
+    assert.deepEqual(JSON.parse(body.result.content[0].text), structured, `${name}: text and structuredContent agree`);
+    assert.equal(body.result.isError, structured.status === "failed", `${name}: isError follows status`);
+    checked += 1;
+  }
+  const published = JSON.parse(readFileSync(new URL("tool-definition.json", dir), "utf8"));
+  assert.deepEqual(published.outputSchema, SCHEMA, "the published tool definition carries this schema");
+  assert.equal(checked, 3);
+});

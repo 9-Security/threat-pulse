@@ -631,16 +631,18 @@ was wrong and this replaces it.
 
 | # | item | offline validator | `enrich_observables` endpoint |
 |---|---|---|---|
-| 1 | Response provenance and partial-failure fields | **implemented** — `status` per row, per-row `error`, `days_with_source_failures` | specified, **not implemented** |
-| 2 | Citation completeness | **implemented** — a value that cannot be cited is returned `error`, never `hit` | specified, **not implemented** |
-| 3 | `report_count` vs `source_count` semantics | **implemented**, with every publisher named; see Disclosure 3 | specified |
+| 1 | Response provenance and partial-failure fields | **implemented** — `status` per row, per-row `error`, `days_with_source_failures` | **implemented** 2026-09-18 — `status`, `request_id`, `corpus_version`, `coverage.days_with_source_failures`, per-value `errors` |
+| 2 | Citation completeness | **implemented** — a value that cannot be cited is returned `error`, never `hit` | **implemented** 2026-09-18 — `missing_citation` |
+| 3 | `report_count` vs `source_count` semantics | **implemented**, with every publisher named; see Disclosure 3 | **implemented**, with `publishers` |
 | 4 | Domain-boundary matching via PSL | **implemented** | **implemented** |
 | 5 | Known-benign provenance and versioning | **implemented** | **implemented** |
-| 6 | CVE provenance separation | **implemented** — `cve_provenance`, `cve_observed_on` | specified, **not implemented** |
+| 6 | CVE provenance separation | **implemented** — `cve_provenance`, `cve_observed_on` | **implemented** 2026-09-18 — `vulnerability.provenance`, `retrieved_at`, `observed_on` |
 | 7 | Data handling and retention documentation | **written**; `docs/data-handling.md` | written, with open items named in it |
 | 8 | Remove "safe to automate" claim | **done** | **done** |
 | 9 | **Corpus depth** | accrues 1 day/day since 2026-09-04; cannot be backfilled | same |
 | 10 | Restate measurements on current parser revision | **done**; see Disclosure 4 | done |
+
+**Update 2026-09-18:** the endpoint column is now implemented; the final field set is [`enrich-observables-contract.md`](enrich-observables-contract.md), which supersedes this document where they differ, and lists every difference.
 
 **Nothing here claims eight of eight.** Items 1, 2 and 6 are implemented for the
 offline validation and remain unbuilt in the endpoint, which is the only place

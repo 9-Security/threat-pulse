@@ -1,0 +1,11 @@
+{
+  "http_status": 413,
+  "body": {
+    "jsonrpc": "2.0",
+    "id": null,
+    "error": {
+      "code": -32600,
+      "message": "request body exceeds 262144 bytes"
+    }
+  }
+}

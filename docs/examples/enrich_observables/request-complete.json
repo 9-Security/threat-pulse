@@ -1,0 +1,30 @@
+{
+  "jsonrpc": "2.0",
+  "id": 101,
+  "method": "tools/call",
+  "params": {
+    "name": "enrich_observables",
+    "arguments": {
+      "values": [
+        "CVE-2026-20079",
+        "login.service-nowinc[.]com",
+        "https://api-prod.secboxes.com:443/download",
+        "https://www.cisa.gov/privacy-policy",
+        "github.com",
+        "https://github.com/someone/tool",
+        "10.0.0.5",
+        "d41d8cd98f00b204e9800998ecf8427e"
+      ],
+      "types": [
+        "cve",
+        "domain",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "md5"
+      ]
+    }
+  }
+}
