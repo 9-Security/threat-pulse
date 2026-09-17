@@ -1,0 +1,72 @@
+{
+  "jsonrpc": "2.0",
+  "id": 107,
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\n  \"status\": \"failed\",\n  \"request_id\": \"00000000-0000-4000-8000-000000000000\",\n  \"generated_at\": \"2026-09-18T01:00:00.000Z\",\n  \"corpus_version\": \"2026-09-17.478eee3d0883\",\n  \"truncated\": false,\n  \"detail\": \"compact\",\n  \"since\": null,\n  \"coverage\": {\n    \"report_range\": [\n      \"2026-09-04\",\n      \"2026-09-17\"\n    ],\n    \"report_count\": 14,\n    \"source_count\": 18,\n    \"days_with_source_failures\": [],\n    \"headline_methods\": [\n      \"exact\",\n      \"parent_domain\",\n      \"same_host\"\n    ],\n    \"public_suffix_list_version\": \"psl-6048303ea5bc\",\n    \"scope\": \"Published vendor and CERT reporting only. No passive DNS, no sandbox, no AV consensus, no reputation scoring.\",\n    \"verdict_note\": \"verdict states what a publisher reported. suggested_investigation_action and priority are this service's own analysis and are not safe to automate without consumer policy.\",\n    \"absence_note\": \"unseen means the value is not named in this corpus over the days it covers. It is not a clean or benign verdict and must not be treated as one.\"\n  },\n  \"counts\": {\n    \"requested\": 3,\n    \"processed\": 0,\n    \"hits\": 0,\n    \"headline_hits\": 0,\n    \"excluded\": 0,\n    \"unseen\": 0,\n    \"skipped\": 1,\n    \"failed\": 2\n  },\n  \"hits\": [],\n  \"excluded\": [],\n  \"unseen\": [],\n  \"skipped\": [\n    {\n      \"input_index\": 2,\n      \"value\": \"10.0.0.5\",\n      \"reason\": \"non_public_ip\"\n    }\n  ],\n  \"errors\": [\n    {\n      \"input_index\": 0,\n      \"value\": \"CVE-2026-20079\",\n      \"reason\": \"lookup_failed\"\n    },\n    {\n      \"input_index\": 1,\n      \"value\": \"login.service-nowinc[.]com\",\n      \"reason\": \"lookup_failed\"\n    }\n  ]\n}"
+      }
+    ],
+    "structuredContent": {
+      "status": "failed",
+      "request_id": "00000000-0000-4000-8000-000000000000",
+      "generated_at": "2026-09-18T01:00:00.000Z",
+      "corpus_version": "2026-09-17.478eee3d0883",
+      "truncated": false,
+      "detail": "compact",
+      "since": null,
+      "coverage": {
+        "report_range": [
+          "2026-09-04",
+          "2026-09-17"
+        ],
+        "report_count": 14,
+        "source_count": 18,
+        "days_with_source_failures": [],
+        "headline_methods": [
+          "exact",
+          "parent_domain",
+          "same_host"
+        ],
+        "public_suffix_list_version": "psl-6048303ea5bc",
+        "scope": "Published vendor and CERT reporting only. No passive DNS, no sandbox, no AV consensus, no reputation scoring.",
+        "verdict_note": "verdict states what a publisher reported. suggested_investigation_action and priority are this service's own analysis and are not safe to automate without consumer policy.",
+        "absence_note": "unseen means the value is not named in this corpus over the days it covers. It is not a clean or benign verdict and must not be treated as one."
+      },
+      "counts": {
+        "requested": 3,
+        "processed": 0,
+        "hits": 0,
+        "headline_hits": 0,
+        "excluded": 0,
+        "unseen": 0,
+        "skipped": 1,
+        "failed": 2
+      },
+      "hits": [],
+      "excluded": [],
+      "unseen": [],
+      "skipped": [
+        {
+          "input_index": 2,
+          "value": "10.0.0.5",
+          "reason": "non_public_ip"
+        }
+      ],
+      "errors": [
+        {
+          "input_index": 0,
+          "value": "CVE-2026-20079",
+          "reason": "lookup_failed"
+        },
+        {
+          "input_index": 1,
+          "value": "login.service-nowinc[.]com",
+          "reason": "lookup_failed"
+        }
+      ]
+    },
+    "isError": true
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "jsonrpc": "2.0",
+  "id": 104,
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\n  \"error\": \"types, when given, must be an array the same length as values\"\n}"
+      }
+    ],
+    "isError": true
+  }
+}
