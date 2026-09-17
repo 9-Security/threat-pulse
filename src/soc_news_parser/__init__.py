@@ -35,7 +35,7 @@ from .backtest import render_markdown as render_backtest_markdown
 from .export_d1 import export_report
 from .report import collect_report, serialize_report
 from .reanalyze import attach_provenance, reanalyze
-from .snapshot import build_snapshot, write_bundle
+from .snapshot import build_snapshot, refresh_tools, write_bundle
 from .source_health import (
     DEFAULT_LOOKBACK_DAYS,
     render_alert,
@@ -302,6 +302,12 @@ def _arguments() -> argparse.Namespace:
     )
     snapshot.add_argument("--output", required=True, help="directory to write the bundle into")
     snapshot.add_argument("--reports-dir", help="corpus root (default: reports/)")
+    snapshot.add_argument(
+        "--tools-only",
+        action="store_true",
+        help="keep the snapshot already in --output and replace only the validator, "
+        "its README and its tests",
+    )
 
     reanalysis = subcommands.add_parser(
         "reanalyze",
@@ -744,11 +750,17 @@ def main() -> None:
 
     if args.command == "snapshot":
         try:
-            built = write_bundle(args.output, args.reports_dir)
-        except OSError as error:
+            if args.tools_only:
+                built = refresh_tools(args.output)
+            else:
+                built = write_bundle(args.output, args.reports_dir)
+        except (OSError, ValueError) as error:
             print(f"error: {error}", file=sys.stderr)
             raise SystemExit(1) from error
         corpus = built["corpus"]
+        if args.tools_only:
+            print(f"tools refreshed beside unchanged corpus_version {built['corpus_version']} -> {args.output}")
+            return
         print(
             f"corpus_version {built['corpus_version']}: {corpus['days']} days "
             f"({corpus['first_date']} to {corpus['last_date']}), "

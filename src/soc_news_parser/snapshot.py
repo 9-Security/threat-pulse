@@ -258,16 +258,44 @@ def write_bundle(destination: str | Path, reports_dir: str | Path | None = None)
         json.dumps(snapshot, ensure_ascii=False, separators=(",", ":")),
         encoding="utf-8",
     )
+    _copy_tools(out)
+    return snapshot
 
-    validator = Path(__file__).resolve().parents[2] / "tools" / "corpus-validator"
+
+VALIDATOR_DIR = Path(__file__).resolve().parents[2] / "tools" / "corpus-validator"
+TOOL_FILES = ("validate.py", "README.md", "test_validate.py")
+
+
+def _copy_tools(out: Path) -> None:
     # The tests travel with the tool. The reviewers could not verify a claim
     # that 202 tests passed, because none of them was in the bundle -- and a
     # claim the consumer cannot check is one they are right to discount.
-    for name in ("validate.py", "README.md", "test_validate.py"):
-        source = validator / name
+    for name in TOOL_FILES:
+        source = VALIDATOR_DIR / name
         if source.is_file():
             # Newline is forced: the file is written on Windows and read on the
             # consumer's machine, and a CRLF shebang is a script that will not
             # start. The same mistake has cost this project a deployment before.
             (out / name).write_text(source.read_text(encoding="utf-8"), encoding="utf-8", newline="\n")
+
+
+def refresh_tools(destination: str | Path) -> dict[str, Any]:
+    """Replace the validator, its README and its tests beside an existing snapshot.
+
+    For re-delivering a corrected tool against the corpus the consumer already
+    ran. The snapshot is left byte for byte, so its `corpus_version` is unchanged
+    and any difference in their results comes from the tool alone. The snapshot
+    must still pass the new validator's integrity check, or nothing is written.
+    """
+    out = Path(destination)
+    path = out / "corpus-snapshot.json"
+    snapshot = json.loads(path.read_text(encoding="utf-8"))
+    claimed = str(snapshot.get("corpus_version") or "")
+    recomputed = _corpus_version(snapshot)
+    if not claimed or claimed != recomputed:
+        raise ValueError(
+            f"{path} claims corpus_version {claimed or '(none)'} but its contents produce "
+            f"{recomputed}; refusing to ship a tool beside it"
+        )
+    _copy_tools(out)
     return snapshot

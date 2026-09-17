@@ -14,6 +14,7 @@
 #
 #   ./sign-bundle.sh                 # signs the current bundle
 #   ./sign-bundle.sh --rebuild       # rebuilds the corpus snapshot first
+#   ./sign-bundle.sh --refresh-tools # keeps the snapshot, replaces the validator files
 set -euo pipefail
 
 APP_DIR="${APP_DIR:-/home/threatpulse/app}"
@@ -36,6 +37,13 @@ if [ "${1:-}" = "--rebuild" ]; then
     "cd '$APP_DIR' && export PATH=\$HOME/.local/bin:\$PATH && uv sync --frozen --quiet && \
      rm -rf '$BUNDLE_DIR' && mkdir -p '$BUNDLE_DIR' && \
      uv run soc-news-parser snapshot --output '$BUNDLE_DIR' --reports-dir '$APP_DIR/reports'"
+elif [ "${1:-}" = "--refresh-tools" ]; then
+  # A corrected validator against the corpus the consumer already ran: the
+  # snapshot and its corpus_version stay exactly as delivered.
+  echo "replacing the validator files beside the existing snapshot..."
+  sudo -u threatpulse -H bash -lc \
+    "cd '$APP_DIR' && export PATH=\$HOME/.local/bin:\$PATH && uv sync --frozen --quiet && \
+     uv run soc-news-parser snapshot --output '$BUNDLE_DIR' --tools-only"
 fi
 
 stamp="$(date +%Y-%m-%d)"

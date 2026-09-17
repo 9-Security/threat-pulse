@@ -201,6 +201,16 @@ class Matching(unittest.TestCase):
         self.assertEqual(rows["S3"]["status"], "miss")
         self.assertEqual(rows["S4"]["match_method"], "parent_domain")
 
+    def test_a_url_stored_with_a_trailing_slash_matches_whole(self):
+        snapshot = _snapshot({"https://evil.example.com/kit/": _value("https://evil.example.com/kit/", kind="url")})
+        run = Run(snapshot, [
+            "value,type,sample_id",
+            "https://evil.example.com/kit,url,S1",
+            "https://EVIL.example.com/kit/,url,S2",
+        ])
+        self.assertEqual(run.rows["S1"]["match_method"], "exact")
+        self.assertEqual(run.rows["S2"]["match_method"], "exact")
+
     def test_a_url_matches_whole_before_host(self):
         run = Run(self.snapshot, [
             "value,type,sample_id",
@@ -216,6 +226,114 @@ class Matching(unittest.TestCase):
         self.assertEqual(run.rows["S1"]["match_method"], "child_domain")
         self.assertEqual(run.summary["by_type"]["domain"]["hit_rate"], 0.0)
         self.assertEqual(run.summary["by_type"]["domain"]["hit_rate_including_child_domain"], 1.0)
+
+
+class Precedence(unittest.TestCase):
+    """A confirmation outranks an exclusion recorded in some other article."""
+
+    def setUp(self):
+        self.snapshot = _snapshot(
+            {
+                "cve-2026-20079": _value("CVE-2026-20079", kind="cve"),
+                "example.com": _value("example.com"),
+            },
+            excluded={
+                # Confirmed elsewhere, and mentioned in one article's commentary.
+                "cve-2026-20079": {
+                    "value": "CVE-2026-20079", "type": "cve",
+                    "reason_codes": ["excluded_editorial_section"], "dates": ["2026-09-04"],
+                },
+                # Excluded outright, and only a parent is confirmed.
+                "www.example.com": {
+                    "value": "www.example.com", "type": "domain",
+                    "reason_codes": ["publisher_domain"], "dates": ["2026-09-04"],
+                },
+                "only-excluded.example.org": {
+                    "value": "only-excluded.example.org", "type": "domain",
+                    "reason_codes": ["publisher_domain"], "dates": ["2026-09-04"],
+                },
+            },
+        )
+
+    def test_confirmed_and_excluded_is_a_hit(self):
+        run = Run(self.snapshot, ["value,type,sample_id", "CVE-2026-20079,cve,S1"])
+        self.assertEqual(run.proc.returncode, 0, run.proc.stderr)
+        self.assertEqual(run.rows["S1"]["status"], "hit")
+        self.assertEqual(run.rows["S1"]["match_method"], "exact")
+
+    def test_an_excluded_url_is_found_whole(self):
+        snapshot = _snapshot(
+            {"evil.example.com": _value("evil.example.com")},
+            excluded={
+                "https://www.cisa.gov/privacy-policy": {
+                    "value": "https://www.cisa.gov/privacy-policy", "type": "url",
+                    "reason_codes": ["publisher_domain"], "dates": ["2026-09-04"],
+                },
+                "https://evil.example.com/terms": {
+                    "value": "https://evil.example.com/terms", "type": "url",
+                    "reason_codes": ["publisher_domain"], "dates": ["2026-09-04"],
+                },
+            },
+        )
+        run = Run(snapshot, [
+            "value,type,sample_id",
+            "https://www.cisa.gov/privacy-policy,url,S1",
+            "https://www.cisa.gov/privacy-policy/,url,S2",
+            # The whole URL was ruled out; its host being confirmed does not undo that.
+            "https://evil.example.com/terms,url,S3",
+            "https://evil.example.com/other,url,S4",
+        ])
+        rows = run.rows
+        self.assertEqual(rows["S1"]["status"], "excluded", "was reported as miss")
+        self.assertEqual(rows["S2"]["status"], "excluded")
+        self.assertEqual(rows["S3"]["status"], "excluded")
+        self.assertEqual(rows["S4"]["match_method"], "same_host")
+
+    def test_an_exclusion_outranks_a_parent_match(self):
+        run = Run(self.snapshot, [
+            "value,type,sample_id",
+            "www.example.com,domain,S1",
+            "only-excluded.example.org,domain,S2",
+        ])
+        self.assertEqual(run.rows["S1"]["status"], "excluded")
+        self.assertIn("publisher_domain", run.rows["S1"]["reason"])
+        self.assertEqual(run.rows["S2"]["status"], "excluded")
+
+
+class HeldBack(unittest.TestCase):
+    """A value the corpus refused to treat as blockable is matched only exactly."""
+
+    def setUp(self):
+        self.snapshot = _snapshot(
+            {
+                "github.com": _value("github.com", action="hunt", benign_basis="vendor_brand_apex"),
+                "login.microsoftonline.com": _value(
+                    "login.microsoftonline.com", action="hunt", benign_basis="vendor_brand_apex"
+                ),
+                "evil.example.com": _value("evil.example.com"),
+            }
+        )
+
+    def test_exact_still_reports_with_its_basis(self):
+        run = Run(self.snapshot, ["value,type,sample_id", "github.com,domain,S1"])
+        self.assertEqual(run.rows["S1"]["status"], "hit")
+        self.assertEqual(run.rows["S1"]["benign_basis"], "vendor_brand_apex")
+
+    def test_no_relation_passes_through_it(self):
+        run = Run(self.snapshot, [
+            "value,type,sample_id",
+            "https://github.com/someone/tool,url,S1",
+            "gist.github.com,domain,S2",
+            "microsoftonline.com,domain,S3",
+            "https://evil.example.com/x,url,S4",
+            "api.evil.example.com,domain,S5",
+        ])
+        rows = run.rows
+        self.assertEqual(rows["S1"]["status"], "miss", "any GitHub URL used to be a same_host hit")
+        self.assertEqual(rows["S2"]["status"], "miss")
+        self.assertEqual(rows["S3"]["status"], "miss")
+        self.assertEqual(rows["S4"]["match_method"], "same_host", "ordinary values keep their relations")
+        self.assertEqual(rows["S5"]["match_method"], "parent_domain")
 
 
 class Safety(unittest.TestCase):

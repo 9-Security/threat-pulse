@@ -106,8 +106,30 @@ Only these three count toward the headline rate:
 | `same_host` | a submitted URL's host is a value the corpus named |
 
 A submitted URL is tried **whole first**, so a full URL the corpus holds is
-matched as `exact`. Only if that fails is the URL reduced to its host and tried
-again, which is `same_host`. The two are never conflated.
+matched as `exact`. A trailing `/` is ignored on both sides. Only if that fails is
+the URL reduced to its host and tried again, which is `same_host`. The two are
+never conflated.
+
+### Order of decision
+
+1. an **exact** confirmation of the value, or of the whole URL → `hit`
+2. an exclusion of the value, or of the whole URL → `excluded`
+3. for a URL, a **same-host** confirmation → `hit`
+4. for a URL, an exclusion of its host → `excluded`
+5. a **parent** or **child** relation → `hit`
+6. otherwise → `miss`
+
+Exclusions are recorded per article. `excluded_editorial_section` means one
+article mentioned the value outside its indicator section, and `publisher_domain`
+means the value was that article's own publisher. So a direct confirmation
+elsewhere outranks them. An exclusion still outranks a parent or child relation,
+which is weaker than a statement about the value itself.
+
+A value the corpus marked with a `benign_basis` is matched **only exactly**. The
+basis is a brand apex such as `github.com`, a public resolver, or a registry
+boundary. No `same_host`, `parent_domain` or `child_domain` relation passes through
+it. Otherwise every URL on `github.com` and every host under
+`login.microsoftonline.com` would count as a hit.
 
 Parent matching **stops at the registrable domain**, using the Public Suffix
 List embedded in the snapshot — the same list, by content digest, that the
