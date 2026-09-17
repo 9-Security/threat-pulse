@@ -410,7 +410,7 @@ hostnames are returned in `skipped`, not searched and not reported as `unseen`.
 
 | field | notes |
 |---|---|
-| `status` | `complete`, `partial`, `failed`. `partial` whenever any value failed. |
+| `status` | `complete`, `partial`, `failed`. `partial` whenever any value failed or `truncated` is true. |
 | `request_id` | Troubleshooting and audit correlation. |
 | `generated_at` | When the enrichment result was produced. |
 | `corpus_version` | Identifies the corpus state; the same version must reproduce the same result. |

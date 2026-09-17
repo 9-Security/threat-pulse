@@ -178,9 +178,44 @@ test("composed with the guard, a private address or internal name never reaches 
   assert.deepEqual(split.skipped.map((s) => s.reason), ["non_public_ip", "internal_hostname", "sensitive_url"]);
 });
 
-test("status is decided by errors, not by skips", () => {
+test("status is decided by errors and truncation, not by skips", () => {
   assert.equal(statusOf(3, 0), "complete");
   assert.equal(statusOf(0, 0), "complete");
   assert.equal(statusOf(2, 1), "partial");
   assert.equal(statusOf(0, 3), "failed");
+  assert.equal(statusOf(3, 0, true), "partial");
+  assert.equal(statusOf(0, 0, true), "partial", "nothing looked up but values dropped is still a gap");
+  assert.equal(statusOf(2, 1, true), "partial");
+  assert.equal(statusOf(0, 3, true), "failed");
+});
+
+test("an over-limit batch with every lookup succeeding is partial, never complete", async () => {
+  const { deps } = fakeDb({ expand: (value) => [value] });
+  const values = Array.from({ length: 103 }, (_, i) => `host${i}.example.com`);
+  const split = partition(values);
+
+  const result = await lookupAccepted(split.accepted, deps);
+
+  assert.equal(result.errors.length, 0);
+  assert.equal(result.items.length, 100);
+  assert.equal(split.truncated, true);
+  assert.equal(statusOf(result.items.length, result.errors.length, split.truncated), "partial");
+  assert.deepEqual(
+    split.skipped.map((s) => [s.input_index, s.reason]),
+    [
+      [100, "request_limit"],
+      [101, "request_limit"],
+      [102, "request_limit"],
+    ],
+  );
+});
+
+test("a batch of exactly the limit is complete", async () => {
+  const { deps } = fakeDb({ expand: (value) => [value] });
+  const split = partition(Array.from({ length: 100 }, (_, i) => `host${i}.example.com`));
+
+  const result = await lookupAccepted(split.accepted, deps);
+
+  assert.equal(split.truncated, false);
+  assert.equal(statusOf(result.items.length, result.errors.length, split.truncated), "complete");
 });
