@@ -68,6 +68,29 @@ test("a value is answered from its most specific candidate", async () => {
   assert.equal(statusOf(result.items.length, result.errors.length), "complete");
 });
 
+test("a held-back value answers only for itself", async () => {
+  const { deps } = fakeDb({
+    rows: [
+      { value: "github.com", report_date: "2026-09-10" },
+      { value: "evil.com", report_date: "2026-09-04" },
+    ],
+  });
+  deps.heldBack = (row) => row.value === "github.com";
+
+  const result = await lookupAccepted(
+    [
+      { input_index: 0, value: "github.com" },
+      { input_index: 1, value: "api.github.com" },
+      { input_index: 2, value: "x.evil.com" },
+    ],
+    deps,
+  );
+
+  assert.equal(result.items[0].found, true);
+  assert.equal(result.items[1].found, false, "used to answer from github.com");
+  assert.equal(result.items[2].matched_on, "evil.com");
+});
+
 test("a miss is only a miss when every candidate was queried", async () => {
   const { deps } = fakeDb({});
 

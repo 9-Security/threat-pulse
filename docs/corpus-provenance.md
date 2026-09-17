@@ -22,7 +22,7 @@ time, which is how two re-collected copies were mistaken for originals.
 |---|---|---|---|
 | 2026-09-04 | **rebuilt** from a local collection: 55 articles, parser `bacf32e` | +8.2 h | file time. The earliest surviving copy. The scheduled CI run for this slot failed, and a later CI run (+18 h, 41 articles) holds no article this one lacks. |
 | 2026-09-05 | **rebuilt** from CI run `33932870277`: 47 articles, parser `e74bd75` | +2.4 h | GitHub Actions run start. The scheduled CI run for this slot failed. |
-| 2026-09-06 | archive copy, re-collected on 2026-09-07 | +30 h | Identical articles and identical bundle-relevant values to CI run `33999016567` (+1.6 h); one stored body differs. Not rebuilt. |
+| 2026-09-06 | archive copy, re-collected on 2026-09-07 | +30 h | Identical articles and identical bundle-relevant values to CI run `33999016567` (+1.6 h); one stored body differs. Not rebuilt. Until 2026-09-17 the hosted corpus held the CI copy; the 2026-09-17 re-push replaced it with this one, so the two now agree (see below). |
 | 2026-09-07 | archive copy, re-run on 2026-09-07 | +5.8 h | Identical articles and values to CI run `34067024610` (+1.5 h). Not rebuilt. |
 | 2026-09-08 | host scheduled run | +0.4 h | systemd journal |
 | 2026-09-09 | **manual run after the scheduled run timed out** at 06:46 | +5.3 h | systemd journal records the timeout and no later scheduled run. No earlier copy exists, so it cannot be rebuilt. |
@@ -83,6 +83,21 @@ counts in the hosted corpus were checked against the SQL that was sent.
 
 The replaced copies, the hosted-corpus rows as they were, and the preserved CI
 artifacts are kept on the collecting host.
+
+## The 2026-09-17 re-push
+
+Every day was pushed again from the archive with the exporter that carries
+publication dates, exclusions, CVE records and the corpus version. Afterwards,
+on every day, the hosted corpus's `report_id` equals the archive file's, and its
+counts and `corpus_version` equal an offline snapshot of the same folder.
+
+The one day whose content source changed is 2026-09-06. It went from the CI copy
+to the archive copy, which has the same articles and the same values. A full
+export of the hosted corpus taken just before is kept on the collecting host.
+
+Article `retrieved_at` is not carried. On every day it equals the window close,
+not the time an article was fetched, so it is not evidence of collection time
+either.
 
 ## Checking a day
 

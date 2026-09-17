@@ -12,6 +12,17 @@ import { assess, renderHeartbeat, taipeiDate, type HeartbeatState } from "./hear
 import { classifySearchText, MAX_BATCH, partition, type Skipped } from "./guard";
 import { lookupAccepted, statusOf, type LookupError } from "./lookup";
 import {
+  enrichObservables,
+  OBSERVABLE_TYPES,
+  type CorpusInfo,
+  type CveRow,
+  type EnrichStore,
+  type ExcludedRow,
+  type IndicatorRow,
+} from "./enrich";
+import enrichInputSchema from "./schemas/enrich_observables.input.json";
+import enrichOutputSchema from "./schemas/enrich_observables.output.json";
+import {
   checkQuota,
   limitsFor,
   renderUsageAlert,
@@ -331,6 +342,15 @@ const TOOLS = [
       required: ["values"],
     },
   },
+  {
+    name: "enrich_observables",
+    title: "Enrich observables from published reporting",
+    description:
+      "Enrich up to 100 observables (CVE, domain, IP, URL, MD5, SHA-1, SHA-256; defanged input accepted) against published vendor and CERT reporting. Every value comes back exactly once, by input_index, in hits, excluded, unseen, skipped or errors. unseen is not a benign verdict. A hit carries the match relation, how many reports and publishers named the value, citations with publication dates, this service's suggested action, and for a CVE the KEV/CVSS/EPSS record with its provenance. corpus_version identifies the corpus; the same version gives the same answer, and it equals the version of an offline bundle built from the same days. status is complete, partial or failed.",
+    inputSchema: enrichInputSchema,
+    outputSchema: enrichOutputSchema,
+    annotations: { readOnlyHint: true, openWorldHint: false },
+  },
 ] as const;
 
 async function listReports(env: Env, args: Json): Promise<Json> {
@@ -452,6 +472,7 @@ async function lookupMany(
     },
     keyOf: (row) => String(row.value).toLowerCase(),
     toHit: (row) => rowToHit(row, caller),
+    heldBack: (row) => Boolean(row.benign_basis),
     now: () => Date.now(),
     budgetMs: LOOKUP_BUDGET_MS,
     // D1 allows 100 bound parameters per statement, and one hostname expands to a
@@ -470,6 +491,115 @@ async function lookupMany(
 }
 
 /* ------------------------------------------------------------ dispatch --- */
+
+/* ------------------------------------------------------- enrichment --- */
+
+const ENRICH_TYPES = OBSERVABLE_TYPES.map((kind) => `'${kind}'`).join(",");
+const INDICATOR_FIELDS = `rowid AS rid, report_date, indicator_type, value, value_lc, action, priority,
+  reason, benign_basis, source, article_title, article_url, published_at, context, registrable_lc`;
+
+function enrichStore(env: Env): EnrichStore {
+  const placeholders = (n: number) => new Array(n).fill("?").join(",");
+  const sinceClause = (since: string | null) => (since ? " AND report_date >= ?" : "");
+  const sinceBind = (since: string | null) => (since ? [since] : []);
+  return {
+    async indicators(keys, since) {
+      const { results } = await env.DB.prepare(
+        `SELECT ${INDICATOR_FIELDS} FROM indicators
+          WHERE value_lc IN (${placeholders(keys.length)}) AND indicator_type IN (${ENRICH_TYPES})${sinceClause(since)}
+          ORDER BY report_date, rowid`,
+      )
+        .bind(...keys, ...sinceBind(since))
+        .all<IndicatorRow>();
+      return results;
+    },
+    async children(registrables, since) {
+      const { results } = await env.DB.prepare(
+        `SELECT ${INDICATOR_FIELDS} FROM indicators
+          WHERE registrable_lc IN (${placeholders(registrables.length)}) AND indicator_type = 'domain'${sinceClause(since)}
+          ORDER BY report_date, rowid`,
+      )
+        .bind(...registrables, ...sinceBind(since))
+        .all<IndicatorRow>();
+      return results;
+    },
+    async excluded(keys, since) {
+      const { results } = await env.DB.prepare(
+        `SELECT report_date, indicator_type, value, value_lc, reason_codes FROM excluded_values
+          WHERE value_lc IN (${placeholders(keys.length)})${sinceClause(since)}
+          ORDER BY report_date`,
+      )
+        .bind(...keys, ...sinceBind(since))
+        .all<ExcludedRow>();
+      return results;
+    },
+    async cveIntel(ids) {
+      const { results } = await env.DB.prepare(
+        `SELECT report_date, cve_id, record FROM cve_intel WHERE cve_id IN (${placeholders(ids.length)})`,
+      )
+        .bind(...ids)
+        .all<CveRow>();
+      return results;
+    },
+    async corpus(): Promise<CorpusInfo> {
+      const [state, reports] = await env.DB.batch([
+        env.DB.prepare(
+          `SELECT corpus_version, days, first_date, last_date, publisher_count, psl_version
+             FROM corpus_state WHERE id = 1`,
+        ),
+        env.DB.prepare(`SELECT report_date, report_id, sources_failed FROM reports ORDER BY report_date`),
+      ]);
+      return {
+        state: ((state.results[0] as CorpusInfo["state"]) ?? null),
+        reports: reports.results as CorpusInfo["reports"],
+      };
+    },
+  };
+}
+
+/** The validator's suffix walk, over the same list the Worker already carries. */
+const boundaries = {
+  parents(host: string): string[] {
+    const labels = host.split(".");
+    const depth = publicSuffix(labels).split(".").length;
+    const out: string[] = [];
+    for (let i = 1; i < labels.length - depth; i += 1) out.push(labels.slice(i).join("."));
+    return out;
+  },
+  registrable(host: string): string {
+    const labels = host.split(".");
+    const depth = publicSuffix(labels).split(".").length;
+    return labels.length > depth ? labels.slice(-(depth + 1)).join(".") : host;
+  },
+};
+
+async function enrich(env: Env, args: Json, caller: Caller): Promise<Json> {
+  if (!Array.isArray(args.values) || !args.values.length) return { error: "values must be a non-empty array" };
+  if (args.types !== undefined && (!Array.isArray(args.types) || args.types.length !== args.values.length)) {
+    return { error: "types, when given, must be an array the same length as values" };
+  }
+  if (args.detail !== undefined && args.detail !== "compact" && args.detail !== "full") {
+    return { error: "detail must be compact or full" };
+  }
+  if (args.since !== undefined && validDate(args.since) === null) return { error: "since must be YYYY-MM-DD" };
+  return enrichObservables(
+    {
+      values: args.values,
+      types: (args.types as unknown[] | undefined) ?? null,
+      detail: args.detail as "compact" | "full" | undefined,
+      since: validDate(args.since),
+      mayReadContext: caller.scopes.has("context"),
+    },
+    {
+      store: enrichStore(env),
+      boundaries,
+      now: () => Date.now(),
+      requestId: () => crypto.randomUUID(),
+      budgetMs: LOOKUP_BUDGET_MS,
+      chunkSize: 90,
+    },
+  );
+}
 
 async function callTool(name: string, args: Json, env: Env, caller: Caller): Promise<Json> {
   switch (name) {
@@ -519,6 +649,8 @@ async function callTool(name: string, args: Json, env: Env, caller: Caller): Pro
         found,
       };
     }
+    case "enrich_observables":
+      return enrich(env, args, caller);
     default:
       return { error: `unknown tool: ${name}` };
   }
@@ -803,9 +935,14 @@ export default {
         const args = (params.arguments ?? {}) as Json;
         try {
           const result = await callTool(name, args, env, caller);
+          const isError = Boolean((result as Json).error) || (result as Json).status === "failed";
           return rpcResult(id, {
             content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
-            isError: Boolean((result as Json).error) || (result as Json).status === "failed",
+            // A tool with an output schema returns its result as structured data
+            // too, so a caller need not parse the text. An argument error is not a
+            // result and carries only the message.
+            ...(name === "enrich_observables" && !(result as Json).error ? { structuredContent: result } : {}),
+            isError,
           });
         } catch (error) {
           return rpcResult(id, {
