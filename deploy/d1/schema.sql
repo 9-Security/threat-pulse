@@ -23,7 +23,10 @@ CREATE TABLE IF NOT EXISTS reports (
     unavailable_count   INTEGER NOT NULL DEFAULT 0,
     priority_line       TEXT,
     enrichment_json     TEXT,
-    ingested_at         TEXT NOT NULL
+    ingested_at         TEXT NOT NULL,
+    -- JSON array of the source keys that failed that day. A value absent because
+    -- its publisher could not be read is not the same as one nobody reported.
+    sources_failed      TEXT
 );
 
 -- One row per (day, indicator, article). The same value reported by two
@@ -56,6 +59,11 @@ CREATE TABLE IF NOT EXISTS indicators (
     -- consumer has to substring-match a Chinese reason string to tell a public
     -- resolver from a registry boundary.
     benign_basis    TEXT,
+    -- The article's own publication date, as the publisher states it.
+    published_at    TEXT,
+    -- Registrable domain of a domain value (PSL), for finding values beneath a
+    -- submitted domain without scanning. NULL for every other type.
+    registrable_lc  TEXT,
     -- Lookups arrive lower-cased from a log. Comparing LOWER(value) would make
     -- SQLite ignore the index and scan the table, so the folded form is stored.
     value_lc TEXT GENERATED ALWAYS AS (lower(value)) VIRTUAL,
@@ -74,6 +82,49 @@ CREATE INDEX IF NOT EXISTS idx_indicators_action_date
     ON indicators(action, report_date);
 CREATE INDEX IF NOT EXISTS idx_indicators_date
     ON indicators(report_date);
+CREATE INDEX IF NOT EXISTS idx_indicators_registrable
+    ON indicators(registrable_lc);
+
+-- Values the pipeline saw and ruled out, one row per value per day, with every
+-- reason given that day. "We looked and ruled this out" is a different answer
+-- from "we have never seen this".
+CREATE TABLE IF NOT EXISTS excluded_values (
+    report_date    TEXT NOT NULL,
+    indicator_type TEXT NOT NULL,
+    value          TEXT NOT NULL,
+    reason_codes   TEXT NOT NULL,   -- JSON array
+    value_lc TEXT GENERATED ALWAYS AS (lower(value)) VIRTUAL,
+    PRIMARY KEY (report_date, value),
+    FOREIGN KEY (report_date) REFERENCES reports(report_date) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_excluded_value_lc ON excluded_values(value_lc);
+
+-- The day's KEV/CVSS/EPSS record per CVE, verbatim, with its provenance. The
+-- newest day's record is the one served.
+CREATE TABLE IF NOT EXISTS cve_intel (
+    report_date TEXT NOT NULL,
+    cve_id      TEXT NOT NULL,      -- upper case
+    record      TEXT NOT NULL,      -- JSON object
+    PRIMARY KEY (cve_id, report_date),
+    FOREIGN KEY (report_date) REFERENCES reports(report_date) ON DELETE CASCADE
+);
+
+-- One row: the corpus_version an offline bundle built from the same report folder
+-- would carry, and the days it covers. Written in the same batch as each day's
+-- push. The service reports the version only while D1 holds exactly these days.
+CREATE TABLE IF NOT EXISTS corpus_state (
+    id               INTEGER PRIMARY KEY CHECK (id = 1),
+    corpus_version   TEXT NOT NULL,
+    days             INTEGER NOT NULL,
+    first_date       TEXT,
+    last_date        TEXT,
+    confirmed_values INTEGER NOT NULL,
+    excluded_values  INTEGER NOT NULL,
+    cve_records      INTEGER NOT NULL,
+    publisher_count  INTEGER NOT NULL,
+    psl_version      TEXT,
+    computed_at      TEXT NOT NULL
+);
 
 -- Bearer tokens, one row per client, so a leak revokes one caller rather than
 -- everyone. Only the hash is stored; the token itself is shown once at issue.
