@@ -1,7 +1,8 @@
 # Data handling for the IoC query service
 
 **Status:** answers prerequisite 7 of the `enrich_observables` review; revised
-2026-09-14 for the three items the review listed as blockers for an endpoint pilot
+2026-09-14 for the three items the review listed as blockers for an endpoint pilot,
+and 2026-09-17 for what Cloudflare records, who can reach it, and where it runs
 **Scope:** the query path — the Cloudflare Worker at `deploy/worker/` and the D1
 database behind it. The daily collector and report email are a separate path and
 are described at the end.
@@ -53,14 +54,72 @@ runtime rather than by this service. No case of that message carrying a bound
 parameter has been observed, and it is stated as a limit rather than claimed
 impossible.
 
-## Log retention and deletion
+## What Cloudflare records about a request, and for how long
 
-**Verified for this account.** Workers Logs keeps what it stores for **3 days** on the
-Free plan (7 days on Paid). With invocation logs off, what it stores is the
-heartbeat's console lines, which carry no request data. The Worker has no Logpush
-export (`logpush: false` in its settings).
+Every place a request could leave a trace, checked on 2026-09-17:
 
-D1 holds no request values, so there is nothing to retain or delete there.
+| record | what it holds | kept | how this is known |
+|---|---|---|---|
+| Workers invocation logs | "the Request, Response, and related metadata" | **not recorded** — disabled | `invocation_logs = false`; the setting was read back from the API after deploying |
+| Workers Logs, console output | the heartbeat's lines: the newest report date, and a test send's token label | 3 days on Free, 7 on Paid | the Worker has no other `console` call |
+| Real-time logs (`wrangler tail`) | streamed live to whoever starts one. Cloudflare's example event shows the request URL, method, headers and Cloudflare metadata; the body, where observables travel, is not among them | **not stored** — "Real-time logs does not store Workers Logs" | Cloudflare's documentation. It does not say whether the `Authorization` header is redacted, so a live tail should be assumed to show it |
+| Worker analytics | per time bucket: data center, status, script version, request count, CPU and duration | up to 90 days back | the dataset's schema, read through the API: it has **no field** for an IP address, URL, header or body |
+| D1 query insights | statement text, duration, serving region, error text. Cloudflare: "Bound parameters are not captured" | up to 90 days back (Cloudflare's D1 page says 31; this account's analytics settings allow 90) | the recorded statements themselves — see below |
+| `tokens` table in D1 | per client token: `last_used_at`, `call_count` | until the row is deleted | the code |
+| Log export (Logpush) | — | none configured | Worker setting `logpush: false` |
+
+**D1 query insights, checked against what they actually hold.** Over the seven days
+before 2026-09-17, the service's lookup statement was recorded in 6 shapes across 189
+executions. Every one was `SELECT * FROM indicators WHERE value_lc IN (?,?,…)`, with
+placeholders only and no quoted literal. Over 30 days, no statement recorded an error
+string. Submitted values reach D1 only as bound parameters, so they are not in these
+records.
+
+The one kind of literal these records do hold is a token's SHA-256, in statements run
+by hand to issue or revoke a token. That hash cannot be used to authenticate: the
+service hashes whatever it is given, and the token itself is 256 random bits. Tokens
+issued for checks since 2026-09-17 are passed as bound parameters, so their hash
+does not appear either.
+
+D1 holds no request values, so there is nothing of a caller's to retain or delete
+there.
+
+## Who can read those records, or change what is recorded
+
+The question that matters is wider than who can *read* the records above. Anyone who
+can **deploy the Worker** can deploy a version that records request bodies. So both
+sets of people are listed here, and as of 2026-09-17 they are the same.
+
+| holder | what it can do | how this is known |
+|---|---|---|
+| Cloudflare account members | **one** member, with the Super Administrator role: the operator | members API |
+| Deploy token | deploy the Worker; read its secret names, versions and analytics; query D1. It should be assumed able to start a live tail as well | kept **only on the operator's workstation**. Each listed capability was exercised on 2026-09-17, including a real deploy; the live tail was not tried |
+| Collecting-host token | read and write D1, and nothing else | on the collecting host. Each of these was refused with 403 or "authorization denied": listing Worker scripts, reading the Worker's settings, secrets or versions, listing account members, seeing zones, reading analytics |
+| Other API tokens on the account | not listable by either token above | to be confirmed by the account owner |
+| Cloudflare personnel | governed by Cloudflare's terms | no statement is made here |
+
+**Why there are two tokens.** Until 2026-09-17 one token did both jobs, and it was
+stored on the collecting host. That host is shared. Two accounts on it can become
+root: the operator's, and the service account of an unrelated, internet-facing
+service, whose membership of the `docker` group is root-equivalent. Either could have
+read that token, and it could redeploy the Worker. The host now holds a token limited
+to D1. The earlier token has been removed from both machines; its deletion at
+Cloudflare is listed below as not yet confirmed.
+
+**What the collecting-host token still allows,** stated because the host is shared:
+
+- **Changing the corpus.** A compromised host already controls what the collector
+  writes, so this adds nothing new.
+- **Issuing itself a client token**, since tokens are rows in D1. Such a token reads the
+  same corpus every client reads. It sees nothing of other callers: their queries are
+  not stored anywhere.
+- **Revoking or altering another client's token row**: an availability risk, not a
+  confidentiality one.
+- **Nothing that observes lookups.** A lookup's only write is its token's usage
+  counter, and that write carries no submitted value. SQLite triggers fire only on
+  `INSERT`, `UPDATE` and `DELETE`, never on a read, so a trigger planted in the
+  database could see the counter but never a looked-up value. Query insights and
+  analytics are refused to this token.
 
 ## Data residency and subprocessors
 
@@ -73,8 +132,16 @@ is Cloudflare's Regional Services, an Enterprise add-on this account does not ha
 submitted value exists only in memory for the duration of the request; it is not
 stored and, as above, not logged.
 
+Observed, not guaranteed: in the 30 days before 2026-09-17, requests to this Worker
+were processed in nine data centers. By request count, the largest were Kaohsiung,
+Hong Kong and Taipei; the rest were Tokyo, Osaka, Dallas, Seattle, San Jose and
+Portland. That figure mixes the daily scheduled check, which runs wherever Cloudflare
+places it, with test calls. Which data center a given caller reaches depends on that
+caller's network, and nothing here pins it.
+
 **Where the corpus is stored: observed, not enforced.** The D1 database runs in APAC
-with read replication disabled, so there is a single copy. No stronger statement is
+with read replication disabled, so there is a single copy. Query insights agree: all
+381 statements in the 30 days before 2026-09-17 were served by the primary, in APAC. No stronger statement is
 available: a D1 location hint is best-effort by Cloudflare's own description, the
 jurisdictions D1 offers are the EU and FedRAMP with none for APAC, and a jurisdiction
 cannot be added to a database after it is created. The corpus is derived from
@@ -200,6 +267,9 @@ Listed together so none of it has to be inferred from the prose above.
 | D1 location pinned by configuration | **not possible** — location hints are best-effort, there is no APAC jurisdiction, and one cannot be added after creation; observed APAC, single copy |
 | Defanged values and URL query strings on the hosted service | sent and matched as given, not normalised server-side |
 | Per-token rate limiting | not implemented |
+| Deletion at Cloudflare of the single token used before 2026-09-17 | **not confirmed** — it has been removed from both machines, but it still authenticated when checked on 2026-09-17 |
+| List of every API token on the account | not visible to either token in use; the account owner confirms |
+| Whether a live tail shows the `Authorization` header | not documented by Cloudflare; assume it does. Only the account member and the deploy token can start one |
 | CPU limit on a maximum-size batch | 10 ms documented on this plan; a maximum-size batch measured 13.9 ms p50 / 23.2 ms p99 and completed in all 13 attempts, so the limit is not an observed cutoff — but it is not guaranteed either. See `query-service-limits.md` |
 | Tenant partitioning of the corpus | not present, and deliberately so |
 

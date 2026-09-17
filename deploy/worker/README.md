@@ -5,8 +5,7 @@ agents over MCP. D1 is SQLite, so this is the SQLite index the local file-based
 MCP never had — cross-date lookup, parent-domain matching and batch queries all
 become indexed reads instead of parsing every daily JSON.
 
-There is no host to run. The daily GitHub Actions job pushes a day's indicators
-in; the Worker only reads them.
+The collecting host pushes each day's indicators in; the Worker only reads them.
 
 ## What travels, and what does not
 
@@ -29,16 +28,21 @@ sentence — it can follow the link and read it at the publisher.
 ## Credentials
 
 `wrangler login` requests fifteen OAuth scopes, including Pages, Queues and AI,
-where this needs two. A scoped API token is both tighter and easier to hand to
-CI. Create one under My Profile → API Tokens → Create Custom Token with:
+where this needs a few. Use scoped API tokens instead, and use **two**, never one:
 
-| permission | why |
-|---|---|
-| Account → Workers Scripts → Edit | deploy the Worker |
-| Account → D1 → Edit | push each day's indicators |
-| Account → Account Settings → Read | resolve the account |
+| token | permissions | kept on |
+|---|---|---|
+| deploy | the *Edit Cloudflare Workers* template, plus Account → D1 → Edit and Account → Account Analytics → Read | the operator's workstation only, in `deploy/worker/.env` |
+| collector | Account → D1 → Edit, and nothing else | the collecting host's `EnvironmentFile` |
 
-Keep it out of the repo and out of your shell history — `deploy/worker/.env` is
+The collecting host is shared with other services. A token that can deploy the
+Worker can deploy a version that records what callers send, so the host holds only
+what the daily push needs. Deploys, secrets and measurements run from the
+workstation. Checked on 2026-09-17: the collector token runs the push's read and
+write paths, and is refused (403) on Worker scripts, settings, secrets and versions,
+on account members, and on analytics.
+
+Keep tokens out of the repo and out of your shell history — `deploy/worker/.env` is
 gitignored:
 
 ```bash
@@ -179,12 +183,15 @@ stale, unlike the source-health mail's doubling: a collector that is not
 collecting is the failure this exists to catch.
 
 Three secrets arm it. Without them the check still runs and logs, but sends
-nothing:
+nothing. Set them from the workstation, since the collector token cannot. Each value
+is read from the host's `EnvironmentFile` and piped straight into wrangler, so it is
+never printed or typed:
 
 ```bash
-npx wrangler secret put RESEND_API_KEY
-npx wrangler secret put RESEND_FROM
-npx wrangler secret put ALERT_TO
+for name in RESEND_API_KEY RESEND_FROM ALERT_TO; do
+  ssh wendy-lab "sudo sed -n 's/^$name=//p' /home/threatpulse/threat-pulse.env" \
+    | tr -d '\r\n' | npx wrangler secret put "$name"
+done
 ```
 
 `ALERT_TO` is the operational address, never the daily report's recipients.
