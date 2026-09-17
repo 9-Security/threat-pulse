@@ -136,8 +136,30 @@ Then recompute each type's rate as headline hits (`exact`, `parent_domain`,
 | signature | detached minisign, same key, Key ID `3AF66B0411A91321`, no rotation |
 | verification | as before: compare the full public key line, or its SHA-256, against the value you confirmed on the separate channel |
 
-The ZIP and signature digests are given in the delivery message. The README now
-states the decision order and the held-back rule under **Order of decision**.
+| file | SHA-256 (transfer check only; the signature is what authenticates) |
+|---|---|
+| `threat-pulse-corpus-validation-2026-09-17.zip` | `245ba25935b0be068dec43ef97e640647a9c5d8f83b016ed8e6806c88fd76cfe` |
+| `threat-pulse-corpus-validation-2026-09-17.zip.minisig` | `9fd14d8166b8c499a92735145af7e4050ad24f2ad9a5812ba1fab483fed7b2c9` |
+
+Trusted comment: `threat-pulse corpus validation bundle, corpus_version
+2026-09-14.6c6144778947, built 2026-09-17T22:04:25+08:00`. The file name carries the
+build date; the corpus is the 2026-09-14 one.
+
+Files inside, with the snapshot's digest matching the one you already hold:
+
+| file | SHA-256 |
+|---|---|
+| `corpus-snapshot.json` | `d2f114d7d0a912d2f3bb3c096615084d54b412d7e2171776b2e44003000c4c77`, **unchanged** |
+| `validate.py` | `718173fc55b8f72b0b3fbbb643e698aa53b91bd1db2067ca1a0f0fa08c0e53ed` |
+| `test_validate.py` | `1076a5629d854810c347249c42e1b4e90dcc5d50e93832bfb27df3b1a6b105bf` |
+| `README.md` | `595eaddb5a2d61f38ebb0720f187eec0dadc4d6dbe02eca37a741b15be648294` |
+
+```
+minisign -Vm threat-pulse-corpus-validation-2026-09-17.zip -P "<the public key line you confirmed>"
+```
+
+The README now states the decision order and the held-back rule under **Order of
+decision**.
 
 The hosted `enrich_observables` applies the same order and the same rules. Its
 contract follows separately.
