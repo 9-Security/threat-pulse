@@ -1,0 +1,253 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "status", "request_id", "generated_at", "corpus_version", "truncated", "detail", "since",
+    "coverage", "counts", "hits", "excluded", "unseen", "skipped", "errors"
+  ],
+  "properties": {
+    "status": { "type": "string", "enum": ["complete", "partial", "failed"] },
+    "request_id": { "type": "string" },
+    "generated_at": { "type": "string", "description": "UTC, ISO 8601." },
+    "corpus_version": {
+      "type": ["string", "null"],
+      "description": "The version an offline bundle built from the same report days carries. null when the stored days do not match the days it was computed from; coverage.version_note then says so."
+    },
+    "truncated": { "type": "boolean", "description": "True when values past the 100th were not looked up." },
+    "detail": { "type": "string", "enum": ["compact", "full"] },
+    "since": { "type": ["string", "null"] },
+    "coverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "report_range", "report_count", "source_count", "days_with_source_failures",
+        "headline_methods", "public_suffix_list_version", "scope", "verdict_note", "absence_note"
+      ],
+      "properties": {
+        "report_range": {
+          "type": ["array", "null"],
+          "items": { "type": "string" },
+          "minItems": 2,
+          "maxItems": 2,
+          "description": "First and last report day held. Required to interpret unseen."
+        },
+        "report_count": { "type": "integer", "description": "Daily report batches held, not articles." },
+        "source_count": { "type": ["integer", "null"], "description": "Distinct publishers that named at least one value." },
+        "days_with_source_failures": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["report_date", "sources_failed"],
+            "properties": {
+              "report_date": { "type": "string" },
+              "sources_failed": { "type": "array", "items": { "type": "string" } }
+            }
+          }
+        },
+        "headline_methods": { "type": "array", "items": { "type": "string" } },
+        "public_suffix_list_version": { "type": ["string", "null"] },
+        "scope": { "type": "string" },
+        "verdict_note": { "type": "string" },
+        "absence_note": { "type": "string" },
+        "version_note": { "type": "string" }
+      }
+    },
+    "counts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["requested", "processed", "hits", "headline_hits", "excluded", "unseen", "skipped", "failed"],
+      "properties": {
+        "requested": { "type": "integer" },
+        "processed": { "type": "integer", "description": "hits + excluded + unseen: the denominator of a coverage rate." },
+        "hits": { "type": "integer" },
+        "headline_hits": { "type": "integer" },
+        "excluded": { "type": "integer" },
+        "unseen": { "type": "integer" },
+        "skipped": { "type": "integer" },
+        "failed": { "type": "integer" }
+      }
+    },
+    "hits": { "type": "array", "items": { "$ref": "#/$defs/hit" } },
+    "excluded": { "type": "array", "items": { "$ref": "#/$defs/excluded" } },
+    "unseen": { "type": "array", "items": { "$ref": "#/$defs/observed" } },
+    "skipped": { "type": "array", "items": { "$ref": "#/$defs/skipped" } },
+    "errors": { "type": "array", "items": { "$ref": "#/$defs/error" } }
+  },
+  "$defs": {
+    "observed": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["input_index", "value", "normalized_value", "normalization_applied", "type", "type_supplied"],
+      "properties": {
+        "input_index": { "type": "integer" },
+        "value": { "type": "string", "description": "As submitted." },
+        "normalized_value": { "type": "string", "description": "What was matched: a URL's host, a canonical address, an upper-case CVE." },
+        "normalization_applied": {
+          "type": "array",
+          "items": { "type": "string", "enum": ["defang", "defang_scheme", "trailing_dot"] }
+        },
+        "type": { "type": "string", "enum": ["cve", "domain", "ip", "url", "md5", "sha1", "sha256"] },
+        "type_supplied": { "type": ["string", "null"] },
+        "warnings": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "hit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "input_index", "value", "normalized_value", "normalization_applied", "type", "type_supplied",
+        "verdict", "basis", "match", "headline", "matched_value", "match_boundary",
+        "first_seen", "last_seen", "days_since_last_seen", "report_count", "source_count", "publishers",
+        "suggested_investigation_action", "priority", "benign_basis", "reason_code", "reason",
+        "citation_count", "citations", "vulnerability"
+      ],
+      "properties": {
+        "input_index": { "type": "integer" },
+        "value": { "type": "string" },
+        "normalized_value": { "type": "string" },
+        "normalization_applied": { "type": "array", "items": { "type": "string" } },
+        "type": { "type": "string" },
+        "type_supplied": { "type": ["string", "null"] },
+        "warnings": { "type": "array", "items": { "type": "string" } },
+        "verdict": { "type": "string", "enum": ["source_reported", "benign_listed"] },
+        "basis": { "type": "string", "enum": ["publisher_report", "service_rule"] },
+        "match": { "type": "string", "enum": ["exact", "same_host", "parent_domain", "child_domain"] },
+        "headline": { "type": "boolean", "description": "True for exact, same_host and parent_domain." },
+        "matched_value": { "type": "string", "description": "The corpus value that matched, as stored." },
+        "match_boundary": { "type": ["string", "null"], "enum": [null, "host", "registrable_domain"] },
+        "first_seen": { "type": ["string", "null"] },
+        "last_seen": { "type": ["string", "null"] },
+        "days_since_last_seen": {
+          "type": ["integer", "null"],
+          "description": "Days from last_seen to the last report day held, not to today, so a corpus_version always gives the same number."
+        },
+        "report_count": { "type": "integer", "description": "Distinct daily reports. Not a corroboration measure." },
+        "source_count": { "type": "integer", "description": "Distinct publishers. The corroboration measure." },
+        "publishers": { "type": "array", "items": { "type": "string" } },
+        "suggested_investigation_action": {
+          "type": ["string", "null"],
+          "enum": [null, "patch", "block", "hunt", "monitor", "none"]
+        },
+        "priority": { "type": ["string", "null"] },
+        "benign_basis": {
+          "type": ["string", "null"],
+          "description": "The rule that held the value back from blocking: vendor_brand_apex, public_resolver_registry, domain_boundary_rule."
+        },
+        "reason_code": { "type": "string" },
+        "reason": { "type": ["string", "null"], "description": "This service's analyst note, in Traditional Chinese." },
+        "citation_count": { "type": "integer" },
+        "citations": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/citation" } },
+        "vulnerability": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/vulnerability" }] }
+      }
+    },
+    "citation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["publisher", "article_title", "article_url", "published_at", "report_date", "report_id"],
+      "properties": {
+        "publisher": { "type": ["string", "null"] },
+        "article_title": { "type": ["string", "null"] },
+        "article_url": { "type": "string" },
+        "published_at": { "type": ["string", "null"], "description": "As the publisher states it." },
+        "report_date": { "type": "string" },
+        "report_id": { "type": ["string", "null"] },
+        "context": { "type": ["string", "null"], "description": "full detail and the context scope only." }
+      }
+    },
+    "vulnerability": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kev", "cvss", "nvd_status", "epss", "provenance", "retrieved_at", "observed_on"],
+      "properties": {
+        "kev": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["listed", "date_added", "due_date", "known_ransomware"],
+          "properties": {
+            "listed": { "type": ["boolean", "null"] },
+            "date_added": { "type": ["string", "null"] },
+            "due_date": { "type": ["string", "null"] },
+            "known_ransomware": { "type": ["boolean", "null"] }
+          }
+        },
+        "cvss": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["score", "severity", "version", "vector"],
+          "properties": {
+            "score": { "type": ["number", "null"] },
+            "severity": { "type": ["string", "null"] },
+            "version": { "type": ["string", "null"] },
+            "vector": { "type": ["string", "null"] }
+          }
+        },
+        "nvd_status": { "type": ["string", "null"] },
+        "epss": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["score", "percentile", "date"],
+          "properties": {
+            "score": { "type": ["number", "null"] },
+            "percentile": { "type": ["number", "null"] },
+            "date": { "type": ["string", "null"] }
+          }
+        },
+        "provenance": { "type": "array", "items": { "type": "string" }, "description": "Where each figure came from." },
+        "retrieved_at": { "type": ["string", "null"], "description": "When this service fetched the record." },
+        "observed_on": { "type": "string", "description": "The report day whose record this is: the newest one held." }
+      }
+    },
+    "excluded": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "input_index", "value", "normalized_value", "normalization_applied", "type", "type_supplied",
+        "matched_value", "reason_codes", "report_dates"
+      ],
+      "properties": {
+        "input_index": { "type": "integer" },
+        "value": { "type": "string" },
+        "normalized_value": { "type": "string" },
+        "normalization_applied": { "type": "array", "items": { "type": "string" } },
+        "type": { "type": "string" },
+        "type_supplied": { "type": ["string", "null"] },
+        "warnings": { "type": "array", "items": { "type": "string" } },
+        "matched_value": { "type": "string" },
+        "reason_codes": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "publisher_domain, non_public_ip, excluded_editorial_section, and any the pipeline adds."
+        },
+        "report_dates": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "skipped": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["input_index", "value", "reason"],
+      "properties": {
+        "input_index": { "type": "integer" },
+        "value": { "type": "string" },
+        "reason": {
+          "type": "string",
+          "enum": [
+            "empty_value", "invalid_value", "non_public_ip", "internal_hostname",
+            "sensitive_url", "request_limit", "unsupported_type"
+          ]
+        },
+        "warnings": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "error": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["input_index", "value", "reason"],
+      "properties": {
+        "input_index": { "type": "integer" },
+        "value": { "type": "string" },
+        "reason": { "type": "string", "enum": ["lookup_failed", "time_budget_exceeded", "missing_citation"] }
+      }
+    }
+  }
+}

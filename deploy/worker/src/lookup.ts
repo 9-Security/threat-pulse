@@ -37,6 +37,12 @@ export interface LookupDeps<Row> {
   /** The lowercased stored value a row matched on. */
   keyOf(row: Row): string;
   toHit(row: Row): Item;
+  /**
+   * A row the corpus refused to treat as blockable (a brand apex, a public
+   * resolver). Such a value is matched only exactly: `api.github.com` must not
+   * answer from `github.com`.
+   */
+  heldBack?(row: Row): boolean;
   now(): number;
   budgetMs: number;
   chunkSize: number;
@@ -121,6 +127,7 @@ export async function lookupAccepted<Row>(
     let hits: Item[] = [];
     for (const candidate of list) {
       const rows = rowsByKey.get(candidate);
+      if (candidate !== value.toLowerCase() && rows?.some((row) => deps.heldBack?.(row))) continue;
       if (rows && rows.length) {
         matchedOn = candidate;
         hits = rows.map((row) => deps.toHit(row));

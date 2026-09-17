@@ -7,6 +7,8 @@
     "types": ["@cloudflare/workers-types"],
     "strict": true,
     "noEmit": true,
+    // enrich.ts imports guard.ts by its file name so node can run its tests unbundled.
+    "allowImportingTsExtensions": true,
     "skipLibCheck": true
   },
   "include": ["src/**/*.ts"],
