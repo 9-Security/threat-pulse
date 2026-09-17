@@ -51,10 +51,11 @@ wrong match as if it were the right one.
 | dot-separated labels per value | **16** | skipped, `invalid_value` |
 | request body | **256 KiB** | HTTP 413, JSON-RPC `-32600`; nothing is looked up |
 | candidates per D1 statement | 90 | internal; leaves room for the date bound |
-| D1 statements per call | at most **19** of the 50 | 2 for authentication plus at most 17 lookups (100 values × 15 parent candidates ÷ 90) |
+| D1 statements per call | at most **21** of the 50 | 2 for authentication, 2 for the quota counters, and at most 17 lookups (100 values × 15 parent candidates ÷ 90) |
 | wall-clock budget per lookup call | **10 s** | values whose statements were not yet sent are returned in `errors` with `time_budget_exceeded` |
 | rows per search | default 40, max **200** | `truncated` is true and `status` is `partial` when more rows matched than were returned |
-| requests per token | none | **not implemented** |
+| tool calls per token, per UTC minute | **60** by default, set per token | HTTP 429; nothing is looked up — see [Quotas](#quotas) |
+| tool calls per token, per UTC day | **5,000** by default, set per token | HTTP 429 until 00:00 UTC |
 
 The label limit exists because of the statement limit. Each label of a hostname is a
 parent candidate, and without a bound one value of a few hundred labels would expand
@@ -95,6 +96,49 @@ the call unknown* — never as misses — and retry with a smaller batch.
 **Before an endpoint pilot** the account is to be moved to Workers Paid, where CPU
 per request defaults to 30 s and D1 allows 1000 statements per invocation. This page
 will carry the numbers of whichever plan is in effect when the endpoint is used.
+
+## Quotas
+
+Each client token has a per-minute and a per-day ceiling on calls. Unless a token is
+given its own, they are **60 per minute and 5,000 per day**. A call carries up to 100
+values, so the default day covers up to 500,000 values.
+
+- **What counts:** `tools/call`, and both methods of `/heartbeat`. `initialize`,
+  `notifications/initialized` and `tools/list` do not count: MCP clients may send them
+  before every call, and none of them reads the corpus.
+- **Windows:** fixed UTC windows. A minute is `HH:MM`, and a day runs from 00:00 to
+  24:00 UTC, which is 08:00 to 08:00 in Taipei.
+- **Exact:** each counter is taken with one conditional database write, so concurrent
+  calls cannot push it past its limit.
+- **Refused calls** do not spend the daily quota when the minute limit refused them.
+  They are recorded, so the daily usage check can report a client being turned away.
+- **Suspending:** a limit of 0 suspends a token without revoking it.
+
+A refused call reads nothing and looks nothing up:
+
+```
+HTTP/1.1 429 Too Many Requests
+Retry-After: 53
+
+{"jsonrpc":"2.0","id":7,"error":{"code":-32029,
+ "message":"rate limit exceeded: 60 calls per minute",
+ "data":{"reason":"rate_limited","scope":"minute","limit":60,"retry_after_seconds":53}}}
+```
+
+`scope` is `minute` or `day`. `retry_after_seconds` counts to the next minute or to
+00:00 UTC. If the quota cannot be checked, because the database is unreachable, the
+call is refused with HTTP 503, code `-32030`, reason `quota_unavailable` and
+`Retry-After: 30`. In both cases **every value in the call is unknown**, never a miss.
+
+**Monitoring.** The daily check at 04:00 UTC reads the previous UTC day's counters.
+It mails the operator when a token had any call refused, or used 80% or more of its
+daily quota. A quiet day sends nothing.
+
+**Retention.** Minute counters are deleted by the next daily check. Day counters are
+kept 90 days. The counters hold a token hash, a time window and two integers.
+
+Issuing, revoking, suspending and changing a token's quotas are in
+[`token-runbook.md`](token-runbook.md).
 
 ## Timeouts
 
@@ -177,9 +221,12 @@ The database's own error message is neither returned nor logged.
 | situation | HTTP | body |
 |---|---|---|
 | missing, unknown, revoked or expired token | 401 | `{"error":"unauthorized"}` |
+| `User-Agent` is Python's `urllib` default, or present but empty | 403 from Cloudflare, before the service | plain text `error code: 1010` — send any other `User-Agent`. Checked 2026-09-17: `python-requests`, `python-httpx`, `aiohttp`, `Go-http-client`, `node`, `undici`, `axios`, `Java`, `okhttp`, and no header at all, all reach the service |
 | path other than `/mcp` | 404 | plain text |
 | method other than `POST` on `/mcp` | 405 | plain text |
 | body over 256 KiB | 413 | JSON-RPC error `-32600` |
+| tool call over the token's per-minute or per-day quota | 429, `Retry-After` | JSON-RPC error `-32029`, `data.reason` `rate_limited` |
+| quota could not be checked | 503, `Retry-After: 30` | JSON-RPC error `-32030`, `data.reason` `quota_unavailable` |
 | body that is not JSON | 200 | JSON-RPC error `-32700` |
 | unknown JSON-RPC method | 200 | JSON-RPC error `-32601` |
 | unknown tool, or missing or invalid arguments | 200 | tool result with `isError: true` and an `error` message |
