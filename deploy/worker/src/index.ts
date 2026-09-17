@@ -204,7 +204,7 @@ const TOOLS = [
   {
     name: "search_confirmed_iocs",
     description:
-      "Search confirmed indicators across every ingested day. Filter by text, action (patch/block/hunt), indicator_type, or a single date. A query that is a private or reserved address, an internal hostname, or a URL with credentials is refused with status skipped rather than searched.",
+      "Search confirmed indicators across every ingested day. Filter by text, action (patch/block/hunt), indicator_type, or a single date. When more rows match than limit (max 200), truncated is true and status is partial; narrow the filters to see the rest. A query that is a private or reserved address, an internal hostname, or a URL with credentials is refused with status skipped rather than searched.",
     inputSchema: {
       type: "object",
       properties: {
@@ -233,7 +233,7 @@ const TOOLS = [
   {
     name: "lookup_iocs",
     description:
-      "Look up to 100 indicators at once - the values pulled out of a log. Every submitted value comes back exactly once, in items, skipped or errors, with its input_index. Private and reserved addresses, internal hostnames, URLs with credentials and values past the 100th are skipped with a reason and never looked up; a value whose lookup did not complete is an error, never a miss. status is complete, partial or failed.",
+      "Look up to 100 indicators at once - the values pulled out of a log. Every submitted value comes back exactly once, in items, skipped or errors, with its input_index. Private and reserved addresses, internal hostnames, URLs with credentials and values past the 100th are skipped with a reason and never looked up; a value whose lookup did not complete is an error, never a miss. status is complete, partial or failed; values past the 100th make it partial (truncated is true), and should be resubmitted in another call.",
     inputSchema: {
       type: "object",
       properties: {
@@ -303,17 +303,21 @@ async function searchIocs(env: Env, args: Json, caller: Caller): Promise<Json> {
     binds.push(like, like, like);
   }
   const limit = clampLimit(args.limit);
+  // One row past the limit is fetched so `truncated` says whether rows were left
+  // out, rather than only that the limit was reached.
   const { results } = await env.DB.prepare(
     `SELECT * FROM indicators WHERE ${clauses.join(" AND ")}
       ORDER BY report_date DESC, indicator_type, value LIMIT ?`,
   )
-    .bind(...binds, limit)
+    .bind(...binds, limit + 1)
     .all<Json>();
+  const truncated = results.length > limit;
+  const rows = truncated ? results.slice(0, limit) : results;
   return {
-    status: "complete",
-    count: results.length,
-    truncated: results.length >= limit,
-    items: results.map((row) => rowToHit(row, caller)),
+    status: truncated ? "partial" : "complete",
+    count: rows.length,
+    truncated,
+    items: rows.map((row) => rowToHit(row, caller)),
   };
 }
 
@@ -368,7 +372,7 @@ async function lookupMany(
     chunkSize: 90,
   });
   return {
-    status: statusOf(items.length, errors.length),
+    status: statusOf(items.length, errors.length, split.truncated),
     truncated: split.truncated,
     requested: split.requested,
     items,

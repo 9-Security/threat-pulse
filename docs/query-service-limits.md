@@ -46,14 +46,14 @@ wrong match as if it were the right one.
 
 | limit | value | when exceeded |
 |---|---|---|
-| values per `lookup_iocs` call | **100** | values at position 100 and later are returned in `skipped` with `request_limit`; `truncated` is true |
+| values per `lookup_iocs` call | **100** | values at position 100 and later are returned in `skipped` with `request_limit`; `truncated` is true and `status` is `partial` |
 | characters per value | **512** | skipped, `invalid_value` |
 | dot-separated labels per value | **16** | skipped, `invalid_value` |
 | request body | **256 KiB** | HTTP 413, JSON-RPC `-32600`; nothing is looked up |
 | candidates per D1 statement | 90 | internal; leaves room for the date bound |
 | D1 statements per call | at most **19** of the 50 | 2 for authentication plus at most 17 lookups (100 values × 15 parent candidates ÷ 90) |
 | wall-clock budget per lookup call | **10 s** | values whose statements were not yet sent are returned in `errors` with `time_budget_exceeded` |
-| rows per search | default 40, max **200** | `truncated` is true when the count reaches the limit |
+| rows per search | default 40, max **200** | `truncated` is true and `status` is `partial` when more rows matched than were returned |
 | requests per token | none | **not implemented** |
 
 The label limit exists because of the statement limit. Each label of a hostname is a
@@ -115,14 +115,26 @@ unknown.
 
 | `status` | when | MCP `isError` |
 |---|---|---|
-| `complete` | no value is in `errors` | false |
-| `partial` | some values are in `errors` and some in `items` | false — the items are valid |
+| `complete` | no value is in `errors`, and nothing was dropped by a limit | false |
+| `partial` | some values are in `errors` and some in `items`; **or** `truncated` is true | false — the items are valid |
 | `failed` | every value that was looked up is in `errors` | **true** |
 
-`status` is decided by `errors` only. Skipped values never make a response partial,
-and `truncated` is reported independently of `status`.
+`complete` means nothing the caller asked for was left undone. Two things decide it:
 
-A call in which every value is skipped is `complete`, with empty `items` and `errors`.
+- **`errors`** — a lookup that did not finish.
+- **`truncated`** — values past the 100th, which would be looked up if resubmitted.
+  An over-limit call is therefore never `complete`, even when every lookup in it
+  succeeded. The dropped values are in `skipped` with `request_limit` and their
+  `input_index`, so the caller knows exactly which ones to send again.
+
+A value skipped for what it *is* — a private address, an internal name — does not make
+a response partial: resubmitting it would be refused again, so it is an answer rather
+than a gap. A call in which every value is skipped that way is `complete`, with empty
+`items` and `errors`.
+
+A search whose matches exceed its row limit returns `truncated: true` and `status:
+"partial"`. There is no cursor; narrow the search by `date`, `since`, `action` or
+`indicator_type` to reach the remaining rows.
 
 ## Skip reasons
 
@@ -226,7 +238,8 @@ it as a miss.
 
 | outcome | fields |
 |---|---|
-| searched | `status: "complete"`, `count`, `truncated`, `items` |
+| searched, all matches returned | `status: "complete"`, `count`, `truncated: false`, `items` |
+| searched, more matches than the limit | `status: "partial"`, `count`, `truncated: true`, `items` |
 | query refused | `status: "skipped"`, `reason`, `count: 0`, `truncated: false`, `items: []` |
 
 A query is refused only where the text is plainly an address that is not globally
@@ -234,6 +247,10 @@ reachable, an internal dotted name, or a URL carrying credentials. A single word
 search term: `ransomware` and `dc01` are searched; `dc01.corp` and `10.0.0.5` are not.
 
 ## Checking a change after it is deployed
+
+Only the current deployment answers. Version preview URLs are disabled
+(`preview_urls = false`): until 2026-09-17 they were on, and eight versions from before
+the input guard still answered at their own URLs.
 
 A deploy does not reach every location at once. Of 14 checks run within seconds of the
 2026-09-14 deploy, one was answered by the previous version and returned the old

@@ -132,16 +132,17 @@ link and follows it to the publisher.
 
 | limit | value | when exceeded |
 |---|---|---|
-| values per `lookup_iocs` call | 100 | values from position 100 on are returned in `skipped` with `request_limit`, and `truncated` is true |
+| values per `lookup_iocs` call | 100 | values from position 100 on are returned in `skipped` with `request_limit`; `truncated` is true and `status` is `partial` |
 | characters per value | 512 | skipped, `invalid_value` |
 | dot-separated labels per value | 16 | skipped, `invalid_value` |
 | request body | 256 KiB | HTTP 413; nothing is looked up |
-| rows per search response | 200, default 40 | `truncated` is true |
+| rows per search response | 200, default 40 | `truncated` is true and `status` is `partial` |
 | `context` per row | 300 characters | export-time cap |
 
 **Verified by test.** The earlier gap — values past the 100th dropped with nothing to
 say which — is closed. Every submitted value now comes back exactly once, in `items`,
-`skipped` or `errors`, with its position.
+`skipped` or `errors`, with its position, and a response that dropped any value is
+never `complete`.
 
 ## Values the service will not look up
 

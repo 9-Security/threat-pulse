@@ -49,8 +49,18 @@ export interface LookupResult {
   queries: number;
 }
 
-export function statusOf(items: number, errors: number): "complete" | "partial" | "failed" {
-  if (errors === 0) return "complete";
+/**
+ * `complete` means nothing the caller asked for was left undone. A value refused on
+ * its own merits (a private address, an internal name) is an answer, not a gap, so
+ * skips alone never make a response partial. Values dropped by our own limit are a
+ * gap: they would be looked up if resubmitted, so `truncated` makes it partial.
+ */
+export function statusOf(
+  items: number,
+  errors: number,
+  truncated = false,
+): "complete" | "partial" | "failed" {
+  if (errors === 0) return truncated ? "partial" : "complete";
   return items === 0 ? "failed" : "partial";
 }
 

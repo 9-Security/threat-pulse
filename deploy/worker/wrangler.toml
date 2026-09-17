@@ -2,6 +2,13 @@ name = "soc-iocs-mcp"
 main = "src/index.ts"
 compatibility_date = "2026-09-01"
 
+# Every uploaded version gets its own preview URL, and those URLs keep answering
+# with that version's code after a newer one is deployed. On 2026-09-17 eight
+# versions from before the input guard and the log change still answered there,
+# so any valid token could have reached code that queries private addresses and
+# drops values past the 100th. Nothing here needs previews.
+preview_urls = false
+
 # Created with `npx wrangler d1 create soc-iocs`.
 # The account id is not committed; export CLOUDFLARE_ACCOUNT_ID, or put it
 # in deploy/worker/.env alongside CLOUDFLARE_API_TOKEN.
