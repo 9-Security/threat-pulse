@@ -4,7 +4,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from soc_news_parser.snapshot import build_snapshot, write_bundle
+from soc_news_parser.snapshot import build_snapshot, refresh_tools, write_bundle
 
 VALIDATOR = Path(__file__).resolve().parents[1] / "tools" / "corpus-validator" / "validate.py"
 
@@ -598,3 +598,31 @@ def test_the_bundle_ships_its_own_test_file(tmp_path: Path) -> None:
     )
 
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_refreshing_the_tools_leaves_the_snapshot_byte_for_byte(tmp_path: Path) -> None:
+    bundle = tmp_path / "bundle"
+    write_bundle(bundle, _corpus(tmp_path))
+    snapshot_bytes = (bundle / "corpus-snapshot.json").read_bytes()
+    (bundle / "validate.py").write_text("# an older validator\n", encoding="utf-8")
+
+    refreshed = refresh_tools(bundle)
+
+    assert (bundle / "corpus-snapshot.json").read_bytes() == snapshot_bytes
+    assert "an older validator" not in (bundle / "validate.py").read_text(encoding="utf-8")
+    assert refreshed["corpus_version"] == json.loads(snapshot_bytes)["corpus_version"]
+
+
+def test_refreshing_the_tools_refuses_a_snapshot_that_fails_its_own_check(tmp_path: Path) -> None:
+    import pytest
+
+    bundle = tmp_path / "bundle"
+    write_bundle(bundle, _corpus(tmp_path))
+    snapshot = json.loads((bundle / "corpus-snapshot.json").read_text(encoding="utf-8"))
+    snapshot["values"]["planted.example.com"] = {"value": "planted.example.com", "type": "domain"}
+    (bundle / "corpus-snapshot.json").write_text(json.dumps(snapshot), encoding="utf-8")
+    (bundle / "validate.py").write_text("# untouched\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="refusing to ship"):
+        refresh_tools(bundle)
+    assert (bundle / "validate.py").read_text(encoding="utf-8") == "# untouched\n"

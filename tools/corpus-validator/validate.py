@@ -316,12 +316,23 @@ def skip_reason(value: str, supplied: str, detected: str) -> str | None:
 # --------------------------------------------------------------- matching ---
 
 
+def _whole(url: str) -> str:
+    """A URL as compared whole: trimmed, lower-cased, without a trailing slash."""
+    return url.strip().rstrip("/").lower()
+
+
 class Corpus:
     def __init__(self, snapshot: dict[str, Any]) -> None:
         self.values: dict[str, dict[str, Any]] = snapshot.get("values") or {}
         self.excluded: dict[str, dict[str, Any]] = snapshot.get("excluded") or {}
         self.cve_intel: dict[str, dict[str, Any]] = snapshot.get("cve_intel") or {}
         self.boundaries = Boundaries(snapshot.get("public_suffix_rules") or {})
+        # Whole URLs by their form without a trailing slash, on both sides. The
+        # input was stripped and the stored keys were not, so the three confirmed
+        # URLs stored as `…/` could never match exactly, and three exclusions were
+        # never found.
+        self.whole_values = {_whole(k): k for k in self.values if "://" in k}
+        self.whole_excluded = {_whole(k): k for k in self.excluded if "://" in k}
         # Confirmed hostnames grouped by registrable domain, so the reverse
         # relation (corpus named a child of what was submitted) can be found
         # without scanning every value per lookup.
@@ -341,26 +352,63 @@ class Corpus:
         """
         key = normalized.lower()
         if kind == "url" and original:
-            whole = original.strip().rstrip("/").lower()
-            if whole in self.values:
-                return "exact", whole
-        if key in self.values:
+            stored = self.whole_values.get(_whole(original))
+            if stored is not None:
+                return "exact", stored
+        if key in self.values and not (kind == "url" and self._held_back(key)):
             return ("same_host" if kind == "url" else "exact"), key
         if kind not in ("domain", "url"):
             return None, None
         for parent in self.boundaries.parents(key):
-            if parent in self.values:
+            if parent in self.values and not self._held_back(parent):
                 return "parent_domain", parent
         # The corpus named something beneath what was submitted. Real, weaker,
         # and reported under its own name so it cannot be read as an exact hit.
         children = [
             child
             for child in self.by_registrable.get(self.boundaries.registrable(key), ())
-            if child != key and child.endswith("." + key)
+            if child != key and child.endswith("." + key) and not self._held_back(child)
         ]
         if children:
             return "child_domain", sorted(children)[0]
         return None, None
+
+    def _held_back(self, key: str) -> bool:
+        """A value the corpus itself refused to treat as blockable.
+
+        `benign_basis` marks a brand apex such as `github.com`, a public resolver, or
+        a registry boundary. An exact match on one is still reported, with that
+        basis attached. A relation through one is not: every URL on `github.com`
+        and every host under `login.microsoftonline.com` would otherwise count as
+        a hit, and those are among the commonest values in any alert stream.
+        """
+        return bool(self.values.get(key, {}).get("benign_basis"))
+
+    def exclusion(self, normalized: str, kind: str, original: str, method: str | None) -> dict[str, Any] | None:
+        """The exclusion that outranks `method`, if any.
+
+        Exclusions are recorded per article: `excluded_editorial_section` means one
+        article mentioned the value outside its indicator section, and
+        `publisher_domain` means the value was that article's own publisher. So a
+        direct confirmation outranks one. Checking exclusions first reported
+        CVE-2026-20079, confirmed by six publishers including CISA, as excluded
+        because one of them also named it in commentary.
+
+        The order is: exact confirmation, then an exclusion of the whole value,
+        then a same-host confirmation, then an exclusion of the host, then any
+        parent or child relation. A URL is checked whole as well as by host,
+        because exclusions of URLs are recorded whole; looking them up by host
+        alone never found them, and they came back `miss`.
+        """
+        if method == "exact":
+            return None
+        if kind == "url" and original:
+            stored = self.whole_excluded.get(_whole(original))
+            if stored is not None:
+                return self.excluded[stored]
+        if method == "same_host":
+            return None
+        return self.excluded.get(normalized.lower())
 
 
 # ------------------------------------------------------------- integrity ---
@@ -518,7 +566,8 @@ def _evaluate_row(row: dict[str, str], corpus: Corpus, out: dict[str, Any]) -> d
     normalized = normalize(value, used)
     out["normalized_value"] = normalized
 
-    excluded = corpus.excluded.get(normalized.lower())
+    method, key = corpus.match(normalized, used, original=value)
+    excluded = corpus.exclusion(normalized, used, value, method)
     if excluded:
         # "We looked and ruled this out" is not "we have never seen it".
         out["status"] = "excluded"
@@ -527,7 +576,6 @@ def _evaluate_row(row: dict[str, str], corpus: Corpus, out: dict[str, Any]) -> d
         )
         return out
 
-    method, key = corpus.match(normalized, used, original=value)
     if not method or key is None:
         out["status"] = "miss"
         return out
