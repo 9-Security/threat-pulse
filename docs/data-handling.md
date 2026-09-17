@@ -100,9 +100,8 @@ sets of people are listed here, and as of 2026-09-17 they are the same.
 | Cloudflare personnel | governed by Cloudflare's terms | no statement is made here |
 
 **Why there are two tokens.** Until 2026-09-17 one token did both jobs, and it was
-stored on the collecting host. That host is shared. Two accounts on it can become
-root: the operator's, and the service account of an unrelated, internet-facing
-service, whose membership of the `docker` group is root-equivalent. Either could have
+stored on the collecting host. That host is shared, and two accounts on it have
+root-equivalent access: the operator's and another service's. Either could have
 read that token, and it could redeploy the Worker. This service now keeps a token
 limited to D1 on that host, and its deploy token elsewhere.
 
