@@ -248,6 +248,10 @@ search term: `ransomware` and `dc01` are searched; `dc01.corp` and `10.0.0.5` ar
 
 ## Checking a change after it is deployed
 
+Only the current deployment answers. Version preview URLs are disabled
+(`preview_urls = false`): until 2026-09-17 they were on, and eight versions from before
+the input guard still answered at their own URLs.
+
 A deploy does not reach every location at once. Of 14 checks run within seconds of the
 2026-09-14 deploy, one was answered by the previous version and returned the old
 response shape; five retries of the same check minutes later were all correct. A live
