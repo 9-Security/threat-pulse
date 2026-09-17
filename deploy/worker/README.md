@@ -72,23 +72,18 @@ next daily push — whose `INSERT` now names it — fails against the table that
 never got it. Existing databases are updated from `../d1/migrations/`; see the
 README there.
 
-Issue a token — only its SHA-256 is stored, so keep the value you generate:
+Client tokens are managed with `token-admin.mjs`. Only a token's SHA-256 is
+stored, so the value is shown once:
 
 ```bash
-TOKEN="$(openssl rand -hex 32)"
-HASH="$(printf %s "$TOKEN" | sha256sum | cut -d' ' -f1)"
-npx wrangler d1 execute soc-iocs --command \
-  "INSERT INTO tokens (token_sha256, label, scopes, created_at)
-   VALUES ('$HASH', 'analyst laptop', 'read context', '$(date -u +%FT%TZ)');"
-echo "$TOKEN"   # shown once
+node token-admin.mjs issue "analyst laptop" --scopes "read context" --expires 2026-12-31
+node token-admin.mjs list
+node token-admin.mjs revoke "analyst laptop"
 ```
 
-Revoke one without touching the others:
-
-```bash
-npx wrangler d1 execute soc-iocs --command \
-  "UPDATE tokens SET revoked_at = datetime('now') WHERE label = 'analyst laptop';"
-```
+It passes the hash as a bound parameter. A hash typed into `wrangler d1 execute
+--command` would be kept in D1's query insights for up to 90 days. Quotas, handover
+and revocation are in [`docs/token-runbook.md`](../../docs/token-runbook.md).
 
 ## Pushing a day
 

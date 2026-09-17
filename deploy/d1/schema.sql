@@ -85,5 +85,20 @@ CREATE TABLE IF NOT EXISTS tokens (
     expires_at   TEXT,
     revoked_at   TEXT,
     last_used_at TEXT,
-    call_count   INTEGER NOT NULL DEFAULT 0
+    call_count   INTEGER NOT NULL DEFAULT 0,
+    -- Per-token quotas on tool calls. NULL means the Worker's default; 0 suspends
+    -- the token without revoking it.
+    rate_per_minute INTEGER,
+    rate_per_day    INTEGER
+);
+
+-- Quota counters: one row per token per UTC minute (`m:YYYY-MM-DDTHH:MM`) or day
+-- (`d:YYYY-MM-DD`). Token hash, time and counts only - never a submitted value.
+-- Minute rows are dropped by the next daily check, day rows after 90 days.
+CREATE TABLE IF NOT EXISTS token_usage (
+    token_sha256 TEXT NOT NULL,
+    bucket       TEXT NOT NULL,
+    count        INTEGER NOT NULL DEFAULT 0,
+    rejected     INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (token_sha256, bucket)
 );

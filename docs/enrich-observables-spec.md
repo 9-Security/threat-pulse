@@ -604,7 +604,7 @@ open item. In summary:
 
 - Request values are logged nowhere. The Worker's per-request invocation logs are
   disabled, its only console output is the heartbeat's, which carries no request
-  data, and its only write is a usage counter on the calling token; every other
+  data, and its only writes are usage and quota counters on the calling token; every other
   statement is a `SELECT`, so no path exists by which a submitted value could
   reach the corpus.
 - Cloudflare is the only subprocessor on the query path. Where a request is

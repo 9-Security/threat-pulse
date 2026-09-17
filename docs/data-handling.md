@@ -66,6 +66,7 @@ Every place a request could leave a trace, checked on 2026-09-17:
 | Worker analytics | per time bucket: data center, status, script version, request count, CPU and duration | up to 90 days back | the dataset's schema, read through the API: it has **no field** for an IP address, URL, header or body |
 | D1 query insights | statement text, duration, serving region, error text. Cloudflare: "Bound parameters are not captured" | up to 90 days back (Cloudflare's D1 page says 31; this account's analytics settings allow 90) | the recorded statements themselves — see below |
 | `tokens` table in D1 | per client token: `last_used_at`, `call_count` | until the row is deleted | the code |
+| `token_usage` table in D1 | per client token and UTC minute or day: calls counted and calls refused by quota | minute rows until the next daily check; day rows 90 days | the code |
 | Log export (Logpush) | — | none configured | Worker setting `logpush: false` |
 
 **D1 query insights, checked against what they actually hold.** Over the seven days
@@ -122,8 +123,8 @@ on the collecting host.
   not stored anywhere.
 - **Revoking or altering another client's token row**: an availability risk, not a
   confidentiality one.
-- **Nothing that observes lookups.** A lookup's only write is its token's usage
-  counter, and that write carries no submitted value. SQLite triggers fire only on
+- **Nothing that observes lookups.** A lookup's only writes are its token's usage
+  counters, and they carry no submitted value. SQLite triggers fire only on
   `INSERT`, `UPDATE` and `DELETE`, never on a read, so a trigger planted in the
   database could see the counter but never a looked-up value. Query insights and
   analytics are refused to this token.
@@ -164,17 +165,28 @@ never receives a submitted observable.
 
 **No. Verified, and structurally so.**
 
-The only write statement in the entire Worker is a usage counter on the calling
-token:
+The Worker writes only usage counters for the calling token, and a daily cleanup of
+those counters:
 
 ```sql
 UPDATE tokens SET last_used_at = ?, call_count = call_count + 1
   WHERE token_sha256 = ?
+
+-- quotas: one row per token per UTC minute or day
+INSERT INTO token_usage (token_sha256, bucket, count) VALUES (?, ?, 1)
+  ON CONFLICT (token_sha256, bucket) DO UPDATE SET count = count + 1 WHERE count < ?
+  RETURNING count
+INSERT INTO token_usage (token_sha256, bucket, count, rejected) VALUES (?, ?, 0, 1)
+  ON CONFLICT (token_sha256, bucket) DO UPDATE SET rejected = rejected + 1
+
+DELETE FROM token_usage WHERE (bucket LIKE 'm:%' AND bucket < ?) OR (bucket LIKE 'd:%' AND bucket < ?)
 ```
 
-Every other statement is a `SELECT`. Submitted values become bound parameters in a
-comparison and are discarded when the response is returned. There is no code path by
-which a queried value could reach the corpus, because there is no insert to reach.
+Every bound parameter in these is a token hash, a time window, a limit or a count. No
+submitted value is among them. Every other statement is a `SELECT`: submitted values
+become bound parameters in a comparison and are discarded when the response is
+returned. There is no code path by which a queried value could reach the corpus or any
+other table, because no write takes one.
 
 The corpus is built solely by the daily collector, from published vendor and CERT
 reporting. Nothing a caller sends influences it.
@@ -186,6 +198,11 @@ plaintext is displayed once at issue and cannot be recovered. Tokens carry scope
 (`read`, `context`) and are revoked individually, so a leak invalidates one caller
 rather than all of them. `last_used_at` and `call_count` make an unused or runaway
 token visible.
+
+**Quotas.** Each token has a per-minute and a per-day ceiling on tool calls, 60 and
+5,000 unless set otherwise, enforced before anything is looked up. A daily check
+mails the operator about any refused call or any token near its daily ceiling. See
+`query-service-limits.md` and `token-runbook.md`.
 
 **Tenant isolation — stated plainly, because the honest answer is not "yes".** There
 is no tenant partitioning: every valid token reads the same corpus. That is
@@ -273,7 +290,6 @@ Listed together so none of it has to be inferred from the prose above.
 | Region where a request is processed | **not controllable** on this account; an Enterprise add-on |
 | D1 location pinned by configuration | **not possible** — location hints are best-effort, there is no APAC jurisdiction, and one cannot be added after creation; observed APAC, single copy |
 | Defanged values and URL query strings on the hosted service | sent and matched as given, not normalised server-side |
-| Per-token rate limiting | not implemented |
 | Deletion of the token shared until 2026-09-17 | **not done** — this service no longer uses it, but another service on the collecting host still does, for DNS and tunnel management. That service is to move to a token without Workers or D1 permissions, then the shared token is deleted. Until then, a token able to redeploy this service remains on that host |
 | List of every API token on the account | not visible to either token in use; the account owner confirms |
 | Whether a live tail shows the `Authorization` header | not documented by Cloudflare; assume it does. The account member and the deploy token can start one, and so can the shared token until it is deleted |
@@ -281,7 +297,7 @@ Listed together so none of it has to be inferred from the prose above.
 | Tenant partitioning of the corpus | not present, and deliberately so |
 
 No longer in this table: reporting of `truncated` and `skipped` on over-limit
-batches, and server-side skipping of private addresses and internal hostnames, both
-implemented and tested; and whether pre-change invocation logs held the
+batches, server-side skipping of private addresses and internal hostnames, and
+per-token quotas, all implemented and tested; and whether pre-change invocation logs held the
 `Authorization` header, which is still not established but no longer matters,
 because every token that could appear in them is revoked.

@@ -2,15 +2,24 @@
  * MCP server for the SOC IoC corpus, served from Cloudflare Workers over D1.
  *
  * The daily job pushes confirmed indicators here; this Worker only reads them.
- * It never scrapes, never writes, and never returns article bodies - those stay
- * in the audit JSON, because they are 26 publishers' text and no query needs
- * them.
+ * It never scrapes and never returns article bodies - those stay in the audit
+ * JSON, because they are 26 publishers' text and no query needs them. Its only
+ * writes are per-token usage counters, which hold no submitted value.
  */
 
 import pslRules from "./psl.json";
 import { assess, renderHeartbeat, taipeiDate, type HeartbeatState } from "./heartbeat";
 import { classifySearchText, MAX_BATCH, partition, type Skipped } from "./guard";
 import { lookupAccepted, statusOf, type LookupError } from "./lookup";
+import {
+  checkQuota,
+  limitsFor,
+  renderUsageAlert,
+  USAGE_RETENTION_DAYS,
+  type QuotaDecision,
+  type QuotaLimits,
+  type QuotaStore,
+} from "./quota";
 
 export interface Env {
   DB: D1Database;
@@ -47,7 +56,14 @@ type Json = Record<string, unknown>;
 interface Caller {
   label: string;
   scopes: Set<string>;
+  /** Key for the usage counters; the stored hash, never the token. */
+  quotaKey: string;
+  limits: QuotaLimits;
 }
+
+/** Implementation-defined JSON-RPC server errors (-32000 to -32099). */
+const RATE_LIMITED = -32029;
+const QUOTA_UNAVAILABLE = -32030;
 
 /* -------------------------------------------------------------- auth ----- */
 
@@ -72,11 +88,18 @@ async function authenticate(request: Request, env: Env): Promise<Caller | null> 
 
   const hash = await sha256Hex(presented);
   const row = await env.DB.prepare(
-    `SELECT label, scopes, expires_at, revoked_at
+    `SELECT label, scopes, expires_at, revoked_at, rate_per_minute, rate_per_day
        FROM tokens WHERE token_sha256 = ?`,
   )
     .bind(hash)
-    .first<{ label: string; scopes: string; expires_at: string | null; revoked_at: string | null }>();
+    .first<{
+      label: string;
+      scopes: string;
+      expires_at: string | null;
+      revoked_at: string | null;
+      rate_per_minute: number | null;
+      rate_per_day: number | null;
+    }>();
 
   if (row) {
     if (row.revoked_at) return null;
@@ -88,13 +111,78 @@ async function authenticate(request: Request, env: Env): Promise<Caller | null> 
     )
       .bind(new Date().toISOString(), hash)
       .run();
-    return { label: row.label, scopes: new Set(row.scopes.split(/[,\s]+/).filter(Boolean)) };
+    return {
+      label: row.label,
+      scopes: new Set(row.scopes.split(/[,\s]+/).filter(Boolean)),
+      quotaKey: hash,
+      limits: limitsFor(row),
+    };
   }
 
   if (env.BOOTSTRAP_TOKEN && timingSafeEqual(presented, env.BOOTSTRAP_TOKEN)) {
-    return { label: "bootstrap", scopes: new Set(["read", "context"]) };
+    return { label: "bootstrap", scopes: new Set(["read", "context"]), quotaKey: "bootstrap", limits: limitsFor({}) };
   }
   return null;
+}
+
+/* ------------------------------------------------------------ quotas ----- */
+
+function quotaStore(env: Env, key: string): QuotaStore {
+  return {
+    async take(bucket, limit) {
+      // One statement: the row is created at 1, or incremented only while below the
+      // limit. When the WHERE fails nothing is updated and nothing is returned.
+      const row = await env.DB.prepare(
+        `INSERT INTO token_usage (token_sha256, bucket, count) VALUES (?, ?, 1)
+           ON CONFLICT (token_sha256, bucket) DO UPDATE SET count = count + 1
+           WHERE count < ?
+         RETURNING count`,
+      )
+        .bind(key, bucket, limit)
+        .first<{ count: number }>();
+      return row !== null;
+    },
+    async reject(dayBucket) {
+      await env.DB.prepare(
+        `INSERT INTO token_usage (token_sha256, bucket, count, rejected) VALUES (?, ?, 0, 1)
+           ON CONFLICT (token_sha256, bucket) DO UPDATE SET rejected = rejected + 1`,
+      )
+        .bind(key, dayBucket)
+        .run();
+    },
+  };
+}
+
+/**
+ * Count one call against the caller's quotas. Null means go ahead; otherwise the
+ * response to send instead. `id` is the JSON-RPC id, or undefined for a non-RPC path.
+ *
+ * A quota that cannot be checked refuses the call rather than waving it through:
+ * the database it needs is the one every lookup needs too.
+ */
+async function enforceQuota(env: Env, caller: Caller, id?: unknown): Promise<Response | null> {
+  let decision: QuotaDecision;
+  try {
+    decision = await checkQuota(quotaStore(env, caller.quotaKey), caller.limits, new Date());
+  } catch {
+    return refusal(id, 503, QUOTA_UNAVAILABLE, "quota check unavailable; nothing was looked up", {
+      reason: "quota_unavailable",
+      retry_after_seconds: 30,
+    });
+  }
+  if (decision.allowed) return null;
+  return refusal(id, 429, RATE_LIMITED, `rate limit exceeded: ${decision.limit} calls per ${decision.scope}`, {
+    reason: "rate_limited",
+    scope: decision.scope,
+    limit: decision.limit,
+    retry_after_seconds: decision.retryAfterSeconds,
+  });
+}
+
+function refusal(id: unknown, status: number, code: number, message: string, data: Json): Response {
+  const headers = { "retry-after": String(data.retry_after_seconds) };
+  const body = id === undefined ? { error: data.reason, message, ...data } : { jsonrpc: "2.0", id, error: { code, message, data } };
+  return Response.json(body, { status, headers });
 }
 
 /* ------------------------------------------------------------- shaping --- */
@@ -522,6 +610,52 @@ async function runHeartbeat(env: Env): Promise<void> {
 }
 
 /**
+ * Report yesterday's (UTC) client token usage when it crossed a threshold, and drop
+ * counters that are no longer needed. Never throws, like the heartbeat. Only token
+ * labels and counts are read; the usage table holds nothing else.
+ */
+async function runUsageCheck(env: Env): Promise<void> {
+  const now = new Date();
+  const day = new Date(now.getTime() - 86_400_000).toISOString().slice(0, 10);
+  try {
+    const { results } = await env.DB.prepare(
+      `SELECT t.label, t.rate_per_day, u.count, u.rejected
+         FROM token_usage u JOIN tokens t ON t.token_sha256 = u.token_sha256
+        WHERE u.bucket = ?
+        ORDER BY t.label`,
+    )
+      .bind(`d:${day}`)
+      .all<{ label: string; rate_per_day: number | null; count: number; rejected: number }>();
+    const usage = results.map((row) => ({
+      label: row.label,
+      calls: Number(row.count),
+      rejected: Number(row.rejected),
+      perDay: limitsFor(row).perDay,
+    }));
+    console.log(
+      `usage: day=${day} tokens=${usage.length} calls=${usage.reduce((n, u) => n + u.calls, 0)} ` +
+        `rejected=${usage.reduce((n, u) => n + u.rejected, 0)}`,
+    );
+    const mail = renderUsageAlert(day, usage);
+    if (mail) {
+      const outcome = await sendAlertMail(env, mail);
+      (outcome === "sent" ? console.log : console.error)(`usage: ${mail.subject} -- ${outcome}`);
+    }
+
+    const today = now.toISOString().slice(0, 10);
+    const oldest = new Date(now.getTime() - USAGE_RETENTION_DAYS * 86_400_000).toISOString().slice(0, 10);
+    await env.DB.prepare(
+      `DELETE FROM token_usage
+        WHERE (bucket LIKE 'm:%' AND bucket < ?) OR (bucket LIKE 'd:%' AND bucket < ?)`,
+    )
+      .bind(`m:${today}`, `d:${oldest}`)
+      .run();
+  } catch (error) {
+    console.error(`usage: check failed: ${String(error)}`);
+  }
+}
+
+/**
  * GET reports the verdict and sends nothing. POST sends a test mail, labelled as
  * one, whatever the verdict says -- the point is to prove the mail path on a day
  * when the corpus is healthy, which is every day the alarm is not needed.
@@ -577,6 +711,7 @@ async function handleHeartbeatProbe(request: Request, env: Env, caller: Caller):
 export default {
   async scheduled(_event: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
     ctx.waitUntil(runHeartbeat(env));
+    ctx.waitUntil(runUsageCheck(env));
   },
 
   async fetch(request: Request, env: Env): Promise<Response> {
@@ -603,6 +738,10 @@ export default {
           headers: { "www-authenticate": 'Bearer realm="iocs"' },
         });
       }
+      // Counted like a tool call: POST sends mail, and a leaked token should not be
+      // able to send it without limit, even to the operator.
+      const refused = await enforceQuota(env, caller);
+      if (refused) return refused;
       return handleHeartbeatProbe(request, env, caller);
     }
 
@@ -636,6 +775,13 @@ export default {
     const id = body.id ?? null;
     const method = String(body.method ?? "");
     const params = (body.params ?? {}) as Json;
+
+    // Only tool calls are counted. MCP clients may initialize and list tools before
+    // every call, and neither reads the corpus.
+    if (method === "tools/call") {
+      const refused = await enforceQuota(env, caller, id);
+      if (refused) return refused;
+    }
 
     switch (method) {
       case "initialize":
