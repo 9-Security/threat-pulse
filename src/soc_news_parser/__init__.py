@@ -261,6 +261,10 @@ def _arguments() -> argparse.Namespace:
         "--date", help="report date key; defaults to the report's own window end"
     )
     export_d1.add_argument("--output", help="write SQL here instead of stdout")
+    export_d1.add_argument(
+        "--corpus-state-from",
+        help="report folder to compute the corpus_version from; written in the same batch",
+    )
 
     backtest = subcommands.add_parser(
         "backtest",
@@ -793,7 +797,11 @@ def main() -> None:
 
     if args.command == "export-d1":
         try:
-            sql = export_report(args.json_report, report_date=args.date)
+            sql = export_report(
+                args.json_report,
+                report_date=args.date,
+                corpus_state_from=args.corpus_state_from,
+            )
         except (OSError, ValueError) as error:
             print(f"error: {error}", file=sys.stderr)
             raise SystemExit(1) from error

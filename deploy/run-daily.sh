@@ -156,8 +156,11 @@ push_to_d1() {
     fi
   fi
 
+  # The corpus_version the service reports is computed from the same folder an
+  # offline bundle is built from, and written in the same batch as the day.
   uv run soc-news-parser export-d1 \
-    --json-report "$evidence" --date "$day" --output "/tmp/${day}.sql" || return 1
+    --json-report "$evidence" --date "$day" --output "/tmp/${day}.sql" \
+    --corpus-state-from "$(dirname "$(dirname "$evidence")")" || return 1
   npx --yes wrangler@3 d1 execute soc-iocs \
     --config deploy/worker/wrangler.toml --remote --file "/tmp/${day}.sql" || {
       rm -f "/tmp/${day}.sql"
