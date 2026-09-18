@@ -127,9 +127,13 @@ channel separate from the endpoint's. See [`token-runbook.md`](token-runbook.md)
 
 ## What the plan costs
 
-The service runs on **Workers Free** today. The pilot needs **Workers Paid**, because
+The service runs on **Workers Free**, and stays there for the pilot: the operator
+decided on 2026-09-18 that the measured CPU overrun does not justify the charge.
+
 `enrich_observables` measured 34 ms CPU at p50 for a worst-case call and 7 ms for a
-typical one, against Free's documented 10 ms per request.
+typical one, against Free's documented 10 ms per request. No call has been terminated,
+which is an observation rather than a promise; the contract tells the consumer to treat
+any platform error as every value unknown and retry.
 
 | | Workers Free | Workers Paid |
 |---|---|---|
@@ -140,11 +144,15 @@ typical one, against Free's documented 10 ms per request.
 | D1 rows written | 100,000 per day | 50 million per month included, then $1.00 per million |
 | D1 storage | 5 GB | 5 GB included, then $0.75 per GB-month |
 
-At the pilot's own quota ceiling — 5,000 calls a day at about 50 ms each — that is
-roughly 7.5 million CPU-ms a month, a quarter of what the plan includes, and about
-150,000 requests against the included 10 million. **The expected bill is the US$5
-minimum.** Passing it would take roughly 20,000 calls a day, four times the quota the
-contract states.
+At the pilot's own quota ceiling — 5,000 calls a day at about 50 ms each — Paid would
+cost the **US$5 minimum**: roughly 7.5 million CPU-ms a month against 30 million
+included, and 150,000 requests against 10 million. Passing that would take about
+20,000 calls a day.
+
+**Staying on Free** means the 10 ms CPU limit remains documented and exceeded, and
+that the daily ceilings apply: 100,000 requests, 5 million database rows read and
+100,000 written. The request ceiling is far away. Rows read per call has not been
+measured yet, and should be before the pilot carries real volume.
 
 ---
 
