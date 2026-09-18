@@ -152,6 +152,13 @@ kept 90 days. The counters hold a token hash, a time window and two integers.
 Issuing, revoking, suspending and changing a token's quotas are in
 [`token-runbook.md`](token-runbook.md).
 
+## The daily push
+
+The collector pushes the new day at about 22:00 UTC (06:00 Asia/Taipei). Cloudflare's
+import path states that the database is unavailable to queries while a file is being
+applied; on 2026-09-18 the window was under five seconds. A call in that window returns
+`status: "failed"` with every value in `errors`, which is a retry, never an absence.
+
 ## Timeouts
 
 | layer | bound | what the caller sees |

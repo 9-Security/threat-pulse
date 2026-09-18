@@ -308,6 +308,17 @@ The pilot runs on Workers Paid, where CPU per request defaults to 30 s; the limi
 in effect are confirmed separately. Use `compact` unless you need every citation:
 `full` on 100 hits is about 0.4 MiB.
 
+## Availability
+
+The corpus is pushed once a day, at about 22:00 UTC (06:00 Asia/Taipei). The push
+replaces the day's rows through Cloudflare's import path, and Cloudflare states that
+the database is unavailable to queries while it runs. On 2026-09-18 that window was
+under five seconds.
+
+A call landing in it fails the way any database failure does: `status: "failed"`, every
+value in `errors` as `lookup_failed`, and `isError: true`. **Retry.** Nothing in such a
+response is an absence.
+
 ## Examples
 
 All in [`docs/examples/enrich_observables/`](examples/enrich_observables/).
