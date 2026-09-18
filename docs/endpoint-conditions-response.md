@@ -129,10 +129,10 @@ account and used that token as well. Because the two services share a Cloudflare
 account, and Cloudflare's Workers permissions cover the whole account rather than one
 Worker, that token could deploy this service.
 
-**It was deleted on 2026-09-18**, by the account owner, in the Cloudflare dashboard.
-No token that can deploy this service is now held on the collecting host. The
-deletion is recorded on the owner's confirmation: our own copy, kept only to re-test
-the token, was destroyed on the owner's instruction beforehand.
+**That token is still in place.** A deletion on 2026-09-18 removed a different token
+by mistake, and the shared one still authenticated the same morning. Until it is
+removed, a credential able to redeploy this service is held on the collecting host.
+We will tell you when that is done, and we treat it as a precondition of the pilot.
 
 The database-only host token can still change the corpus and issue itself a client
 token. It cannot see anyone's lookups: a lookup writes nothing that contains a value.
@@ -154,6 +154,8 @@ about it.
 **Still not true, stated plainly:**
 
 - The request region and the storage region are observed, not enforced.
+- The token shared until 2026-09-17 is **not yet removed**, so a credential able to
+  redeploy the service is still held by another service on the collecting host.
 - Neither of our tokens can list every API token on the account; the account owner
   confirms that list.
 - Cloudflare does not document whether a live tail shows the `Authorization` header,

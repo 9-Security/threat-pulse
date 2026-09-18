@@ -94,9 +94,11 @@ what was observed on one day, not a guarantee.
 **What a caller should do:** treat a platform error or a timeout as *every value in
 the call unknown* — never as misses — and retry with a smaller batch.
 
-**Before an endpoint pilot** the account is to be moved to Workers Paid, where CPU
-per request defaults to 30 s and D1 allows 1000 statements per invocation. This page
-will carry the numbers of whichever plan is in effect when the endpoint is used.
+**The account stays on Workers Free for the pilot**, by the operator's decision on
+2026-09-18. Workers Paid would raise the CPU limit to 30 s per request for a minimum
+of US$5 a month; the trade is recorded in
+[`cloudflare-access.md`](cloudflare-access.md#what-the-plan-costs). What this means in
+practice is below.
 
 ### `enrich_observables`
 
@@ -105,9 +107,23 @@ The contract tool uses more CPU than `lookup_iocs`. Measured on 2026-09-18:
 - **worst case** (100 URLs with 16-label hosts): p50 34 ms, p90 56 ms;
 - **six typical values**: p50 7 ms, p90 14 ms.
 
-Both are over this plan's documented 10 ms. Every call completed, but **the hosted
-pilot requires Workers Paid**. Its limits, statements per call and measurements are in
+Both are over this plan's documented 10 ms, and not only in the worst case: a
+six-value call reached 14 ms at p90. The floor for any call is around 5 ms, so a
+smaller batch lowers CPU without bringing it reliably under the limit.
+
+Every call made against the deployed service has returned a normal response; none was
+terminated. **That is an observation, not a guarantee**, and a caller must treat any
+non-200 response as every value unknown and retry.
+
+Two things reduce it: the default `compact` detail, and serialising an enrichment
+answer without indentation, which was 400 KiB of whitespace on a 100-hit `full` call.
+
+Its limits, statements per call and measurements are in
 [`enrich-observables-contract.md`](enrich-observables-contract.md).
+
+**Not yet measured:** D1 rows read per call against Free's 5 million per day. Reading
+that needs the analytics permission, which the workstation token carries; it is
+recorded here so it is not forgotten once that token exists again.
 
 ## Quotas
 

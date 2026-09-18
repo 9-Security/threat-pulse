@@ -304,9 +304,25 @@ Measured on 2026-09-18 against the deployed service, eight calls each:
 | 6 mixed values, `compact` | 0.8–1.1 s | 7 ms | 14 ms | 17 KiB |
 | 100 confirmed values, `full` | 1.1–1.4 s | 15 ms | 29 ms (p99) | 406 KiB |
 
-The pilot runs on Workers Paid, where CPU per request defaults to 30 s; the limits then
-in effect are confirmed separately. Use `compact` unless you need every citation:
-`full` on 100 hits is about 0.4 MiB.
+**The pilot runs on Workers Free**, whose documented limit is 10 ms of CPU per
+request. The numbers above are over it, and not only in the worst case: a six-value
+call reached 14 ms at p90. Cloudflare may end a request that exceeds the limit, and
+such a request returns a platform error rather than a JSON-RPC response — no `status`,
+no `errors`, nothing to say which values were looked up.
+
+Every call made in these measurements, and every call made against the service since
+2026-09-14, returned a normal response. None was terminated. That is what was
+observed, not a guarantee.
+
+**What a caller should do:** treat any non-200 response as *every value in the call
+unknown*, never as misses, and retry. Smaller batches use less CPU, but they do not
+bring a call reliably under 10 ms; the floor for any call is around 5 ms.
+
+Use `compact` unless you need every citation: `full` on 100 hits is about 0.4 MiB, and
+the difference is CPU as well as bandwidth.
+
+If the plan changes, this section and `query-service-limits.md` change with it, and
+you will be told.
 
 ## Availability
 
