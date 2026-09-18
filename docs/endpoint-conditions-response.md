@@ -121,19 +121,18 @@ as well as read rights:
 - **one** Cloudflare account member, the operator;
 - **one** deploy token, kept only on the operator's workstation;
 - a **database-only** token on the collecting host. It was checked to be refused access
-  to the service's code, settings, secrets, versions and analytics;
-- **and, for now, the earlier shared token**, which can do at least what the deploy
-  token can. See below.
+  to the service's code, settings, secrets, versions and analytics.
 
-This split is new today, and **it is not finished**. Until now a single token did both
-of our jobs and was stored on the collecting host. That host is shared with other
-services, and one of them runs under an account that is root-equivalent. That same
-service also uses the shared token, for DNS and tunnel management only, and still holds
-it. The two services share a Cloudflare account, and Cloudflare's Workers permissions
-cover the whole account rather than one Worker. So the separation is complete only
-when that service has its own token with no Workers or D1 permission and the shared
-token is deleted. We will confirm when that is done, and it should be treated as a
-precondition of an endpoint pilot.
+Until 2026-09-17 a single token did both of our jobs and was stored on the collecting
+host, which is shared with other services; one of them runs under a root-equivalent
+account and used that token as well. Because the two services share a Cloudflare
+account, and Cloudflare's Workers permissions cover the whole account rather than one
+Worker, that token could deploy this service.
+
+**It was deleted on 2026-09-18**, by the account owner, in the Cloudflare dashboard.
+No token that can deploy this service is now held on the collecting host. The
+deletion is recorded on the owner's confirmation: our own copy, kept only to re-test
+the token, was destroyed on the owner's instruction beforehand.
 
 The database-only host token can still change the corpus and issue itself a client
 token. It cannot see anyone's lookups: a lookup writes nothing that contains a value.
@@ -155,13 +154,10 @@ about it.
 **Still not true, stated plainly:**
 
 - The request region and the storage region are observed, not enforced.
-- The shared token is **not yet deleted**, so a token able to redeploy the service is
-  still held by another service on the collecting host.
 - Neither of our tokens can list every API token on the account; the account owner
   confirms that list.
 - Cloudflare does not document whether a live tail shows the `Authorization` header,
-  so we assume it does. The account member and the deploy token can start one, and so
-  can the shared token until it is deleted.
+  so we assume it does. The account member and the deploy token can start one.
 - There is no per-token rate limiting.
 
 ---

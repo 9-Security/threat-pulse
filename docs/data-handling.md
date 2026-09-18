@@ -96,7 +96,7 @@ sets of people are listed here, and as of 2026-09-17 they are the same.
 | Cloudflare account members | **one** member, with the Super Administrator role: the operator | members API |
 | Deploy token | deploy the Worker; read its secret names, versions and analytics; query D1. It should be assumed able to start a live tail as well | kept **only on the operator's workstation**. Each listed capability was exercised on 2026-09-17, including a real deploy; the live tail was not tried |
 | Collecting-host token | read and write D1, and nothing else | on the collecting host. Each of these was refused with 403 or "authorization denied": listing Worker scripts, reading the Worker's settings, secrets or versions, listing account members, seeing zones, reading analytics |
-| Earlier shared token | at least everything the deploy token can do | **still held on the collecting host** by another service there, which uses it only for DNS and tunnel management. That service is to get its own token without Workers or D1 permissions; the shared token is then deleted. Until then it still authenticates: checked on 2026-09-17 |
+| Earlier shared token | — | **deleted** on 2026-09-18 by the account owner, in the Cloudflare dashboard. It could do everything the deploy token can, and another service on the collecting host held it |
 | Other API tokens on the account | not listable by either token above | to be confirmed by the account owner |
 | Cloudflare personnel | governed by Cloudflare's terms | no statement is made here |
 
@@ -106,13 +106,17 @@ root-equivalent access: the operator's and another service's. Either could have
 read that token, and it could redeploy the Worker. This service now keeps a token
 limited to D1 on that host, and its deploy token elsewhere.
 
-**The split is not finished.** The earlier token was also used by that other service,
-for DNS and tunnel management, and that service still holds it on the same host. The
-two services share a Cloudflare account, and Cloudflare's Workers permissions apply to
-the whole account, not to one Worker. So separating them requires that the other
-service's own token carry no Workers or D1 permission at all, and that the shared
-token be deleted. Until both are done, a token able to redeploy this service remains
-on the collecting host.
+**The split is finished.** The earlier token was also used by that other service, for
+DNS and tunnel management, and it could deploy this Worker: the two services share a
+Cloudflare account, and Cloudflare's Workers permissions apply to the whole account
+rather than to one Worker. The account owner deleted it in the dashboard on
+2026-09-18. No token that can deploy this service is now held on the collecting host.
+
+**What that statement rests on.** The deletion was confirmed by the account owner in
+the dashboard, not by this service. Our copy of the token, kept only to re-test it,
+had been destroyed on the owner's instruction beforehand, so there was nothing left to
+re-test it with. Until 2026-09-17 it was verified to still authenticate; the record of
+its removal is the dashboard.
 
 **What the collecting-host token still allows,** stated because the host is shared:
 
@@ -290,13 +294,13 @@ Listed together so none of it has to be inferred from the prose above.
 | Region where a request is processed | **not controllable** on this account; an Enterprise add-on |
 | D1 location pinned by configuration | **not possible** — location hints are best-effort, there is no APAC jurisdiction, and one cannot be added after creation; observed APAC, single copy |
 | Defanged values and URL query strings on the hosted service | sent and matched as given, not normalised server-side |
-| Deletion of the token shared until 2026-09-17 | **not done** — this service no longer uses it, but another service on the collecting host still does, for DNS and tunnel management. That service is to move to a token without Workers or D1 permissions, then the shared token is deleted. Until then, a token able to redeploy this service remains on that host |
 | List of every API token on the account | not visible to either token in use; the account owner confirms |
-| Whether a live tail shows the `Authorization` header | not documented by Cloudflare; assume it does. The account member and the deploy token can start one, and so can the shared token until it is deleted |
+| Whether a live tail shows the `Authorization` header | not documented by Cloudflare; assume it does. The account member and the deploy token can start one |
 | CPU limit on a maximum-size batch | 10 ms documented on this plan; a maximum-size batch measured 13.9 ms p50 / 23.2 ms p99 and completed in all 13 attempts, so the limit is not an observed cutoff — but it is not guaranteed either. See `query-service-limits.md` |
 | Tenant partitioning of the corpus | not present, and deliberately so |
 
-No longer in this table: reporting of `truncated` and `skipped` on over-limit
+No longer in this table: deletion of the token shared until 2026-09-17, done on
+2026-09-18 and recorded above; reporting of `truncated` and `skipped` on over-limit
 batches, server-side skipping of private addresses and internal hostnames, and
 per-token quotas, all implemented and tested; and whether pre-change invocation logs held the
 `Authorization` header, which is still not established but no longer matters,
