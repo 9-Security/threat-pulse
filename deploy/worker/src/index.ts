@@ -936,8 +936,12 @@ export default {
         try {
           const result = await callTool(name, args, env, caller);
           const isError = Boolean((result as Json).error) || (result as Json).status === "failed";
+          // Indented only for the small tools a person reads. An enrichment answer
+          // can be 400 KiB, and indenting it is CPU spent on whitespace a machine
+          // client discards -- which matters on a plan with a 10 ms CPU limit.
+          const indent = name === "enrich_observables" ? undefined : 2;
           return rpcResult(id, {
-            content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+            content: [{ type: "text", text: JSON.stringify(result, null, indent) }],
             // A tool with an output schema returns its result as structured data
             // too, so a caller need not parse the text. An argument error is not a
             // result and carries only the message.
