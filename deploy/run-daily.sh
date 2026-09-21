@@ -41,8 +41,37 @@ corpus_stalled() {
   } | "$APP_DIR/deploy/alert.sh" "[threat-pulse] corpus stalled on $(hostname)" || true
 }
 
+# Wait for name resolution before doing anything that needs the network. On
+# 2026-09-21 the resolver was not answering at 06:00: the pull failed under
+# set -e, nothing was collected, and the day was recovered only 16 hours later
+# from feeds that had already moved on. A few minutes of waiting costs nothing;
+# a lost day cannot be collected again.
+wait_for_dns() {
+  local host="${DNS_PROBE_HOST:-www.cisa.gov}" waited=0 limit="${DNS_WAIT_MINUTES:-30}"
+  until getent hosts "$host" >/dev/null 2>&1; do
+    if [ "$waited" -ge "$limit" ]; then
+      echo "name resolution still failing after ${waited} min; collecting anyway" >&2
+      return 0
+    fi
+    [ "$waited" -eq 0 ] && echo "name resolution failing; waiting up to ${limit} min" >&2
+    sleep 60
+    waited=$((waited + 1))
+  done
+  [ "$waited" -gt 0 ] && echo "name resolution back after ${waited} min"
+  return 0
+}
+wait_for_dns
+
+# The pull only updates the code. If it fails -- the network, or a checkout left
+# dirty by hand -- collect with the code already here rather than lose the day,
+# and say so where the operator will see it.
 if [ "${SKIP_PULL:-0}" != "1" ]; then
-  git pull --ff-only --quiet
+  if ! pull_error="$(git pull --ff-only --quiet 2>&1)"; then
+    echo "code update failed; collecting with the checkout already here: ${pull_error}" >&2
+    printf 'The daily run could not update its code and ran the checkout already on the host.\n\nrevision: %s\n\n%s\n' \
+      "$(git rev-parse --short HEAD)" "$pull_error" |
+      "$APP_DIR/deploy/alert.sh" "[threat-pulse] code update failed on $(hostname)" || true
+  fi
 fi
 echo "revision: $(git rev-parse --short HEAD) $(git log -1 --format=%s)"
 
