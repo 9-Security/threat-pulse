@@ -2,7 +2,7 @@ import hashlib
 import json
 import os
 from dataclasses import replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -1081,3 +1081,72 @@ def test_each_source_read_is_recorded_without_touching_the_report_id() -> None:
     assert thn.newest_entry_at == "2026-08-29T12:00:00+00:00"
     assert first.to_dict()["source_stats"][0]["source_key"] == "the-hacker-news"
     assert first.report_id == later.report_id, "feed state must not change the report's identity"
+
+
+def _archive_day(root, date: str, start: str, end: str, urls: list[str]) -> None:
+    folder = root / date
+    folder.mkdir(parents=True)
+    (folder / "daily-evidence.json").write_text(
+        json.dumps(
+            {
+                "window_start": start,
+                "window_end": end,
+                "articles": [{"article_url": url} for url in urls[:1]],
+                "excluded_articles": [{"article_url": url} for url in urls[1:]],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def test_late_entries_are_looked_for_only_as_far_back_as_the_archive_is_unbroken(tmp_path) -> None:
+    from soc_news_parser.report import archived_before
+
+    since = datetime(2026, 9, 20, 22, tzinfo=timezone.utc)
+    _archive_day(tmp_path, "2026-09-21", "2026-09-20T22:00:00+00:00", "2026-09-21T22:00:00+00:00",
+                 ["https://example.test/rerun"])
+    _archive_day(tmp_path, "2026-09-20", "2026-09-19T22:00:00+00:00", "2026-09-20T22:00:00+00:00",
+                 ["https://example.test/a?utm_source=rss", "https://example.test/b/"])
+    _archive_day(tmp_path, "2026-09-19", "2026-09-18T22:00:00+00:00", "2026-09-19T22:00:00+00:00",
+                 ["https://example.test/c"])
+    # 2026-09-18 is missing; 2026-09-17 must not be joined across the gap.
+    _archive_day(tmp_path, "2026-09-17", "2026-09-16T22:00:00+00:00", "2026-09-17T22:00:00+00:00",
+                 ["https://example.test/d"])
+
+    late_since, urls = archived_before(tmp_path, since)
+    assert late_since == datetime(2026, 9, 18, 22, tzinfo=timezone.utc)
+    assert urls == {"https://example.test/a", "https://example.test/b", "https://example.test/c"}
+
+    assert archived_before(tmp_path, since, lookback=timedelta(days=1))[0] == datetime(
+        2026, 9, 19, 22, tzinfo=timezone.utc
+    )
+    assert archived_before(tmp_path, datetime(2026, 9, 18, 22, tzinfo=timezone.utc)) == (None, frozenset())
+    assert archived_before(tmp_path / "missing", since) == (None, frozenset())
+
+
+def test_collect_report_passes_the_archive_to_the_feed_read() -> None:
+    seen: dict[str, object] = {}
+
+    class Recording(FakeParser):
+        def parse_feed(self, source: object, **kwargs: object) -> list[ParsedArticle]:
+            seen.update(kwargs)
+            return []
+
+    window = dict(
+        since=datetime(2026, 8, 28, 22, tzinfo=timezone.utc),
+        until=datetime(2026, 8, 29, 22, tzinfo=timezone.utc),
+        generated_at=datetime(2026, 8, 29, 22, tzinfo=timezone.utc),
+    )
+    collect_report(Recording(), ["the-hacker-news"], **window)
+    assert "late_since" not in seen, "no archive: read the window only"
+
+    collect_report(
+        Recording(),
+        ["the-hacker-news"],
+        **window,
+        late_since=datetime(2026, 8, 25, 22, tzinfo=timezone.utc),
+        collected_urls=frozenset({"https://example.test/a"}),
+    )
+    already = seen["already_collected"]
+    assert already("https://example.test/a/?utm_medium=feed")  # type: ignore[operator]
+    assert not already("https://example.test/b")  # type: ignore[operator]

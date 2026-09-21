@@ -485,3 +485,53 @@ def test_a_feed_read_records_what_it_held_even_when_nothing_is_in_the_window() -
     assert parser.feed_stats.entries == 2
     assert parser.feed_stats.in_window == 0
     assert parser.feed_stats.newest_entry_at == "2026-08-30T09:00:00+00:00"
+
+
+def test_an_entry_the_feed_carried_late_is_taken_once() -> None:
+    """ESET's entries reached the feed after the window holding their date had closed."""
+    from soc_news_parser.parser import LATE_ARRIVAL_WARNING
+
+    feed_url = "https://example.test/feed"
+    body = "<html><body><article>" + "Researchers describe a backdoor. " * 20 + "</article></body></html>"
+    routes = {
+        feed_url: (
+            "application/rss+xml",
+            '<?xml version="1.0"?><rss version="2.0"><channel><title>Test</title>'
+            "<item><title>Too old</title><link>https://example.test/old</link>"
+            "<pubDate>Tue, 25 Aug 2026 09:00:00 +0000</pubDate></item>"
+            "<item><title>Collected yesterday</title><link>https://example.test/seen</link>"
+            "<pubDate>Fri, 28 Aug 2026 09:00:00 +0000</pubDate></item>"
+            "<item><title>Arrived late</title><link>https://example.test/late</link>"
+            "<pubDate>Fri, 28 Aug 2026 09:00:00 +0000</pubDate></item>"
+            "<item><title>In window</title><link>https://example.test/now</link>"
+            "<pubDate>Sat, 29 Aug 2026 09:00:00 +0000</pubDate></item>"
+            "</channel></rss>",
+        ),
+        "https://example.test/late": ("text/html", body),
+        "https://example.test/now": ("text/html", body),
+    }
+    source = Source("Test", feed_url, ("article",), ("example.test",))
+    window = dict(
+        since=datetime(2026, 8, 28, 22, tzinfo=timezone.utc),
+        until=datetime(2026, 8, 29, 22, tzinfo=timezone.utc),
+    )
+    parser = news_parser()
+    parser.client.close()
+    parser.client = client_for(routes)
+
+    with parser:
+        plain = parser.parse_feed(source, **window)
+        assert [a.title for a in plain] == ["In window"], "no archive, no late entries"
+
+        articles = parser.parse_feed(
+            source,
+            **window,
+            late_since=datetime(2026, 8, 25, 22, tzinfo=timezone.utc),
+            already_collected=lambda url: url == "https://example.test/seen",
+        )
+
+    assert [a.title for a in articles] == ["Arrived late", "In window"]
+    assert LATE_ARRIVAL_WARNING in articles[0].warnings
+    assert LATE_ARRIVAL_WARNING not in articles[1].warnings
+    assert parser.feed_stats is not None
+    assert (parser.feed_stats.in_window, parser.feed_stats.late) == (1, 1)

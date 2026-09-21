@@ -222,6 +222,13 @@ class FeedStats:
     entries: int
     newest_entry_at: str | None
     in_window: int
+    late: int = 0
+    """Entries dated before the window, taken because no earlier run had them."""
+
+
+LATE_ARRIVAL_WARNING = (
+    "late arrival: dated before this window, but no earlier run collected it"
+)
 
 
 class NewsParser:
@@ -405,9 +412,22 @@ class NewsParser:
         since: datetime,
         until: datetime,
         limit: int | None = None,
+        late_since: datetime | None = None,
+        already_collected: Callable[[str], bool] | None = None,
     ) -> list[ParsedArticle]:
+        """Articles dated inside [since, until), plus late arrivals.
+
+        A feed can carry an entry a day after the date it gives. ESET's did:
+        entries dated 09:00 reached the feed the next morning, after the window
+        holding their date had closed, and none of its articles was ever
+        collected. An entry dated in [late_since, since) is therefore taken too
+        when `already_collected` says no earlier run has it. Without both
+        arguments only the window is read, since nothing else can tell a late
+        entry from one that was collected already.
+        """
         self.diagnostics = []
         self.feed_stats = None
+        late_count = 0
         feed_host = urlparse(source.feed_url).hostname or ""
         response = self._get(
             source.feed_url,
@@ -440,12 +460,19 @@ class NewsParser:
                 self.diagnostics.append(
                     f"{date_warning}: {_clean_text(entry.get('title', '(untitled)'))}"
                 )
-            if not (since <= published < until):
+            late = not (since <= published < until)
+            if late and (
+                late_since is None
+                or already_collected is None
+                or not (late_since <= published < since)
+            ):
                 continue
             title = _clean_text(entry.get("title", ""))
             url = entry.get("link", "")
             if not title or not url:
                 self.diagnostics.append("skipped entry with missing title or URL")
+                continue
+            if late and already_collected(url):
                 continue
 
             excerpt = _clean_text(entry.get("summary", "")) or None
@@ -466,6 +493,9 @@ class NewsParser:
                     "full article extraction failed; feed excerpt is metadata only",
                     str(error),
                 ]
+            if late:
+                late_count += 1
+                warnings = [*warnings, LATE_ARRIVAL_WARNING]
             articles.append(
                 ParsedArticle(
                     source=source.name,
@@ -485,7 +515,8 @@ class NewsParser:
         self.feed_stats = FeedStats(
             entries=len(parsed.entries),
             newest_entry_at=newest_entry_at,
-            in_window=len(articles),
+            in_window=len(articles) - late_count,
+            late=late_count,
         )
         return articles
 
