@@ -33,7 +33,7 @@ from .enrich import (
 from .backtest import read_values, run_backtest
 from .backtest import render_markdown as render_backtest_markdown
 from .export_d1 import export_report
-from .report import collect_report, serialize_report
+from .report import archived_before, collect_report, serialize_report
 from .reanalyze import attach_provenance, reanalyze
 from .snapshot import build_snapshot, refresh_tools, write_bundle
 from .source_health import (
@@ -570,6 +570,7 @@ def _deliver(args: argparse.Namespace) -> dict[str, object]:
         args.output_dir, slot, args.timezone
     )
     previous_iocs = load_previous_iocs(str(previous_path)) if previous_path else None
+    late_since, collected_urls = archived_before(args.output_dir, since)
     with NewsParser() as news_parser:
         report = collect_report(
             news_parser,
@@ -579,6 +580,8 @@ def _deliver(args: argparse.Namespace) -> dict[str, object]:
             generated_at=until,
             previous_iocs=previous_iocs,
             enricher=lambda manifests: _resolve_intel(args, manifests, news_parser),
+            late_since=late_since,
+            collected_urls=collected_urls,
         )
     json_content, markdown_content = serialize_report(report)
     json_output, markdown_output = _write_report_pair(
@@ -610,6 +613,8 @@ def _deliver(args: argparse.Namespace) -> dict[str, object]:
         "hunt_count": report.analyst_brief.hunt_count,
         "new_ioc_count": report.analyst_brief.new_ioc_count,
         "previous_json": str(previous_path) if previous_path else None,
+        "late_since": late_since.isoformat() if late_since else None,
+        "late_article_count": sum(stat.late for stat in report.source_stats),
         "json_output": json_output,
         "markdown_output": markdown_output,
         "csv_output": csv_output,

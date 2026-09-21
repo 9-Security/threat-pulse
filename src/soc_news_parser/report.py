@@ -6,7 +6,8 @@ import json
 import re
 from collections import Counter
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping
 
 from urllib.parse import parse_qsl, quote, urlencode, urlsplit, urlunsplit
@@ -28,6 +29,7 @@ from .evidence import (
     EvidenceManifest,
     build_manifest,
 )
+from .ioc_query import REPORT_DATE_RE, REPORT_FILENAME, reports_root
 from .parser import NewsParser, ParseError
 from .sources import SOURCES
 
@@ -76,6 +78,7 @@ class SourceStats:
     in_window: int
     kept: int
     excluded: int
+    late: int = 0
 
 
 @dataclass(frozen=True)
@@ -187,6 +190,56 @@ def _is_topic_relevant(manifest: EvidenceManifest) -> bool:
     return bool(TOPIC_RE.search(source_text))
 
 
+# How far before the window a late entry is still looked for. ESET's entries
+# arrived about a day after their date. A week also takes back what a feed
+# published while it was failing -- CISA's was 403 for four days -- once it
+# answers again.
+LATE_LOOKBACK = timedelta(days=7)
+
+
+def archived_before(
+    reports_dir: str | Path | None,
+    since: datetime,
+    *,
+    lookback: timedelta = LATE_LOOKBACK,
+) -> tuple[datetime | None, frozenset[str]]:
+    """How far back the archive shows what was collected, and the URLs it holds.
+
+    Only an unbroken chain of windows ending at `since` counts. Past a gap there
+    is no record of what was taken, and taking everything dated there would
+    collect again what a lost report already had. Returns (None, empty) when the
+    window just before `since` is not archived.
+    """
+    since = since.astimezone(timezone.utc)
+    floor = since - lookback
+    base = reports_root(reports_dir)
+    windows: dict[datetime, tuple[datetime, dict[str, Any]]] = {}
+    oldest_folder = (floor - timedelta(days=2)).date().isoformat()
+    if base.is_dir():
+        for folder in base.iterdir():
+            if not REPORT_DATE_RE.match(folder.name) or folder.name < oldest_folder:
+                continue
+            try:
+                payload = json.loads((folder / REPORT_FILENAME).read_text(encoding="utf-8"))
+                start = datetime.fromisoformat(payload["window_start"]).astimezone(timezone.utc)
+                end = datetime.fromisoformat(payload["window_end"]).astimezone(timezone.utc)
+            except (OSError, ValueError, KeyError, TypeError, AttributeError):
+                continue
+            windows[end] = (start, payload)
+
+    covered = since
+    urls: set[str] = set()
+    while covered > floor and covered in windows:
+        start, payload = windows[covered]
+        for article in (payload.get("articles") or []) + (payload.get("excluded_articles") or []):
+            if isinstance(article, dict) and article.get("article_url"):
+                urls.add(_canonical_article_url(str(article["article_url"])))
+        covered = start
+    if covered == since:
+        return None, frozenset()
+    return max(covered, floor), frozenset(urls)
+
+
 def collect_report(
     parser: NewsParser,
     source_keys: list[str],
@@ -196,18 +249,27 @@ def collect_report(
     generated_at: datetime | None = None,
     previous_iocs: set[tuple[str, str]] | None = None,
     enricher: Enricher | None = None,
+    late_since: datetime | None = None,
+    collected_urls: frozenset[str] = frozenset(),
 ) -> DailyReport:
+    """One window's report. See `archived_before` for `late_since`/`collected_urls`."""
     manifests: list[EvidenceManifest] = []
     failures: list[SourceFailure] = []
     source_warnings: list[SourceWarning] = []
     retrieved_at = generated_at or datetime.now(timezone.utc)
 
+    late: dict[str, Any] = {}
+    if late_since is not None:
+        late = {
+            "late_since": late_since,
+            "already_collected": lambda url: _canonical_article_url(url) in collected_urls,
+        }
     checked_keys = list(dict.fromkeys(source_keys))
     feed_reads: dict[str, Any] = {}
     for source_key in checked_keys:
         source = SOURCES[source_key]
         try:
-            articles = parser.parse_feed(source, since=since, until=until)
+            articles = parser.parse_feed(source, since=since, until=until, **late)
         except ParseError as error:
             failures.append(SourceFailure(source_key, source.name, str(error)))
             continue
@@ -254,6 +316,7 @@ def collect_report(
             in_window=read.in_window,
             kept=kept_by[SOURCES[key].name],
             excluded=excluded_by[SOURCES[key].name],
+            late=getattr(read, "late", 0),
         )
         for key, read in feed_reads.items()
         if read is not None
