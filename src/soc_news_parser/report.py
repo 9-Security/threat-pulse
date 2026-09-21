@@ -4,6 +4,7 @@ import hashlib
 import html
 import json
 import re
+from collections import Counter
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Callable, Iterable, Mapping
@@ -65,6 +66,19 @@ class SourceWarning:
 
 
 @dataclass(frozen=True)
+class SourceStats:
+    """One source's read on one day: what its feed held and what was kept."""
+
+    source_key: str
+    source_name: str
+    feed_entries: int
+    newest_entry_at: str | None
+    in_window: int
+    kept: int
+    excluded: int
+
+
+@dataclass(frozen=True)
 class DailyReport:
     schema_version: str
     report_id: str
@@ -87,6 +101,9 @@ class DailyReport:
     analyst_brief: AnalystBrief
     cve_intel: dict[str, dict[str, Any]] = field(default_factory=dict)
     enrichment: dict[str, Any] = field(default_factory=dict)
+    # Not part of the report's identity: a re-run of the same window reads feeds
+    # that have moved on, and that must not mint a different report_id.
+    source_stats: list[SourceStats] = field(default_factory=list)
 
     @property
     def kev_count(self) -> int:
@@ -186,6 +203,7 @@ def collect_report(
     retrieved_at = generated_at or datetime.now(timezone.utc)
 
     checked_keys = list(dict.fromkeys(source_keys))
+    feed_reads: dict[str, Any] = {}
     for source_key in checked_keys:
         source = SOURCES[source_key]
         try:
@@ -194,6 +212,7 @@ def collect_report(
             failures.append(SourceFailure(source_key, source.name, str(error)))
             continue
         manifests.extend(build_manifest(article, retrieved_at) for article in articles)
+        feed_reads[source_key] = getattr(parser, "feed_stats", None)
         source_warnings.extend(
             SourceWarning(source_key, source.name, warning)
             for warning in getattr(parser, "diagnostics", [])
@@ -224,6 +243,21 @@ def collect_report(
     confirmed_filenames = _unique_confirmed(manifests, frozenset({"filename"}))
     confirmed_claims = _unique_confirmed(manifests, CLAIM_TYPES)
     active_sources = {item.source for item in all_manifests}
+    kept_by = Counter(item.source for item in manifests)
+    excluded_by = Counter(item.source for item in excluded_articles)
+    source_stats = [
+        SourceStats(
+            source_key=key,
+            source_name=SOURCES[key].name,
+            feed_entries=read.entries,
+            newest_entry_at=read.newest_entry_at,
+            in_window=read.in_window,
+            kept=kept_by[SOURCES[key].name],
+            excluded=excluded_by[SOURCES[key].name],
+        )
+        for key, read in feed_reads.items()
+        if read is not None
+    ]
     identity = {
         "schema": REPORT_SCHEMA_VERSION,
         "window_start": since.astimezone(timezone.utc).isoformat(),
@@ -278,6 +312,7 @@ def collect_report(
         excluded_articles=excluded_articles,
         source_failures=failures,
         source_warnings=source_warnings,
+        source_stats=source_stats,
         analyst_brief=brief,
         cve_intel={key: value.to_dict() for key, value in sorted(intel.items())},
         enrichment=enrichment_report.to_dict(),

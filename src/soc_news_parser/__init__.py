@@ -38,7 +38,9 @@ from .reanalyze import attach_provenance, reanalyze
 from .snapshot import build_snapshot, refresh_tools, write_bundle
 from .source_health import (
     DEFAULT_LOOKBACK_DAYS,
+    missed_sources,
     render_alert,
+    render_missed,
     render_summary,
     source_streaks,
 )
@@ -776,6 +778,7 @@ def main() -> None:
     if args.command == "source-health":
         try:
             streaks = source_streaks(args.reports_dir, lookback=max(1, args.lookback))
+            missed = missed_sources(args.reports_dir, lookback=max(1, args.lookback))
         except OSError as error:
             # Never fatal. This runs at the end of a run that already delivered,
             # and an unreadable archive must not turn a delivered day into a
@@ -784,11 +787,20 @@ def main() -> None:
             print(f"source-health: could not read the archive: {error}", file=sys.stderr)
             return
         if args.alert_only:
-            body = render_alert(streaks, hostname=args.hostname)
+            bodies = [
+                render_alert(streaks, hostname=args.hostname),
+                render_missed(missed, hostname=args.hostname),
+            ]
+            body = "\n\n".join(part for part in bodies if part)
             if body:
                 print(body)
             return
         print(render_summary(streaks))
+        for item in missed:
+            print(
+                f"  {item.key}: answered, but its newest entry ({item.newest_entry_at}) "
+                f"is newer than anything collected from it ({item.last_collected_at or 'none'})"
+            )
         for item in streaks:
             mark = " (reporting)" if item.should_notify else ""
             print(f"  {item.key}: {item.days} consecutive, since {item.since}{mark}")
