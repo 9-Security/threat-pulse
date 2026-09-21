@@ -191,8 +191,10 @@ def _is_topic_relevant(manifest: EvidenceManifest) -> bool:
 
 
 # How far before the window a late entry is still looked for. ESET's entries
-# arrived about a day after their date; three days also covers a weekend.
-LATE_LOOKBACK = timedelta(days=3)
+# arrived about a day after their date. A week also takes back what a feed
+# published while it was failing -- CISA's was 403 for four days -- once it
+# answers again.
+LATE_LOOKBACK = timedelta(days=7)
 
 
 def archived_before(
