@@ -453,3 +453,35 @@ def test_a_broken_exclusion_selector_does_not_lose_the_article() -> None:
         )
 
     assert "remote code execution flaw" in body
+
+
+def test_a_feed_read_records_what_it_held_even_when_nothing_is_in_the_window() -> None:
+    """The silent case: the feed answers, has a newer entry, and the window takes none."""
+    feed_url = "https://example.test/feed"
+    routes = {
+        feed_url: (
+            "application/rss+xml",
+            '<?xml version="1.0"?><rss version="2.0"><channel><title>Test</title>'
+            "<item><title>Older</title><link>https://example.test/a</link>"
+            "<pubDate>Fri, 28 Aug 2026 08:00:00 +0000</pubDate></item>"
+            "<item><title>Newest</title><link>https://example.test/b</link>"
+            "<pubDate>Sun, 30 Aug 2026 09:00:00 +0000</pubDate></item>"
+            "</channel></rss>",
+        )
+    }
+    parser = news_parser()
+    parser.client.close()
+    parser.client = client_for(routes)
+
+    with parser:
+        articles = parser.parse_feed(
+            Source("Test", feed_url, ("article",), ("example.test",)),
+            since=datetime(2026, 8, 29, 0, tzinfo=timezone.utc),
+            until=datetime(2026, 8, 30, 0, tzinfo=timezone.utc),
+        )
+
+    assert articles == []
+    assert parser.feed_stats is not None
+    assert parser.feed_stats.entries == 2
+    assert parser.feed_stats.in_window == 0
+    assert parser.feed_stats.newest_entry_at == "2026-08-30T09:00:00+00:00"

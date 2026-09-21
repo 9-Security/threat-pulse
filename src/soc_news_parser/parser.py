@@ -210,6 +210,20 @@ def _json_ld_candidates(soup: BeautifulSoup) -> Iterable[str]:
                 yield _clean_text(item["articleBody"])
 
 
+@dataclass(frozen=True)
+class FeedStats:
+    """What one read of a feed held, so a source that goes quiet can be noticed.
+
+    A feed that answers with nothing new raises no error, so the failure record
+    cannot see it. ESET published three articles in the first fifteen days of the
+    corpus and none reached it, with nothing recorded anywhere.
+    """
+
+    entries: int
+    newest_entry_at: str | None
+    in_window: int
+
+
 class NewsParser:
     def __init__(
         self,
@@ -228,6 +242,7 @@ class NewsParser:
         )
         self.resolver = resolver or _resolve_host
         self.diagnostics: list[str] = []
+        self.feed_stats: FeedStats | None = None
 
     def close(self) -> None:
         self.client.close()
@@ -392,6 +407,7 @@ class NewsParser:
         limit: int | None = None,
     ) -> list[ParsedArticle]:
         self.diagnostics = []
+        self.feed_stats = None
         feed_host = urlparse(source.feed_url).hostname or ""
         response = self._get(
             source.feed_url,
@@ -407,6 +423,9 @@ class NewsParser:
                 f"feed parser reported a recoverable error; results may be incomplete: "
                 f"{parsed.bozo_exception}"
             )
+
+        dated = [when for when, _ in map(_entry_datetime, parsed.entries) if when is not None]
+        newest_entry_at = max(dated).isoformat() if dated else None
 
         articles: list[ParsedArticle] = []
         for entry in parsed.entries:
@@ -463,6 +482,11 @@ class NewsParser:
             )
             if limit is not None and len(articles) >= limit:
                 break
+        self.feed_stats = FeedStats(
+            entries=len(parsed.entries),
+            newest_entry_at=newest_entry_at,
+            in_window=len(articles),
+        )
         return articles
 
     def _entry_or_html_body(

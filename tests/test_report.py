@@ -1047,3 +1047,37 @@ def test_a_host_containing_another_is_fully_defanged() -> None:
     assert _defang_text("blocking mail.evil.com today", hosts) == (
         "blocking mail[.]evil[.]com today"
     )
+
+
+def test_each_source_read_is_recorded_without_touching_the_report_id() -> None:
+    """A source that answers with nothing new must be visible; a re-run must still match."""
+    from soc_news_parser.parser import FeedStats
+
+    class Counting(FakeParser):
+        def __init__(self, newest: str) -> None:
+            self.newest = newest
+            self.feed_stats = None
+
+        def parse_feed(self, source: object, **kwargs: object) -> list[ParsedArticle]:
+            self.feed_stats = None
+            articles = super().parse_feed(source, **kwargs)
+            self.feed_stats = FeedStats(entries=7, newest_entry_at=self.newest, in_window=len(articles))
+            return articles
+
+    window = dict(
+        since=datetime(2026, 8, 28, 22, tzinfo=timezone.utc),
+        until=datetime(2026, 8, 29, 22, tzinfo=timezone.utc),
+        generated_at=datetime(2026, 8, 29, 22, tzinfo=timezone.utc),
+    )
+    keys = ["the-hacker-news", "bleepingcomputer"]
+    first = collect_report(Counting("2026-08-29T12:00:00+00:00"), keys, **window)
+    later = collect_report(Counting("2026-08-30T09:00:00+00:00"), keys, **window)
+
+    stats = {s.source_key: s for s in first.source_stats}
+    assert set(stats) == {"the-hacker-news"}, "a failed read is in source_failures, not here"
+    thn = stats["the-hacker-news"]
+    assert (thn.feed_entries, thn.in_window) == (7, 2)
+    assert thn.kept + thn.excluded == 2
+    assert thn.newest_entry_at == "2026-08-29T12:00:00+00:00"
+    assert first.to_dict()["source_stats"][0]["source_key"] == "the-hacker-news"
+    assert first.report_id == later.report_id, "feed state must not change the report's identity"

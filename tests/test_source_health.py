@@ -181,3 +181,81 @@ def test_a_multiline_error_does_not_break_the_mail_body(tmp_path: Path) -> None:
     for line in body.splitlines():
         assert len(line) < 300
     assert "For more information check" in body
+
+
+# ------------------------------------------------------------ silent sources ---
+
+from soc_news_parser.source_health import missed_sources, render_missed  # noqa: E402
+
+
+def _read(root: Path, date: str, window: tuple[str, str], articles: list[tuple[str, str]],
+          stats: list[dict] | None = None) -> None:
+    folder = root / date
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "daily-evidence.json").write_text(
+        json.dumps(
+            {
+                "window_start": window[0],
+                "window_end": window[1],
+                "source_failures": [],
+                "articles": [{"source": name, "published_at": when} for name, when in articles],
+                "excluded_articles": [],
+                "source_stats": stats or [],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def _eset(newest: str) -> dict:
+    return {"source_key": "eset", "source_name": "ESET WeLiveSecurity", "feed_entries": 10,
+            "newest_entry_at": newest, "in_window": 0, "kept": 0, "excluded": 0}
+
+
+def _archive(root: Path, newest_stats: list[dict], eset_articles: list[str] = ()) -> None:
+    other = [("The Hacker News", "2026-09-15T08:00:00+00:00")]
+    _read(root, "2026-09-16", ("2026-09-14T22:00:00+00:00", "2026-09-15T22:00:00+00:00"),
+          other + [("ESET WeLiveSecurity", when) for when in eset_articles])
+    _read(root, "2026-09-17", ("2026-09-15T22:00:00+00:00", "2026-09-16T22:00:00+00:00"), other,
+          newest_stats)
+
+
+def test_a_source_that_answered_but_was_not_collected_is_reported(tmp_path: Path) -> None:
+    """ESET's 2026-09-16 article fell in a collected window and never arrived."""
+    root = tmp_path / "reports"
+    _archive(root, [_eset("2026-09-16T09:00:00+00:00")])
+
+    missed = missed_sources(root)
+
+    assert [(m.key, m.newest_entry_at, m.last_collected_at) for m in missed] == [
+        ("eset", "2026-09-16T09:00:00+00:00", None)
+    ]
+    body = render_missed(missed, hostname="wendy-lab")
+    assert "ESET WeLiveSecurity (eset)" in body and "none in the archive read" in body
+
+
+def test_a_source_whose_newest_entry_was_collected_is_quiet(tmp_path: Path) -> None:
+    root = tmp_path / "reports"
+    _archive(root, [_eset("2026-09-15T09:00:00+00:00")], eset_articles=["2026-09-15T09:00:00+00:00"])
+    assert missed_sources(root) == []
+
+
+def test_an_entry_after_the_window_closed_is_tomorrows(tmp_path: Path) -> None:
+    root = tmp_path / "reports"
+    _archive(root, [_eset("2026-09-16T23:00:00+00:00")])
+    assert missed_sources(root) == []
+
+
+def test_a_rare_publisher_is_not_reported_for_being_rare(tmp_path: Path) -> None:
+    """DFIR Report posts about monthly; an entry older than anything read is not ours to judge."""
+    root = tmp_path / "reports"
+    _archive(root, [{**_eset("2026-08-24T10:00:00+00:00"), "source_key": "dfir-report",
+                     "source_name": "The DFIR Report"}])
+    assert missed_sources(root) == []
+
+
+def test_reports_from_before_the_stats_existed_report_nothing(tmp_path: Path) -> None:
+    root = tmp_path / "reports"
+    _archive(root, [])
+    assert missed_sources(root) == []
+    assert render_missed([]) == ""

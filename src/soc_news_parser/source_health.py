@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -178,6 +179,107 @@ def source_streaks(
         )
     streaks.sort(key=lambda item: (-item.days, item.key))
     return streaks
+
+
+@dataclass(frozen=True)
+class MissedSource:
+    """A source whose feed holds an entry that should have been collected and was not."""
+
+    key: str
+    name: str
+    newest_entry_at: str
+    last_collected_at: str | None
+    report_date: str
+
+
+def _when(text: Any) -> datetime | None:
+    try:
+        return datetime.fromisoformat(str(text)) if text else None
+    except ValueError:
+        return None
+
+
+def missed_sources(
+    reports_dir: str | Path | None = None,
+    *,
+    lookback: int = DEFAULT_LOOKBACK_DAYS,
+) -> list[MissedSource]:
+    """Sources that answered, but whose newest entry never reached the corpus.
+
+    A feed that answers without error is invisible to the failure streaks, and
+    that is how ESET lost three articles in the corpus's first fifteen days. The
+    newest report records what each feed held. If its newest entry closed within
+    a window this archive covers, and nothing collected from that source is as
+    new, a window passed over it.
+
+    Entries published after the newest window closed are tomorrow's, and entries
+    older than the oldest window read are outside what this can judge, so both
+    are left alone. That also keeps a publisher that posts once a month quiet:
+    it is reported only when it posted and we did not take it.
+    """
+    days = _read_days(reports_dir, lookback)
+    if not days:
+        return []
+    newest_date, newest = days[0]
+    window_end = _when(newest.get("window_end"))
+    oldest_start = _when(days[-1][1].get("window_start"))
+    if window_end is None or oldest_start is None:
+        return []
+
+    collected: dict[str, datetime] = {}
+    for _, payload in days:
+        for article in (payload.get("articles") or []) + (payload.get("excluded_articles") or []):
+            if not isinstance(article, dict):
+                continue
+            name = str(article.get("source") or "")
+            when = _when(article.get("published_at"))
+            if name and when is not None and (name not in collected or when > collected[name]):
+                collected[name] = when
+
+    missed: list[MissedSource] = []
+    for stat in newest.get("source_stats") or []:
+        if not isinstance(stat, dict):
+            continue
+        entry = _when(stat.get("newest_entry_at"))
+        if entry is None or entry >= window_end or entry < oldest_start:
+            continue
+        name = str(stat.get("source_name") or "")
+        last = collected.get(name)
+        if last is not None and last >= entry:
+            continue
+        missed.append(
+            MissedSource(
+                key=str(stat.get("source_key") or ""),
+                name=name,
+                newest_entry_at=entry.isoformat(),
+                last_collected_at=last.isoformat() if last else None,
+                report_date=newest_date,
+            )
+        )
+    missed.sort(key=lambda item: item.key)
+    return missed
+
+
+def render_missed(missed: list[MissedSource], *, hostname: str = "") -> str:
+    """The mail body for sources that answered but were not collected, or ""."""
+    if not missed:
+        return ""
+    lines = [
+        "A source answered, and its feed holds an entry from a window already",
+        "collected, but nothing from that source is in the corpus that recent.",
+        "It raised no error, so no other check sees it. The entry may still be",
+        "collectable while the feed carries it; a day later it may not be.",
+        "",
+    ]
+    for item in missed:
+        lines.append(f"{item.name} ({item.key})")
+        lines.append(f"  newest feed entry: {item.newest_entry_at}")
+        lines.append(f"  newest collected:  {item.last_collected_at or 'none in the archive read'}")
+        lines.append("")
+    lines.append(f"Checked on the report for {missed[0].report_date}.")
+    if hostname:
+        lines.append(f"host: {hostname}")
+    return "\n".join(lines)
 
 
 def render_alert(streaks: list[SourceStreak], *, hostname: str = "") -> str:
