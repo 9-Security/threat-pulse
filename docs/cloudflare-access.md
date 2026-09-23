@@ -3,8 +3,7 @@
 Every credential this project uses on Cloudflare, what each one may do, where it
 lives, and how to check it. Plus the addresses the service answers on.
 
-**Status 2026-09-18:** the deploy token was deleted by mistake and must be recreated;
-the token shared until 2026-09-17 has not been confirmed deleted. See
+**Status 2026-09-23:** three tokens, each checked by calling the API with it. See
 [Current state](#current-state).
 
 Two different things are called "token" here, and they are not related:
@@ -75,8 +74,27 @@ The host token is checked the same way through `systemd-run` with the service's
 `EnvironmentFile`, so the value is never typed or printed.
 
 **A token cannot read its own name.** Listing tokens needs *API Tokens · Read*, which
-none of these has, and the verify endpoint returns only an id and a status. Identify
-a token in the dashboard by its permissions, its creation date and its last use.
+none of these has, and the verify endpoint returns only an id and a status. That id is
+how a credential in a file is matched to a row in the dashboard: the dashboard's edit
+URL ends with it. That is what showed, on 2026-09-23, that the host was still using the
+shared token.
+
+**Check what a token reaches, not what it was meant to reach.** Permissions in the
+dashboard and a line in a document are both statements of intent; only a call says what
+is true. Each of these should be run with the token in question:
+
+```bash
+# 403 expected for the host token; the deploy token gets 400, having the right
+# and failing on the body
+probe="https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/scripts/permission-probe-9f2a"
+curl -s -o /dev/null -w '%{http_code}\n' -X PUT \
+  -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+  -H 'content-type: application/javascript' --data '//probe' "$probe"
+```
+
+The PUT names a script that does not exist, so a token with the rights fails on the
+body instead of replacing a live Worker. `GET .../workers/scripts` is not a usable
+check on its own: a token with no Workers rights gets `200` and an empty list.
 
 ### Deleting one safely
 
@@ -90,6 +108,11 @@ name appears. Before deleting:
 
 This order was not followed on 2026-09-18: the copy was destroyed first, the wrong
 token was then deleted, and neither fact was visible until the next command failed.
+
+When the value cannot be copied because it was never held here, replace what uses it
+first, prove the replacement works, and only then delete. That is how the shared token
+was removed on 2026-09-23: a new host token, checked by call, a real push to D1, and
+the old token deleted afterwards.
 
 ---
 
@@ -160,7 +183,7 @@ measured yet, and should be before the pilot carries real volume.
 
 | | |
 |---|---|
-| host (D1 only) | **works.** Verified 2026-09-18: the token is active and queries the database; today's 06:00 push succeeded |
-| deploy (workstation) | **deleted by mistake on 2026-09-18 and must be recreated.** Until then the Worker cannot be deployed, and the database and analytics cannot be read from the workstation. The running service is unaffected |
-| token shared until 2026-09-17 | **not confirmed deleted.** It was still valid at 10:45 on 2026-09-18. The copy kept for re-testing was destroyed before the deletion, so there is nothing left to test with; the dashboard list is the only evidence available |
-| client tokens | none active. One is issued when a client needs it |
+| host (D1 only) | **works, and is finally what this file says it is.** Replaced 2026-09-23, id `2748a5c9…`. Checked by call: deploy refused 403, the Worker's settings, secrets and versions refused 403, `workers/scripts` returns an empty list, D1 read and write succeed through the same wrangler path the daily push uses |
+| deploy (workstation) | **works.** Recreated 2026-09-23, id `6d371de4…`; it deployed the Worker the same day |
+| token shared until 2026-09-23 | **deleted 2026-09-23.** It had been the host's token the whole time: the replacement described for 2026-09-17 was never applied, and this file recorded it as done. Its value was never held here, so its removal is evidenced by the dashboard and by the host now using a different id |
+| client tokens | one active: `mssp pilot`, issued 2026-09-18, expires 2026-12-31. Every other row is revoked |
