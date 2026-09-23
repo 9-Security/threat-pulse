@@ -504,9 +504,14 @@ function enrichStore(env: Env): EnrichStore {
   const sinceBind = (since: string | null) => (since ? [since] : []);
   return {
     async indicators(keys, since) {
+      // The unary + keeps SQLite off the indicator_type index. Without it the
+      // planner switches at about sixteen keys and reads every row of those
+      // types instead of seeking each value: measured 2026-09-23 on the live
+      // database, 9 rows for 8 keys and 4,659 for 16. At the pilot's own quota
+      // that is more than the daily row budget of the plan we are on.
       const { results } = await env.DB.prepare(
         `SELECT ${INDICATOR_FIELDS} FROM indicators
-          WHERE value_lc IN (${placeholders(keys.length)}) AND indicator_type IN (${ENRICH_TYPES})${sinceClause(since)}
+          WHERE value_lc IN (${placeholders(keys.length)}) AND +indicator_type IN (${ENRICH_TYPES})${sinceClause(since)}
           ORDER BY report_date, rowid`,
       )
         .bind(...keys, ...sinceBind(since))
@@ -516,7 +521,7 @@ function enrichStore(env: Env): EnrichStore {
     async children(registrables, since) {
       const { results } = await env.DB.prepare(
         `SELECT ${INDICATOR_FIELDS} FROM indicators
-          WHERE registrable_lc IN (${placeholders(registrables.length)}) AND indicator_type = 'domain'${sinceClause(since)}
+          WHERE registrable_lc IN (${placeholders(registrables.length)}) AND +indicator_type = 'domain'${sinceClause(since)}
           ORDER BY report_date, rowid`,
       )
         .bind(...registrables, ...sinceBind(since))
