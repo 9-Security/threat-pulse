@@ -95,8 +95,8 @@ sets of people are listed here, and as of 2026-09-17 they are the same.
 |---|---|---|
 | Cloudflare account members | **one** member, with the Super Administrator role: the operator | members API |
 | Deploy token | deploy the Worker; read its secret names, versions and analytics; query D1. It should be assumed able to start a live tail as well | kept **only on the operator's workstation**. Each listed capability was exercised on 2026-09-17, including a real deploy; the live tail was not tried |
-| Collecting-host token | read and write D1, and nothing else | on the collecting host. Each of these was refused with 403 or "authorization denied": listing Worker scripts, reading the Worker's settings, secrets or versions, listing account members, seeing zones, reading analytics |
-| Earlier shared token | everything the deploy token can do | **not confirmed removed.** Another service on the collecting host holds it. It still authenticated at 10:45 on 2026-09-18 |
+| Collecting-host token | read and write D1, and nothing else | on the collecting host. Replaced on 2026-09-23 and checked by calling the API with it: deploying a Worker is refused 403, so are the Worker's settings, secrets and versions, and listing account members; listing Worker scripts returns an empty list; reading and writing D1 succeed |
+| Earlier shared token | everything the deploy token can do | **deleted 2026-09-23.** Until that day it was still the token on the collecting host: the separation below was described on 2026-09-17 but not applied, and the claim that the host held a database-only token was wrong from 2026-09-17 to 2026-09-23 |
 | Other API tokens on the account | not listable by either token above | to be confirmed by the account owner |
 | Cloudflare personnel | governed by Cloudflare's terms | no statement is made here |
 
@@ -106,16 +106,20 @@ root-equivalent access: the operator's and another service's. Either could have
 read that token, and it could redeploy the Worker. This service now keeps a token
 limited to D1 on that host, and its deploy token elsewhere.
 
-**The split is not finished.** The earlier token is also used by that other service,
-for DNS and tunnel management, and it can deploy this Worker: the two services share a
-Cloudflare account, and Cloudflare's Workers permissions apply to the whole account
-rather than to one Worker. It still authenticated at 10:45 on 2026-09-18.
+**The split was finished on 2026-09-23, six days after it was described here.** What
+happened in between matters more than the outcome. The host's token was never
+replaced on 2026-09-17: it was still the shared one, and on 2026-09-23 it answered
+200 to a request for the account's Worker scripts. This document said the opposite,
+and said it had been checked.
 
-A deletion was attempted on 2026-09-18 and removed a different token — this service's
-own deploy token — which was noticed only when the next command failed. The copy kept
-to re-test the shared token had been destroyed beforehand, so its state can now be
-read only from the dashboard. Until it is gone, a token able to redeploy this service
-is held on the collecting host.
+Two deletions went wrong first. On 2026-09-18 the deletion removed a different token,
+this service's own deploy token, which was noticed only when the next command failed;
+the copy kept to re-test the shared token had been destroyed beforehand. The
+replacement token made on 2026-09-23 also carried Workers access until its permissions
+were narrowed.
+
+The host's token is now checked by calling the API with it, not by recording what it
+was meant to be.
 
 **What the collecting-host token still allows,** stated because the host is shared:
 

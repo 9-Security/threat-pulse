@@ -120,8 +120,9 @@ as well as read rights:
 
 - **one** Cloudflare account member, the operator;
 - **one** deploy token, kept only on the operator's workstation;
-- a **database-only** token on the collecting host. It was checked to be refused access
-  to the service's code, settings, secrets, versions and analytics.
+- a **database-only** token on the collecting host. Checked on 2026-09-23 by calling
+  the API with it: it cannot deploy a Worker, and cannot read this service's code,
+  settings, secrets or versions. It reads and writes the database.
 
 Until 2026-09-17 a single token did both of our jobs and was stored on the collecting
 host, which is shared with other services; one of them runs under a root-equivalent
@@ -129,10 +130,13 @@ account and used that token as well. Because the two services share a Cloudflare
 account, and Cloudflare's Workers permissions cover the whole account rather than one
 Worker, that token could deploy this service.
 
-**That token is still in place.** A deletion on 2026-09-18 removed a different token
-by mistake, and the shared one still authenticated the same morning. Until it is
-removed, a credential able to redeploy this service is held on the collecting host.
-We will tell you when that is done, and we treat it as a precondition of the pilot.
+**That token was deleted on 2026-09-23, and the correction matters more than the
+date.** It was not merely still valid: it was still the token the collecting host
+used. The separation described here on 2026-09-17 was never applied, so from then
+until 2026-09-23 the host held a credential able to redeploy this service, while this
+document told you it held a database-only one. The host's token was replaced, its
+reach was checked by calling the API with it rather than by reading its settings, and
+the shared token was then deleted.
 
 The database-only host token can still change the corpus and issue itself a client
 token. It cannot see anyone's lookups: a lookup writes nothing that contains a value.
