@@ -174,8 +174,29 @@ included, and 150,000 requests against 10 million. Passing that would take about
 
 **Staying on Free** means the 10 ms CPU limit remains documented and exceeded, and
 that the daily ceilings apply: 100,000 requests, 5 million database rows read and
-100,000 written. The request ceiling is far away. Rows read per call has not been
-measured yet, and should be before the pilot carries real volume.
+100,000 written. The request ceiling is far away. Rows read was measured on
+2026-09-23, against a corpus of 20 days and 4,709 indicator rows:
+
+| one call | rows read | at 5,000 calls a day |
+|---|---|---|
+| one CVE | 80 | 0.4 M, 8% of the daily allowance |
+| one domain | 39 | 0.2 M, 4% |
+| the contract's 8-value example | 132 | 0.7 M, 13% |
+| 100 values, 95 of them hits | 883 | 4.4 M, **88%** |
+
+Each figure is one call alone in its own analytics minute, read from
+`d1AnalyticsAdaptiveGroups`. A sampling query in the same minute inflates the
+bucket, which it did on the first attempt.
+
+Before the fix in the same day's deploy, the 8-value example read **4,943** rows and
+the 100-value call about **9,450**: at the pilot's quota that is five times the daily
+allowance, and the service would have begun failing at roughly a thousand calls. The
+cause was the query planner abandoning the value index at about sixteen keys.
+
+What remains scales with **hits across days**, not with the corpus: a value returns
+one row per day it appeared, so a consumer sending mostly-unseen values costs far
+less than the worst case above, and `since` bounds the rest. Worth re-measuring when
+the corpus passes about three months.
 
 ---
 
