@@ -443,3 +443,67 @@ def test_verb_first_naming_with_the_linking_word_is_confirmed() -> None:
         if item.indicator_type == "malware_family" and item.status == "confirmed"
     }
     assert confirmed == {"BraZetsu", "AsioGate"}
+
+
+def test_a_url_with_an_unclosed_bracket_is_kept_as_written() -> None:
+    """urlsplit reads it as a malformed IPv6 host and raises; that lost 2026-09-23."""
+    from soc_news_parser.evidence import _normalize
+
+    assert _normalize("http://exa[mple.com/payload", "url") == "http://exa[mple.com/payload"
+
+
+def test_an_article_naming_such_a_url_still_yields_its_other_indicators() -> None:
+    from soc_news_parser.evidence import extract_evidence
+
+    body = """Threat campaign report
+Indicators of Compromise
+Network indicators
+http://exa[mple.com/payload
+C2 seen in the campaign.
+evil[.]example.com
+C2 server.
+"""
+    article = ParsedArticle(
+        source="Example Security",
+        title="Threat campaign report",
+        url="https://news.example.test/threat-report",
+        published_at="2026-08-29T03:43:27+00:00",
+        body=body,
+        extraction_method="site-selector:article",
+        body_characters=len(body),
+        warnings=[],
+        publisher_hosts=("example.test",),
+    )
+    values = {item.normalized_value for item in extract_evidence(article)}
+    assert "evil.example.com" in values
+    assert "http://exa[mple.com/payload" in values
+
+
+def test_a_redacted_url_is_rejected_rather_than_confirmed() -> None:
+    """Proofpoint wrote https://vpn.[redacted]/SAML20/SP inside an IoC section."""
+    from soc_news_parser.evidence import extract_evidence
+
+    body = """Threat campaign report
+Indicators of Compromise
+Network indicators
+https://vpn.[redacted]/SAML20/SP
+The phishing target's own VPN, written redacted in the report.
+evil[.]example.com
+C2 server.
+"""
+    article = ParsedArticle(
+        source="Example Security",
+        title="Threat campaign report",
+        url="https://news.example.test/threat-report",
+        published_at="2026-08-29T03:43:27+00:00",
+        body=body,
+        extraction_method="site-selector:article",
+        body_characters=len(body),
+        warnings=[],
+        publisher_hosts=("example.test",),
+    )
+    by_value = {item.normalized_value: item for item in extract_evidence(article)}
+    redacted = by_value["https://vpn.[redacted]/SAML20/SP"]
+    assert redacted.status == "rejected"
+    assert redacted.reason_codes == ["unreadable_url"]
+    assert by_value["evil.example.com"].status == "confirmed"
