@@ -6,3 +6,7 @@ __pycache__/
 .env
 reports/
 .cache/
+
+# Signed corpus bundles are built and handed over, not versioned here.
+docs/threat-pulse-corpus-validation-*.zip
+docs/threat-pulse-corpus-validation-*.zip.minisig
