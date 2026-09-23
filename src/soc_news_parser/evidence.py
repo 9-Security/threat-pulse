@@ -407,6 +407,11 @@ def _classify(
         return "rejected", "machine_rejected", ["excluded_editorial_section"]
     if _source_host_matches(normalized, article, generic_type):
         return "rejected", "machine_rejected", ["publisher_domain"]
+    if generic_type == "url" and not url_host(normalized):
+        # A URL with no readable host is a redaction, not an indicator: a
+        # Proofpoint report wrote https://vpn.[redacted]/SAML20/SP, which was
+        # confirmed as an IoC and also made urlsplit raise.
+        return "rejected", "machine_rejected", ["unreadable_url"]
     if generic_type == "ip":
         try:
             if not _is_public_address(normalized):
