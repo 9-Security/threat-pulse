@@ -10,7 +10,7 @@ from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from importlib.metadata import PackageNotFoundError, version
 from typing import Any, Callable, Iterable
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urljoin, urlparse, urlsplit
 
 import feedparser
 import httpx
@@ -158,6 +158,20 @@ def _parse_url(url: str) -> Any:
         return urlparse(url)
     except ValueError as error:
         raise ParseError(f"unreadable URL {url!r}: {error}") from error
+
+
+def url_host(value: str) -> str:
+    """The hostname of a URL, or "" when it cannot be read.
+
+    Indicator values are cut out of article text, where an unclosed bracket
+    makes urlsplit raise ValueError as though it were a malformed IPv6 host.
+    Every caller here only wants a host to compare, and no comparison is worth
+    ending the day's run, which is what that ValueError did on 2026-09-23.
+    """
+    try:
+        return (urlsplit(value).hostname or "").lower()
+    except ValueError:
+        return ""
 
 
 def _resolve_host(host: str) -> list[str]:
@@ -637,7 +651,7 @@ def default_window(hours: int, now: datetime | None = None) -> tuple[datetime, d
 
 
 def source_key_for_url(url: str) -> str:
-    host = (urlparse(url).hostname or "").lower()
+    host = url_host(url)
     for key, source in SOURCES.items():
         if _host_allowed(host, source.article_hosts):
             return key

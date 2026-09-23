@@ -424,7 +424,10 @@ def _markdown_code(value: str) -> str:
 
 
 def _markdown_url(value: str) -> str:
-    parts = urlsplit(value)
+    try:
+        parts = urlsplit(value)
+    except ValueError:
+        return ""
     if parts.scheme not in {"http", "https"} or not parts.hostname:
         return ""
     return quote(value, safe="/:?&=#%+@,;~-._")

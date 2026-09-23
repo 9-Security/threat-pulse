@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any, Iterable
 from urllib.parse import urlsplit, urlunsplit
 
-from .parser import ParsedArticle, _is_public_address
+from .parser import ParsedArticle, _is_public_address, url_host
 
 
 MANIFEST_VERSION = "1.4"
@@ -271,7 +271,13 @@ def _normalize(value: str, indicator_type: str) -> str:
     if indicator_type == "url":
         normalized = re.sub(r"^hxxps://", "https://", normalized, flags=re.I)
         normalized = re.sub(r"^hxxp://", "http://", normalized, flags=re.I)
-        parts = urlsplit(normalized)
+        try:
+            parts = urlsplit(normalized)
+        except ValueError:
+            # An unclosed bracket in the text reads as a malformed IPv6 host.
+            # Left as it was found: it is still an indicator, it just cannot be
+            # canonicalised, and raising here ended the whole day's run.
+            return normalized
         host = (parts.hostname or "").lower()
         if ":" in host:
             host = f"[{host}]"
@@ -375,12 +381,12 @@ def _source_host_matches(
     value: str, article: ParsedArticle, indicator_type: str
 ) -> bool:
     if indicator_type == "url":
-        candidate = (urlsplit(value).hostname or "").removeprefix("www.")
+        candidate = url_host(value).removeprefix("www.")
     elif indicator_type == "domain":
         candidate = value.removeprefix("www.")
     else:
         return False
-    trusted = article.publisher_hosts or ((urlsplit(article.url).hostname or ""),)
+    trusted = article.publisher_hosts or (url_host(article.url),)
     return any(
         candidate == host.removeprefix("www.")
         or candidate.endswith(f".{host.removeprefix('www.')}")

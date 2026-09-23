@@ -21,6 +21,7 @@ from .evidence import (
     EvidenceManifest,
     heading_kind,
 )
+from .parser import url_host
 from .publicsuffix import is_public_suffix, public_suffix_list_version
 
 
@@ -471,7 +472,7 @@ def _network_host(target_type: str, target: str) -> str:
         return ""
     host = target
     if target_type == "url":
-        host = urlsplit(target).hostname or ""
+        host = url_host(target)
     return host.lower().strip(".")
 
 

@@ -28,6 +28,7 @@ from typing import Any, Iterable
 from urllib.parse import urlsplit
 
 from .ioc_query import REPORT_FILENAME, list_report_dates, reports_root
+from .parser import url_host
 from .publicsuffix import is_public_suffix, public_suffix
 
 CVE_RE = re.compile(r"^CVE-\d{4}-\d{4,7}$", re.IGNORECASE)
@@ -65,7 +66,7 @@ class Corpus:
 
 def _host_of(value: str) -> str:
     if "://" in value:
-        return (urlsplit(value).hostname or "").lower()
+        return url_host(value)
     return value.strip().strip(".").lower()
 
 
