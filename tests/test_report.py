@@ -1150,3 +1150,29 @@ def test_collect_report_passes_the_archive_to_the_feed_read() -> None:
     already = seen["already_collected"]
     assert already("https://example.test/a/?utm_medium=feed")  # type: ignore[operator]
     assert not already("https://example.test/b")  # type: ignore[operator]
+
+
+def test_a_source_that_raises_on_a_url_is_a_source_failure_not_a_lost_day() -> None:
+    class Breaking(FakeParser):
+        def parse_feed(self, source: object, **kwargs: object) -> list[ParsedArticle]:
+            if getattr(source, "name") == "The Hacker News":
+                raise ValueError("Invalid IPv6 URL")
+            return super().parse_feed(source, **kwargs)
+
+    report = collect_report(
+        Breaking(),
+        ["the-hacker-news", "bleepingcomputer"],
+        since=datetime(2026, 8, 28, 22, tzinfo=timezone.utc),
+        until=datetime(2026, 8, 29, 22, tzinfo=timezone.utc),
+        generated_at=datetime(2026, 8, 29, 22, tzinfo=timezone.utc),
+    )
+
+    failed = {failure.source_key: failure.error for failure in report.source_failures}
+    assert "Invalid IPv6 URL" in failed["the-hacker-news"]
+    assert "bleepingcomputer" in failed, "the other source still fails on its own terms"
+
+
+def test_an_unreadable_url_is_left_whole_rather_than_raising() -> None:
+    from soc_news_parser.report import _canonical_article_url
+
+    assert _canonical_article_url("https://exa[mple.test/x") == "https://exa[mple.test/x"
