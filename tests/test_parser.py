@@ -535,3 +535,34 @@ def test_an_entry_the_feed_carried_late_is_taken_once() -> None:
     assert LATE_ARRIVAL_WARNING not in articles[1].warnings
     assert parser.feed_stats is not None
     assert (parser.feed_stats.in_window, parser.feed_stats.late) == (1, 1)
+
+
+def test_an_unreadable_link_costs_only_that_entry() -> None:
+    """A malformed URL ended the whole run and lost 2026-09-23."""
+    feed_url = "https://example.test/feed"
+    body = "<html><body><article>" + "A vulnerability is described here. " * 20 + "</article></body></html>"
+    routes = {
+        feed_url: (
+            "application/rss+xml",
+            '<?xml version="1.0"?><rss version="2.0"><channel><title>Test</title>'
+            "<item><title>Broken link</title><link>https://exa[mple.test/bad</link>"
+            "<pubDate>Sat, 29 Aug 2026 08:00:00 +0000</pubDate></item>"
+            "<item><title>Good</title><link>https://example.test/good</link>"
+            "<pubDate>Sat, 29 Aug 2026 09:00:00 +0000</pubDate></item>"
+            "</channel></rss>",
+        ),
+        "https://example.test/good": ("text/html", body),
+    }
+    parser = news_parser()
+    parser.client.close()
+    parser.client = client_for(routes)
+
+    with parser:
+        articles = parser.parse_feed(
+            Source("Test", feed_url, ("article",), ("example.test",)),
+            since=datetime(2026, 8, 28, 22, tzinfo=timezone.utc),
+            until=datetime(2026, 8, 29, 22, tzinfo=timezone.utc),
+        )
+
+    assert [a.title for a in articles] == ["Good"]
+    assert any("unreadable URL" in note for note in parser.diagnostics)

@@ -270,7 +270,10 @@ def collect_report(
         source = SOURCES[source_key]
         try:
             articles = parser.parse_feed(source, since=since, until=until, **late)
-        except ParseError as error:
+        except (ParseError, ValueError) as error:
+            # ValueError too: a malformed URL in a feed used to end the run and
+            # lose the day. One source that cannot be read is a source failure,
+            # which the report records and source-health reports after two days.
             failures.append(SourceFailure(source_key, source.name, str(error)))
             continue
         manifests.extend(build_manifest(article, retrieved_at) for article in articles)
@@ -386,7 +389,12 @@ TRACKING_QUERY_KEYS = frozenset({"fbclid", "gclid", "mc_cid", "mc_eid"})
 
 
 def _canonical_article_url(value: str) -> str:
-    parts = urlsplit(value)
+    try:
+        parts = urlsplit(value)
+    except ValueError:
+        # Not parseable, so not comparable either. Returned whole, it can still
+        # match itself, which is all dedupe and the archive lookup need.
+        return value
     host = (parts.hostname or "").lower()
     try:
         port = parts.port

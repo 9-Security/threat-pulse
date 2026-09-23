@@ -147,6 +147,19 @@ def _clean_body_text(value: str) -> str:
     return _clean_text(value)
 
 
+def _parse_url(url: str) -> Any:
+    """urlparse, with an unreadable URL raised as a ParseError.
+
+    urlparse raises ValueError on a malformed host -- an unclosed bracket reads
+    as an IPv6 address -- and a ValueError from here escaped every handler and
+    ended the whole run. One publisher's bad link must cost at most that link.
+    """
+    try:
+        return urlparse(url)
+    except ValueError as error:
+        raise ParseError(f"unreadable URL {url!r}: {error}") from error
+
+
 def _resolve_host(host: str) -> list[str]:
     try:
         return sorted(
@@ -261,7 +274,7 @@ class NewsParser:
         self.close()
 
     def _validate_url(self, url: str, allowed_hosts: tuple[str, ...]) -> None:
-        parsed = urlparse(url)
+        parsed = _parse_url(url)
         if parsed.scheme != "https" or not parsed.hostname:
             raise ParseError(f"only HTTPS URLs with a hostname are allowed: {url}")
         host = parsed.hostname.rstrip(".").lower()
@@ -281,7 +294,7 @@ class NewsParser:
         allowed_hosts: tuple[str, ...] | None = None,
         headers: dict[str, str] | None = None,
     ) -> httpx.Response:
-        initial_host = urlparse(url).hostname
+        initial_host = _parse_url(url).hostname
         hosts = allowed_hosts or ((initial_host,) if initial_host else ())
         current_url = url
         # Credentials in `headers` belong to the host they were minted for, so
@@ -290,7 +303,11 @@ class NewsParser:
         maximum_bytes = 12 * 1024 * 1024
         for _ in range(6):
             self._validate_url(current_url, hosts)
-            sent = headers if headers and urlparse(current_url).hostname == header_host else None
+            sent = (
+                headers
+                if headers and _parse_url(current_url).hostname == header_host
+                else None
+            )
             try:
                 with self.client.stream("GET", current_url, headers=sent) as response:
                     if response.is_redirect:
@@ -471,6 +488,11 @@ class NewsParser:
             url = entry.get("link", "")
             if not title or not url:
                 self.diagnostics.append("skipped entry with missing title or URL")
+                continue
+            try:
+                _parse_url(url)
+            except ParseError as error:
+                self.diagnostics.append(f"skipped entry: {error}")
                 continue
             if late and already_collected(url):
                 continue
