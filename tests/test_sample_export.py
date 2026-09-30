@@ -77,13 +77,24 @@ SUMMARY = {
     "job-2": {"verdict_label": "suspicious", "verdict_score": 40, "ioc_total": 0},
 }
 
+SAMPLES = {
+    "s-1": {"id": "s-1", "sha256": "A" * 64, "sha1": "1" * 40, "md5": "2" * 32,
+            "size_bytes": 4096, "mime": "application/x-dosexec",
+            "uploaded_at": "2026-09-29T08:00:00+00:00"},
+    "s-2": {"id": "s-2", "sha256": "B" * 64, "sha1": None, "md5": None,
+            "size_bytes": 10, "mime": "text/plain",
+            "uploaded_at": "2026-09-28T08:00:00+00:00"},
+}
+
 ATTACK = {
     "job-1": {"techniques": [{"technique_id": "T1056.001"}, {"technique_id": "T1071.001"}]},
     "job-2": {"techniques": []},
 }
 
 
-def analyzer_client(*, fail_summary_for: set[str] = frozenset()) -> AnalyzerClient:
+def analyzer_client(
+    *, fail_summary_for: set[str] = frozenset(), fail_sample_for: set[str] = frozenset()
+) -> AnalyzerClient:
     pages = {key: list(value) for key, value in FEED.items()}
     calls: list[str] = []
 
@@ -95,6 +106,11 @@ def analyzer_client(*, fail_summary_for: set[str] = frozenset()) -> AnalyzerClie
             queue = pages[path]
             page = queue[0] if offset == 0 else (queue[1] if len(queue) > 1 else {"items": []})
             return httpx.Response(200, json=page)
+        if path.startswith("/api/samples/"):
+            sample = path.rsplit("/", 1)[-1]
+            if sample in fail_sample_for:
+                return httpx.Response(500, json={"detail": "boom"})
+            return httpx.Response(200, json=SAMPLES.get(sample, {}))
         job = path.split("/")[3]
         if path.endswith("/iocs"):
             return httpx.Response(200, json=IOCS.get(job, []))
@@ -144,6 +160,25 @@ def test_the_summary_travels_with_the_sample() -> None:
     assert (first.family, first.family_confidence) == ("AgentTesla", 80)
     assert first.attack_techniques == ("T1056.001", "T1071.001")
     assert first.report_url == f"https://malware.nine-security.com/s/{'a' * 64}"
+
+
+def test_a_caller_can_arrive_by_md5_or_sha1() -> None:
+    """The one lookup the news side can never answer, so it has to work here."""
+    with analyzer_client() as analyzer:
+        samples = collect_samples(analyzer)
+
+    first = next(s for s in samples if s.sha256.startswith("a"))
+    assert first.md5 == "2" * 32
+    assert first.sha1 == "1" * 40
+    sql = render_sql(samples)
+    assert "'" + "2" * 32 + "'" in sql
+
+    with analyzer_client(fail_sample_for={"s-1"}) as analyzer:
+        degraded = collect_samples(analyzer)
+        failures = list(analyzer.failures)
+    still = next(s for s in degraded if s.sha256.startswith("a"))
+    assert still.indicators and still.md5 is None, "one endpoint failing loses that field only"
+    assert any("sample" in note for note in failures)
 
 
 def test_a_failed_summary_still_exports_the_values() -> None:

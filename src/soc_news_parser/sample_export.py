@@ -202,6 +202,16 @@ class AnalyzerClient:
                     return
             offset += len(items)
 
+    def sample_of(self, sample_id: str) -> dict[str, Any]:
+        """The sample's own record, which is the only place md5 and sha1 appear.
+
+        The feed carries sha256 alone, so without this a caller could not arrive
+        by md5 -- the one lookup the news side can never answer. Sample ids come
+        from the public feed, so this never asks for a sample the feed withheld.
+        """
+        payload = self._get(f"/api/samples/{sample_id}")
+        return payload if isinstance(payload, dict) else {}
+
     def indicators_of(self, job_id: str) -> list[dict[str, Any]]:
         payload = self._get(f"/api/jobs/{job_id}/iocs", {"limit": 2000})
         return [row for row in payload if isinstance(row, dict)] if isinstance(payload, list) else []
@@ -293,15 +303,25 @@ def collect_samples(
             techniques = client.techniques_of(job_id)
         except AnalyzerError as error:
             client.failures.append(f"summary {sha256[:12]}: {error}")
+        record: dict[str, Any] = {}
+        sample_id = _text(item.get("sample_id"))
+        if sample_id:
+            try:
+                record = client.sample_of(sample_id)
+            except AnalyzerError as error:
+                client.failures.append(f"sample {sha256[:12]}: {error}")
         verdict = item.get("verdict") if isinstance(item.get("verdict"), dict) else {}
         samples.append(
             SampleAnalysis(
                 sha256=sha256.lower(),
-                md5=(_text(item.get("md5")) or _text(summary.get("md5")) or "").lower() or None,
-                sha1=(_text(item.get("sha1")) or _text(summary.get("sha1")) or "").lower() or None,
-                size_bytes=item.get("size_bytes") if isinstance(item.get("size_bytes"), int) else None,
-                file_type=_text(item.get("file_type")),
-                submitted_at=_text(item.get("submitted_at")),
+                md5=(_text(record.get("md5")) or "").lower() or None,
+                sha1=(_text(record.get("sha1")) or "").lower() or None,
+                size_bytes=next(
+                    (v for v in (record.get("size_bytes"), item.get("size_bytes")) if isinstance(v, int)),
+                    None,
+                ),
+                file_type=_text(item.get("file_type")) or _text(record.get("mime")),
+                submitted_at=_text(item.get("submitted_at")) or _text(record.get("uploaded_at")),
                 finished_at=_text(item.get("finished_at")),
                 verdict=_text(summary.get("verdict_label")) or _text(verdict.get("label")),
                 verdict_score=summary.get("verdict_score") if isinstance(summary.get("verdict_score"), int) else None,
