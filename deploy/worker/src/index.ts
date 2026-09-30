@@ -19,6 +19,9 @@ import {
   type EnrichStore,
   type ExcludedRow,
   type IndicatorRow,
+  type SampleAnalysisRow,
+  type SampleIndicatorRow,
+  type SampleState,
 } from "./enrich";
 import enrichInputSchema from "./schemas/enrich_observables.input.json";
 import enrichOutputSchema from "./schemas/enrich_observables.output.json";
@@ -546,6 +549,40 @@ function enrichStore(env: Env): EnrichStore {
         .all<CveRow>();
       return results;
     },
+    async samples(keys, since) {
+      // The unary + on the type, as on the news side: without it SQLite leaves the
+      // value index at about sixteen keys and reads the table instead.
+      const { results } = await env.DB.prepare(
+        `SELECT i.sha256, i.indicator_type, i.value, i.value_lc, i.confidence, i.integration,
+                i.first_seen_at, a.family, a.verdict, a.verdict_score, a.attack_techniques,
+                a.report_url
+           FROM sample_indicators i JOIN sample_analysis a ON a.sha256 = i.sha256
+          WHERE i.value_lc IN (${placeholders(keys.length)})${since ? " AND i.first_seen_at >= ?" : ""}
+          ORDER BY i.confidence DESC, i.first_seen_at DESC`,
+      )
+        .bind(...keys, ...(since ? [since] : []))
+        .all<SampleIndicatorRow>();
+      return results;
+    },
+    async samplesByHash(hashes) {
+      const { results } = await env.DB.prepare(
+        `SELECT sha256, md5, sha1, file_type, submitted_at, verdict, verdict_score,
+                family, family_confidence, attack_techniques, ioc_total, report_url
+           FROM sample_analysis
+          WHERE sha256 IN (${placeholders(hashes.length)})
+             OR md5 IN (${placeholders(hashes.length)})
+             OR sha1 IN (${placeholders(hashes.length)})`,
+      )
+        .bind(...hashes, ...hashes, ...hashes)
+        .all<SampleAnalysisRow>();
+      return results;
+    },
+    async sampleState(): Promise<SampleState | null> {
+      const row = await env.DB.prepare(
+        `SELECT exported_at, high_water, analyzer FROM sample_state WHERE id = 1`,
+      ).first<SampleState>();
+      return row ?? null;
+    },
     async corpus(): Promise<CorpusInfo> {
       const [state, reports] = await env.DB.batch([
         env.DB.prepare(
@@ -595,15 +632,20 @@ async function enrich(env: Env, args: Json, caller: Caller): Promise<Json> {
       since: validDate(args.since),
       mayReadContext: caller.scopes.has("context"),
     },
-    {
-      store: enrichStore(env),
-      boundaries,
-      now: () => Date.now(),
-      requestId: () => crypto.randomUUID(),
-      budgetMs: LOOKUP_BUDGET_MS,
-      chunkSize: 90,
-    },
+    enrichDeps(env),
   );
+}
+
+/** Shared by the MCP tool and the plain GET, so the two answers cannot drift. */
+function enrichDeps(env: Env) {
+  return {
+    store: enrichStore(env),
+    boundaries,
+    now: () => Date.now(),
+    requestId: () => crypto.randomUUID(),
+    budgetMs: LOOKUP_BUDGET_MS,
+    chunkSize: 90,
+  };
 }
 
 async function callTool(name: string, args: Json, env: Env, caller: Caller): Promise<Json> {
@@ -880,6 +922,55 @@ export default {
       const refused = await enforceQuota(env, caller);
       if (refused) return refused;
       return handleHeartbeatProbe(request, env, caller);
+    }
+
+    // One value, one GET, plain JSON. The MCP endpoint is what an agent speaks,
+    // but a person with curl and an analyst pasting a value into a browser are
+    // the other half of "a lookup service", and JSON-RPC over POST serves them
+    // badly. Same token, same quota, same answer as `enrich_observables` for a
+    // single value.
+    //
+    // The value may be a URL, which carries slashes, so `?value=` is the form
+    // that always works; a trailing path segment is accepted for the common
+    // hash-or-domain case, percent-decoded, and is equivalent.
+    if (url.pathname === "/v1/lookup" || url.pathname.startsWith("/v1/lookup/")) {
+      if (request.method !== "GET") {
+        return new Response("method not allowed", { status: 405, headers: { allow: "GET" } });
+      }
+      const caller = await authenticate(request, env);
+      if (!caller) {
+        return Response.json(
+          { error: "unauthorized" },
+          { status: 401, headers: { "www-authenticate": 'Bearer realm="iocs"' } },
+        );
+      }
+      const refused = await enforceQuota(env, caller);
+      if (refused) return refused;
+      const fromPath = url.pathname.startsWith("/v1/lookup/")
+        ? decodeURIComponent(url.pathname.slice("/v1/lookup/".length))
+        : "";
+      const value = (url.searchParams.get("value") ?? fromPath).trim();
+      if (!value) {
+        return Response.json(
+          { error: "value is required", detail: "GET /v1/lookup?value=<observable>" },
+          { status: 400 },
+        );
+      }
+      const answer = await enrichObservables(
+        {
+          values: [value],
+          types: url.searchParams.get("type") ? [url.searchParams.get("type")] : null,
+          detail: url.searchParams.get("detail") === "full" ? "full" : "compact",
+          since: validDate(url.searchParams.get("since")) ?? null,
+          mayReadContext: caller.scopes.has("context"),
+        },
+        enrichDeps(env),
+      );
+      // A value the service refuses to look up is a 400, not an answer that looks
+      // like a miss: `skipped` carries the reason and no caller should read it as
+      // "we have never seen this".
+      const status = answer.status === "failed" ? 503 : 200;
+      return Response.json(answer, { status });
     }
 
     if (url.pathname !== "/mcp") {

@@ -120,7 +120,9 @@ the old token deleted afterwards.
 
 | | |
 |---|---|
-| **service URL for consumers** | `https://threat-pulse.nine-security.com/mcp` |
+| **service URL for consumers** | `https://ioc.nine-security.com/mcp` — the name the merged service answers on since 2026-09-30, both corpora behind it |
+| also answering | `https://threat-pulse.nine-security.com/mcp` — the original name, kept so nothing issued before has to change |
+| one value, plain HTTP | `GET /v1/lookup?value=<observable>` with the same bearer token, same quota, same body as `result.structuredContent` |
 | also answering | `https://soc-iocs-mcp.nine-security.workers.dev/mcp` — the platform address, kept while the pilot settles. Many SOC proxies block `*.workers.dev`, which is why the custom domain exists |
 | health, no authentication | `GET /health` → `{"ok":true,"server":"iocs"}` |
 | heartbeat probe, authenticated | `GET /heartbeat` reports the verdict; `POST /heartbeat` sends a labelled test mail to `ALERT_TO` |

@@ -19,7 +19,7 @@
       },
       "types": {
         "type": "array",
-        "description": "Optional per-value type hint, same length as values. One of cve, domain, ip, url, md5, sha1, sha256, or an empty string for none. A hint never overrides a safety skip; an unknown hint is reported and ignored.",
+        "description": "Optional per-value type hint, same length as values. One of cve, domain, ip, url, md5, sha1, sha256, or an empty string for none. A hint never overrides a safety skip; an unknown hint is reported and ignored. The artefact types mutex, path, registry and email are answered by the sample side only and must be named here, because nothing detects them from the text -- a mutex name is any string.",
         "items": {
           "type": "string"
         }
@@ -54,6 +54,7 @@
       "coverage",
       "counts",
       "hits",
+      "sample_hits",
       "excluded",
       "unseen",
       "skipped",
@@ -111,7 +112,8 @@
           "public_suffix_list_version",
           "scope",
           "verdict_note",
-          "absence_note"
+          "absence_note",
+          "samples"
         ],
         "properties": {
           "report_range": {
@@ -182,6 +184,39 @@
           },
           "version_note": {
             "type": "string"
+          },
+          "samples": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "additionalProperties": false,
+            "required": [
+              "analyzer",
+              "exported_at",
+              "newest_sample"
+            ],
+            "description": "freshness of the sample side, which arrives hourly while the news side arrives daily",
+            "properties": {
+              "analyzer": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "exported_at": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "newest_sample": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            }
           }
         }
       },
@@ -194,6 +229,7 @@
           "hits",
           "headline_hits",
           "excluded",
+          "sample_hits",
           "unseen",
           "skipped",
           "failed"
@@ -222,6 +258,9 @@
             "type": "integer"
           },
           "failed": {
+            "type": "integer"
+          },
+          "sample_hits": {
             "type": "integer"
           }
         }
@@ -254,6 +293,12 @@
         "type": "array",
         "items": {
           "$ref": "#/$defs/error"
+        }
+      },
+      "sample_hits": {
+        "type": "array",
+        "items": {
+          "$ref": "#/$defs/sample_hit"
         }
       }
     },
@@ -301,7 +346,11 @@
               "url",
               "md5",
               "sha1",
-              "sha256"
+              "sha256",
+              "mutex",
+              "path",
+              "registry",
+              "email"
             ]
           },
           "type_supplied": {
@@ -826,6 +875,237 @@
               "time_budget_exceeded",
               "missing_citation"
             ]
+          }
+        }
+      },
+      "sample_finding": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "sha256",
+          "matched_value",
+          "confidence",
+          "extracted_by",
+          "first_seen",
+          "report"
+        ],
+        "properties": {
+          "sha256": {
+            "type": "string",
+            "description": "the analysed file this value came out of"
+          },
+          "matched_value": {
+            "type": "string"
+          },
+          "confidence": {
+            "type": "integer",
+            "description": "the analyser's own confidence in the extraction"
+          },
+          "extracted_by": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "which integration found it; a config extractor's C2 and a string that looks like a hostname are not the same finding"
+          },
+          "first_seen": {
+            "type": "string"
+          },
+          "verdict": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "verdict_score": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "family": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "attack_techniques": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "report": {
+            "type": "string",
+            "description": "the sample's permanent report page"
+          }
+        }
+      },
+      "sample_analysis": {
+        "type": [
+          "object",
+          "null"
+        ],
+        "additionalProperties": false,
+        "required": [
+          "sha256",
+          "report"
+        ],
+        "properties": {
+          "sha256": {
+            "type": "string"
+          },
+          "md5": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "sha1": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "file_type": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "submitted_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "verdict": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "verdict_score": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "family": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "family_confidence": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "attack_techniques": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "indicator_count": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "report": {
+            "type": "string"
+          }
+        }
+      },
+      "sample_hit": {
+        "type": "object",
+        "additionalProperties": false,
+        "description": "A value found inside a file this service analysed. Reported apart from `hits` on purpose: a publisher writing a value down and a file containing it are claims of different strength, and a caller has to know which one it is acting on.",
+        "required": [
+          "input_index",
+          "value",
+          "normalized_value",
+          "normalization_applied",
+          "type",
+          "type_supplied",
+          "sample_count",
+          "resolved_sha256",
+          "analysis",
+          "samples"
+        ],
+        "properties": {
+          "input_index": {
+            "type": "integer"
+          },
+          "value": {
+            "type": "string",
+            "description": "As submitted."
+          },
+          "normalized_value": {
+            "type": "string",
+            "description": "What was matched: a URL's host, a canonical address, an upper-case CVE."
+          },
+          "normalization_applied": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "defang",
+                "defang_scheme",
+                "trailing_dot"
+              ]
+            }
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "cve",
+              "domain",
+              "ip",
+              "url",
+              "md5",
+              "sha1",
+              "sha256",
+              "mutex",
+              "path",
+              "registry",
+              "email"
+            ]
+          },
+          "type_supplied": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "warnings": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "sample_count": {
+            "type": "integer",
+            "description": "analysed samples holding this value; `samples` lists at most five"
+          },
+          "resolved_sha256": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "set when the submitted value was an md5 or sha1 naming a file we hold, which the news side can never answer"
+          },
+          "analysis": {
+            "$ref": "#/$defs/sample_analysis"
+          },
+          "samples": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/sample_finding"
+            }
           }
         }
       }

@@ -22,6 +22,8 @@ import {
   type EnrichRequest,
   type ExcludedRow,
   type IndicatorRow,
+  type SampleAnalysisRow,
+  type SampleIndicatorRow,
 } from "./enrich.ts";
 
 type Json = Record<string, any>;
@@ -94,6 +96,19 @@ function fixture(options: {
   excluded?: Array<{ value: string; type?: string; codes: string[]; date?: string }>;
   cve?: Array<{ id: string; date: string; record: Json }>;
   days?: string[];
+  samples?: Array<{
+    sha256: string;
+    md5?: string;
+    sha1?: string;
+    file_type?: string;
+    submitted_at?: string;
+    verdict?: string;
+    verdict_score?: number;
+    family?: string;
+    attack?: string[];
+    values?: Array<{ type: string; value: string; confidence?: number; by?: string; at?: string }>;
+  }>;
+  sampleState?: null;
   state?: Partial<NonNullable<CorpusInfo["state"]>> | null;
   failWhen?: (kind: string, keys: string[]) => boolean;
   clock?: () => number;
@@ -112,6 +127,36 @@ function fixture(options: {
     cve_id: c.id,
     record: JSON.stringify(c.record),
   }));
+  const analysisRows: SampleAnalysisRow[] = (options.samples ?? []).map((s) => ({
+    sha256: s.sha256,
+    md5: s.md5 ?? null,
+    sha1: s.sha1 ?? null,
+    file_type: s.file_type ?? "application/x-dosexec",
+    submitted_at: s.submitted_at ?? "2026-09-20T00:00:00+00:00",
+    verdict: s.verdict ?? "malicious",
+    verdict_score: s.verdict_score ?? 80,
+    family: s.family ?? null,
+    family_confidence: s.family ? 70 : 0,
+    attack_techniques: s.attack ? JSON.stringify(s.attack) : null,
+    ioc_total: s.values?.length ?? 0,
+    report_url: `https://malware.example/s/${s.sha256}`,
+  }));
+  const sampleRows: SampleIndicatorRow[] = (options.samples ?? []).flatMap((s) =>
+    (s.values ?? []).map((v) => ({
+      sha256: s.sha256,
+      indicator_type: v.type,
+      value: v.value,
+      value_lc: v.value.toLowerCase(),
+      confidence: v.confidence ?? 50,
+      integration: v.by ?? "ioc_extract",
+      first_seen_at: v.at ?? "2026-09-20T00:00:00+00:00",
+      family: s.family ?? null,
+      verdict: s.verdict ?? "malicious",
+      verdict_score: s.verdict_score ?? 80,
+      attack_techniques: s.attack ? JSON.stringify(s.attack) : null,
+      report_url: `https://malware.example/s/${s.sha256}`,
+    })),
+  );
   const days = options.days ?? ["2026-09-04", "2026-09-05"];
   const calls: Array<{ kind: string; keys: string[]; since: string | null }> = [];
   const guard = (kind: string, keys: string[], since: string | null = null) => {
@@ -147,6 +192,26 @@ function fixture(options: {
       async cveIntel(ids) {
         guard("cve", ids);
         return cveRows.filter((r) => ids.includes(r.cve_id));
+      },
+      async samples(keys, since) {
+        guard("samples", keys, since);
+        return sampleRows.filter((r) => keys.includes(r.value_lc) && (!since || r.first_seen_at >= since));
+      },
+      async samplesByHash(hashes) {
+        guard("hashes", hashes);
+        return analysisRows.filter((r) =>
+          [r.sha256, r.md5, r.sha1].some((hash) => hash && hashes.includes(hash.toLowerCase())),
+        );
+      },
+      async sampleState() {
+        guard("sampleState", []);
+        return options.sampleState === null
+          ? null
+          : {
+              analyzer: "https://malware.example",
+              exported_at: "2026-09-30T02:00:00+00:00",
+              high_water: "2026-09-29T16:09:19Z",
+            };
       },
       async corpus() {
         guard("corpus", []);
@@ -202,11 +267,23 @@ const byIndex = (out: Json) => {
 };
 
 function assertEveryValueOnce(out: Json, n: number) {
+  // `sample_hits` is deliberately not exclusive with the rest: a value can be
+  // both in an article and in a file we analysed, and the answer says so twice.
+  // What must hold is that every value lands in exactly one of the exclusive
+  // buckets, or -- when only the sample side knows it -- in `sample_hits` alone.
   const seen: number[] = [];
   for (const bucket of ["hits", "excluded", "unseen", "skipped", "errors"]) {
     for (const item of out[bucket]) seen.push(item.input_index);
   }
-  assert.deepEqual([...seen].sort((a, b) => a - b), Array.from({ length: n }, (_, i) => i), "every value exactly once");
+  const sampleOnly = out.sample_hits
+    .map((item: Json) => item.input_index)
+    .filter((index: number) => !seen.includes(index));
+  assert.equal(new Set(sampleOnly).size, sampleOnly.length, "a value appears once in sample_hits");
+  assert.deepEqual(
+    [...seen, ...sampleOnly].sort((a, b) => a - b),
+    Array.from({ length: n }, (_, i) => i),
+    "every value exactly once",
+  );
 }
 
 /* ------------------------------------------------ schema, checked by hand --- */
@@ -592,7 +669,13 @@ test("a CVE hit carries the newest day's record with its provenance", async () =
 test("since reaches every day-scoped query and narrows the answer", async () => {
   const { out, calls } = await run(["evil.example.com"], { seeds: MATCHING }, { since: "2026-09-05" });
   assert.deepEqual(out.hits[0].publishers, ["Beta"]);
-  assert.ok(calls.filter((c) => c.kind !== "cve" && c.kind !== "corpus").every((c) => c.since === "2026-09-05"));
+  assert.ok(
+    calls
+      // `cve` and `corpus` take no window; `hashes` and `sampleState` are about
+      // identity and freshness, not recency.
+      .filter((c) => !["cve", "corpus", "hashes", "sampleState"].includes(c.kind))
+      .every((c) => c.since === "2026-09-05"),
+  );
   const ignored = await run(["evil.example.com"], { seeds: MATCHING }, { since: "last week" });
   assert.equal(ignored.out.since, null);
 });
@@ -618,4 +701,49 @@ test("every example in the contract conforms to the output schema", () => {
   const published = JSON.parse(readFileSync(new URL("tool-definition.json", dir), "utf8"));
   assert.deepEqual(published.outputSchema, SCHEMA, "the published tool definition carries this schema");
   assert.equal(checked, 3);
+});
+
+test("a mutex is answered from the sample side when the caller names the type", async () => {
+  // Nothing detects a mutex from its text, so without the hint it is not a lookup
+  // at all. With it, the one side that holds such artefacts answers.
+  const samples = [
+    {
+      sha256: "f".repeat(64),
+      md5: "e".repeat(32),
+      family: "AgentTesla",
+      attack: ["T1056.001"],
+      values: [
+        { type: "mutex", value: "Global\\AgentTeslaMutex", confidence: 76, by: "config_extractor" },
+        { type: "domain", value: "panel.example.com", confidence: 84, by: "config_extractor" },
+      ],
+    },
+  ];
+  const { out: answer } = await run(
+    ["Global\\AgentTeslaMutex", "Global\\AgentTeslaMutex", "e".repeat(32)],
+    { samples },
+    { types: ["mutex", "", "md5"] },
+  );
+
+  assert.equal(answer.counts.sample_hits, 2, "the hinted mutex and the md5 answer");
+  const mutex = answer.sample_hits.find((h: Json) => h.type === "mutex");
+  assert.equal(mutex.sample_count, 1);
+  assert.equal(mutex.samples[0].extracted_by, "config_extractor");
+  assert.equal(mutex.samples[0].family, "AgentTesla");
+  assert.deepEqual(mutex.samples[0].attack_techniques, ["T1056.001"]);
+  assert.equal(
+    answer.skipped.filter((s: Json) => s.input_index === 1).length,
+    1,
+    "the same value without the hint is not a lookup",
+  );
+  const byHash = answer.sample_hits.find((h: Json) => h.type === "md5");
+  assert.equal(byHash.resolved_sha256, "f".repeat(64), "a caller may arrive by md5");
+  assert.equal(byHash.analysis.family, "AgentTesla");
+  assert.equal(answer.counts.unseen, 0, "a value the analyser holds is not unseen");
+});
+
+test("a value in neither corpus is still unseen, and the sample side has its own clock", async () => {
+  const { out: answer } = await run(["nothing.example.com"], { samples: [{ sha256: "a".repeat(64), values: [] }] });
+  assert.equal(answer.counts.unseen, 1);
+  assert.equal(answer.counts.sample_hits, 0);
+  assert.equal(answer.coverage.samples.newest_sample, "2026-09-29T16:09:19Z");
 });

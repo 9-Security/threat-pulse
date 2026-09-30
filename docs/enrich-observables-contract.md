@@ -28,7 +28,7 @@ described under [Parity with the offline validator](#parity-with-the-offline-val
 
 | | |
 |---|---|
-| URL | `https://threat-pulse.nine-security.com/mcp` |
+| URL | `https://ioc.nine-security.com/mcp`, or `https://threat-pulse.nine-security.com/mcp` — the same service on both names |
 | method | `POST`, `Content-Type: application/json` |
 | protocol | JSON-RPC 2.0, MCP `2025-06-18`. Stateless: no session id and no SSE; every response is one JSON body |
 | methods | `initialize`, `notifications/initialized`, `tools/list`, `tools/call` |
@@ -45,6 +45,23 @@ A direct HTTP caller needs no MCP library. Send a `tools/call` and read
  "params": {"name": "enrich_observables",
             "arguments": {"values": ["CVE-2026-20079", "login.service-nowinc[.]com"]}}}
 ```
+
+### One value, one GET
+
+For a person with `curl` and for a script that wants one answer, the same
+response is served without JSON-RPC:
+
+```
+GET /v1/lookup?value=<observable>[&type=<type>][&detail=full][&since=YYYY-MM-DD]
+Authorization: Bearer <token>
+```
+
+The body is the same object as `result.structuredContent`. `?value=` always
+works; a trailing path segment (`/v1/lookup/evil.example.com`) is accepted and
+percent-decoded, which suits a hash or a domain but not a URL. A missing value is
+`400`, a bad token `401`, an unreadable corpus `503`; a value the service refuses
+to look up is still `200`, in `skipped`, because that is not a miss. It counts
+against the same quota as a tool call.
 
 ## The tool
 
@@ -93,8 +110,9 @@ again. `truncated` does, because values dropped by the limit can be resubmitted.
 
 ### `counts`
 
-`requested`, `processed` (= `hits` + `excluded` + `unseen`), `hits`,
-`headline_hits`, `excluded`, `unseen`, `skipped`, `failed`.
+`requested`, `processed` (= `hits` + `excluded` + `unseen` + values answered by
+the sample side alone), `hits`, `headline_hits`, `excluded`, `sample_hits`,
+`unseen`, `skipped`, `failed`.
 
 A coverage rate is `headline_hits / processed`. Skipped and failed values are not
 in the denominator.
@@ -111,6 +129,7 @@ in the denominator.
 | `public_suffix_list_version` | Digest of the suffix rules that bound parent and child relations. |
 | `scope`, `verdict_note`, `absence_note` | Fixed sentences stating what this service is not, and how `verdict` and `unseen` must be read. |
 | `version_note` | Present only when `corpus_version` is withheld. |
+| `samples` | Freshness of the sample side: `{analyzer, exported_at, newest_sample}`, or `null`. It arrives hourly from the malware analyser, while the news side arrives once a day, so the two carry separate clocks. |
 
 ### `hits[]`
 
@@ -164,6 +183,43 @@ in the denominator.
 A KEV listing or CVSS score never creates a hit by itself. A CVE is a hit only if a
 publisher in the corpus named it.
 
+### `sample_hits[]`
+
+Values found **inside a file this service analysed**, reported apart from `hits`
+on purpose. A publisher writing a value down and a file containing it are claims
+of different strength, and a caller has to know which one it is acting on. A value
+in both appears in both, under the same `input_index`.
+
+`input_index`, `value`, `normalized_value`, `normalization_applied`, `type`,
+`type_supplied`, `warnings`, plus:
+
+| field | meaning |
+|---|---|
+| `sample_count` | Analysed samples holding this value. `samples[]` lists at most five, strongest first. |
+| `resolved_sha256` | Set when the submitted value was an **md5 or sha1** naming a file held here. The news side can never answer this. |
+| `analysis` | That file's own record: `sha256`, `md5`, `sha1`, `file_type`, `submitted_at`, `verdict`, `verdict_score`, `family`, `family_confidence`, `attack_techniques[]` (ATT&CK ids), `indicator_count`, `report`. |
+| `samples[]` | Per sample: `sha256`, `matched_value`, `confidence`, `extracted_by`, `first_seen`, `verdict`, `verdict_score`, `family`, `attack_techniques[]`, `report`. |
+
+**Read `extracted_by` before acting.** A C2 address from `config_extractor` is a
+configuration the malware itself carries; a hostname `strings` happened to find in
+the same file may be a library's, a certificate's, or noise. `confidence` is the
+analyser's own score for that extraction.
+
+`report` is a permanent page and stays readable after the sample file itself is
+deleted.
+
+Matching here is **exact** (plus a URL's trailing-slash twin). Parent and child
+domain matching applies to the news side only: a publisher's claim about a domain
+generalises, a file's contents do not.
+
+### Artefact types
+
+`mutex`, `path`, `registry` and `email` are answered by the sample side alone and
+**must be named in `types`** (or `?type=`), because nothing detects them from the
+text — a mutex name is any string. Such a value is taken verbatim: it is not
+undefanged, no trailing punctuation is stripped, and the hostname rules do not
+apply to it.
+
 ### `excluded[]`
 
 The service saw the value and ruled it out. That is not the same as never having seen
@@ -182,8 +238,9 @@ Fields: `input_index`, `value`, `normalized_value`, `normalization_applied`, `ty
 `input_index`, `value`, `normalized_value`, `normalization_applied`, `type`,
 `type_supplied`, `warnings`.
 
-**`unseen` is not a clean or benign verdict.** It means this corpus, over
-`coverage.report_range`, does not name the value.
+**`unseen` is not a clean or benign verdict.** It means neither side holds the
+value: no report over `coverage.report_range` names it, and no file analysed here
+contains it.
 
 ### `skipped[]`
 
