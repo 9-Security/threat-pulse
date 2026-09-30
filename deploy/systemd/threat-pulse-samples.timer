@@ -1,0 +1,17 @@
+[Unit]
+Description=Export new analyser samples into the IoC corpus every hour
+Documentation=https://github.com/9-Security/threat-pulse
+
+[Timer]
+# Twenty past, because 06:00 belongs to the daily collection, which imports the
+# news side into the same database. A named timezone rather than the host's, so
+# this does not move if the host's own is ever changed.
+OnCalendar=*-*-* *:20:00 Asia/Taipei
+# Not Persistent=true. A run missed while the host was down has nothing to catch
+# up -- the next run reads from the watermark in D1 either way -- and firing at
+# boot only competes with the analyser's own containers starting.
+RandomizedDelaySec=300
+Unit=threat-pulse-samples.service
+
+[Install]
+WantedBy=timers.target
