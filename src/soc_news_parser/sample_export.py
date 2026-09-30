@@ -51,6 +51,9 @@ MAX_VALUE_CHARS = 512
 # same type name the news side uses. `mutex`, `path`, `email` and `registry` have
 # no news-side counterpart and are answered by the sample side alone.
 PASSTHROUGH_TYPES = frozenset({"domain", "ip", "url", "mutex", "path", "email", "registry"})
+# Artefacts with no news-side counterpart, answered by the sample side alone and
+# stored verbatim.
+PASSTHROUGH_ARTEFACTS = frozenset({"mutex", "path", "email", "registry"})
 
 
 @dataclass(frozen=True)
@@ -251,7 +254,10 @@ def _indicators_for(
         served = _served_type(kind, raw)
         if served is None:
             continue
-        value = _normalize(raw, served)
+        # An artefact is stored as the analyser recorded it. `_normalize` strips
+        # trailing punctuation, which would cut the closing brace off a GUID mutex
+        # and leave a value no caller can ever match.
+        value = raw.strip() if served in PASSTHROUGH_ARTEFACTS else _normalize(raw, served)
         if not _usable(served, value):
             continue
         tags = row.get("tags")
