@@ -1,0 +1,37 @@
+[Unit]
+Description=Export the malware analyser's new samples into the shared IoC corpus
+Documentation=https://github.com/9-Security/threat-pulse
+After=network-online.target
+Wants=network-online.target
+
+# No OnFailure alert on purpose. A missed hour costs nothing -- the watermark is
+# in D1 and the next run continues from it -- so a mail every hour during an
+# analyser deploy would be noise. The script mails only when the corpus has been
+# stuck for a day.
+
+[Service]
+Type=oneshot
+User=threatpulse
+Group=threatpulse
+WorkingDirectory=/home/threatpulse/app
+EnvironmentFile=/home/threatpulse/threat-pulse.env
+ExecStart=/home/threatpulse/app/deploy/run-samples.sh
+# A first pass over a few thousand samples is paced under the analyser's rate
+# limit, so it is slow by design; MAX_SAMPLES keeps one run bounded.
+TimeoutStartSec=1h
+
+# It reads one loopback API and writes one temporary file.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/threatpulse/app /home/threatpulse
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target
