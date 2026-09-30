@@ -12,12 +12,33 @@
  * tested under plain node.
  */
 
-import { classify, MAX_BATCH, parseIPv4, parseIPv6, isGlobalIPv4, isGlobalIPv6, INTERNAL_SUFFIXES } from "./guard.ts";
+import {
+  classify,
+  MAX_BATCH,
+  MAX_VALUE_LENGTH,
+  parseIPv4,
+  parseIPv6,
+  isGlobalIPv4,
+  isGlobalIPv6,
+  INTERNAL_SUFFIXES,
+} from "./guard.ts";
 
 /* -------------------------------------------------------------- constants --- */
 
 /** The types the bundle carries, and so the only ones answered. */
 export const OBSERVABLE_TYPES = ["cve", "domain", "ip", "url", "md5", "sha1", "sha256"] as const;
+// A caller may arrive by any of the three, and the sample side is the only one
+// that can say they name the same file.
+const HASH_TYPES: readonly string[] = ["md5", "sha1", "sha256"];
+// Artefacts only the sample side holds: a mutex name, a dropped path, a registry
+// key, an address a config carried. Nothing detects them from the text -- a mutex
+// is any string -- so they are accepted only when the caller names the type, and
+// they are looked up on the sample side alone.
+export const SAMPLE_ONLY_TYPES = ["mutex", "path", "registry", "email"] as const;
+const SAMPLE_ONLY: readonly string[] = SAMPLE_ONLY_TYPES;
+// Per value, so one popular domain cannot fill an answer with samples. The total
+// is reported alongside, so a caller can tell the list was cut.
+const MAX_SAMPLES_PER_VALUE = 5;
 export type ObservableType = (typeof OBSERVABLE_TYPES)[number];
 /** Relations counted in the headline rate; `child_domain` is reported but not counted. */
 export const HEADLINE_METHODS = ["exact", "parent_domain", "same_host"] as const;
@@ -241,6 +262,45 @@ export interface CveRow {
   record: string; // JSON object
 }
 
+/** One value found inside one analysed sample, with that sample's own verdict. */
+export interface SampleIndicatorRow {
+  sha256: string;
+  indicator_type: string;
+  value: string;
+  value_lc: string;
+  confidence: number;
+  integration: string | null;
+  first_seen_at: string;
+  family: string | null;
+  verdict: string | null;
+  verdict_score: number | null;
+  attack_techniques: string | null; // JSON array
+  report_url: string;
+}
+
+/** An analysed sample, reachable by any of its three hashes. */
+export interface SampleAnalysisRow {
+  sha256: string;
+  md5: string | null;
+  sha1: string | null;
+  file_type: string | null;
+  submitted_at: string | null;
+  verdict: string | null;
+  verdict_score: number | null;
+  family: string | null;
+  family_confidence: number | null;
+  attack_techniques: string | null; // JSON array
+  ioc_total: number | null;
+  report_url: string;
+}
+
+/** How fresh the sample side is; it arrives hourly, not daily. */
+export interface SampleState {
+  exported_at: string | null;
+  high_water: string | null;
+  analyzer: string | null;
+}
+
 export interface CorpusInfo {
   state: {
     corpus_version: string;
@@ -261,6 +321,17 @@ export interface EnrichStore {
   excluded(keys: string[], since: string | null): Promise<ExcludedRow[]>;
   cveIntel(ids: string[]): Promise<CveRow[]>;
   corpus(): Promise<CorpusInfo>;
+  /** Values found inside analysed samples. Exact matches only: a parent domain
+   * reported in an article is a publisher's claim about a domain, while a value
+   * in a sample is a fact about that file, and widening it would blur the two. */
+  samples(keys: string[], since: string | null): Promise<SampleIndicatorRow[]>;
+  /** Samples reachable by a submitted md5, sha1 or sha256.
+   *
+   * `since` is deliberately not passed: whether two hashes name the same file is
+   * a question about identity, not about recency, and narrowing it would hide a
+   * file this service holds. */
+  samplesByHash(hashes: string[]): Promise<SampleAnalysisRow[]>;
+  sampleState(): Promise<SampleState | null>;
 }
 
 export interface Boundaries {
@@ -307,7 +378,7 @@ interface Plan {
 
 const whole = (url: string) => url.trim().replace(/\/+$/, "").toLowerCase();
 
-type Group = "indicators" | "children" | "excluded" | "cve";
+type Group = "indicators" | "children" | "excluded" | "cve" | "samples" | "hashes";
 type Lost = Map<string, ErrorCode>;
 
 async function runChunked<Row>(
@@ -465,6 +536,11 @@ export async function enrichObservables(request: EnrichRequest, deps: EnrichDeps
   const types = Array.isArray(request.types) ? request.types : null;
 
   const hits: Array<Record<string, unknown>> = [];
+  // Its own bucket, not merged into `hits`. "We hold this file and our analysis
+  // found this value in it" and "a publisher wrote this value down" are claims of
+  // different strength; one list of both would be longer and less precise, and a
+  // caller could no longer tell which it was acting on.
+  const sampleHits: Array<Record<string, unknown>> = [];
   const excluded: Array<Record<string, unknown>> = [];
   const unseen: Array<Record<string, unknown>> = [];
   const skipped: Array<Record<string, unknown>> = [];
@@ -483,6 +559,38 @@ export async function enrichObservables(request: EnrichRequest, deps: EnrichDeps
     const { text, applied } = undefang(raw);
     const warnings: string[] = [];
     let supplied = types && typeof types[index] === "string" ? String(types[index]).trim().toLowerCase() : "";
+    if (SAMPLE_ONLY.includes(supplied)) {
+      // An artefact is whatever the file contained, so nothing is rewritten: the
+      // host guard would refuse a mutex name for having no dot, undefanging would
+      // eat the backslashes out of `Global\Mutex` and `C:\Temp\a.exe`, and
+      // stripping trailing punctuation would cut the brace off a GUID mutex. Only
+      // what no lookup can carry is refused.
+      const artefact = String(raw).trim();
+      const badArtefact: SkipCode | null =
+        artefact === ""
+          ? "empty_value"
+          : artefact.length > MAX_VALUE_LENGTH || /[ -]/.test(artefact)
+            ? "invalid_value"
+            : null;
+      if (badArtefact) {
+        skipped.push({ input_index: index, value: raw, reason: badArtefact });
+        return;
+      }
+      plans.push({
+        index,
+        value: raw,
+        normalized: artefact,
+        applied: [],
+        supplied,
+        used: supplied as ObservableType,
+        warnings,
+        key: artefact.toLowerCase(),
+        whole: null,
+        parents: [],
+        registrable: null,
+      });
+      return;
+    }
     if (supplied && !(OBSERVABLE_TYPES as readonly string[]).includes(supplied)) {
       warnings.push(`unknown_supplied_type:${supplied.slice(0, 32)}`);
       supplied = "";
@@ -525,10 +633,15 @@ export async function enrichObservables(request: EnrichRequest, deps: EnrichDeps
 
   // What each plan needs from each query.
   const needs = (plan: Plan, group: Group): string[] => {
+    if (SAMPLE_ONLY.includes(plan.used)) return group === "samples" ? [plan.key] : [];
     const wholeKeys = plan.whole ? [plan.whole, `${plan.whole}/`] : [];
     if (group === "indicators") return [...new Set([...wholeKeys, plan.key, ...plan.parents])];
     if (group === "excluded") return [...new Set([...wholeKeys, plan.key])];
     if (group === "children") return plan.registrable ? [plan.registrable] : [];
+    // The sample side matches the value as submitted, plus a URL's trailing-slash
+    // twin, and nothing else.
+    if (group === "samples") return [...new Set([...wholeKeys, plan.key])];
+    if (group === "hashes") return HASH_TYPES.includes(plan.used) ? [plan.key] : [];
     return plan.used === "cve" ? [plan.normalized] : [];
   };
   const union = (group: Group) => [...new Set(plans.flatMap((plan) => needs(plan, group)))];
@@ -538,8 +651,14 @@ export async function enrichObservables(request: EnrichRequest, deps: EnrichDeps
     children: new Map(),
     excluded: new Map(),
     cve: new Map(),
+    samples: new Map(),
+    hashes: new Map(),
   };
 
+  // Declared before the first `respond`: the corpus lookup failing returns early,
+  // and reading this there would be a temporal dead zone error rather than a
+  // failed answer.
+  let sampleState: SampleState | null = null;
   let corpus: CorpusInfo;
   try {
     corpus = await deps.store.corpus();
@@ -559,6 +678,19 @@ export async function enrichObservables(request: EnrichRequest, deps: EnrichDeps
     deps.store.excluded(chunk, since),
   );
   const cveRows = await runChunked(union("cve"), deps, started, lost.cve, (chunk) => deps.store.cveIntel(chunk));
+  const sampleRows = await runChunked(union("samples"), deps, started, lost.samples, (chunk) =>
+    deps.store.samples(chunk, since),
+  );
+  const hashRows = await runChunked(union("hashes"), deps, started, lost.hashes, (chunk) =>
+    deps.store.samplesByHash(chunk),
+  );
+  // The sample side arrives hourly and the news side daily, so its freshness is
+  // reported separately. A failure here costs the freshness line, not the answer.
+  try {
+    sampleState = await deps.store.sampleState();
+  } catch {
+    sampleState = null;
+  }
 
   const reportIds = new Map(corpus.reports.map((r) => [r.report_date, r.report_id]));
   const withContext = detail === "full" && request.mayReadContext;
@@ -595,6 +727,38 @@ export async function enrichObservables(request: EnrichRequest, deps: EnrichDeps
     }
     if (!entry.dates.includes(row.report_date)) entry.dates.push(row.report_date);
   }
+  const techniquesOf = (raw: string | null): string[] => {
+    if (!raw) return [];
+    try {
+      const parsed: unknown = JSON.parse(raw);
+      return Array.isArray(parsed) ? parsed.map((item) => String(item)) : [];
+    } catch {
+      return [];
+    }
+  };
+  // Strongest first: a C2 address from a config extractor outranks a hostname
+  // `strings` happened to find, and a caller reading only the first entry should
+  // get the claim worth acting on.
+  const samplesByValue = new Map<string, SampleIndicatorRow[]>();
+  for (const row of sampleRows) {
+    const list = samplesByValue.get(row.value_lc) ?? [];
+    list.push(row);
+    samplesByValue.set(row.value_lc, list);
+  }
+  for (const list of samplesByValue.values()) {
+    list.sort((a, b) =>
+      b.confidence - a.confidence ||
+      (a.first_seen_at < b.first_seen_at ? 1 : a.first_seen_at > b.first_seen_at ? -1 : 0) ||
+      (a.sha256 < b.sha256 ? -1 : 1),
+    );
+  }
+  const analysisByHash = new Map<string, SampleAnalysisRow>();
+  for (const row of hashRows) {
+    for (const hash of [row.sha256, row.md5, row.sha1]) {
+      if (hash) analysisByHash.set(hash.toLowerCase(), row);
+    }
+  }
+
   const newestCve = new Map<string, CveRow>();
   for (const row of cveRows) {
     const current = newestCve.get(row.cve_id);
@@ -666,6 +830,51 @@ export async function enrichObservables(request: EnrichRequest, deps: EnrichDeps
       ...(plan.warnings.length ? { warnings: plan.warnings } : {}),
     };
 
+    // The sample side is independent of the news side's match and exclusion
+    // rules: a value can be absent from every article and still be sitting in a
+    // file we analysed.
+    const found = samplesByValue.get(plan.key) ?? (plan.whole ? samplesByValue.get(plan.whole) ?? [] : []);
+    const resolved = HASH_TYPES.includes(plan.used) ? analysisByHash.get(plan.key) : undefined;
+    if (found.length || resolved) {
+      sampleHits.push({
+        ...base,
+        sample_count: found.length,
+        // A submitted md5 or sha1 names the same file as its sha256; this is the
+        // one lookup the news side can never answer.
+        resolved_sha256: resolved?.sha256 ?? null,
+        analysis: resolved
+          ? {
+              sha256: resolved.sha256,
+              md5: resolved.md5,
+              sha1: resolved.sha1,
+              file_type: resolved.file_type,
+              submitted_at: resolved.submitted_at,
+              verdict: resolved.verdict,
+              verdict_score: resolved.verdict_score,
+              family: resolved.family,
+              family_confidence: resolved.family_confidence,
+              attack_techniques: techniquesOf(resolved.attack_techniques),
+              indicator_count: resolved.ioc_total,
+              report: resolved.report_url,
+            }
+          : null,
+        samples: found.slice(0, MAX_SAMPLES_PER_VALUE).map((row) => ({
+          sha256: row.sha256,
+          matched_value: row.value,
+          confidence: row.confidence,
+          // Which tool found it. A config extractor's C2 and a string that looks
+          // like a hostname are not the same finding.
+          extracted_by: row.integration,
+          first_seen: row.first_seen_at,
+          verdict: row.verdict,
+          verdict_score: row.verdict_score,
+          family: row.family,
+          attack_techniques: techniquesOf(row.attack_techniques),
+          report: row.report_url,
+        })),
+      });
+    }
+
     if (exclusion) {
       const entry = exclusions.get(exclusion)!;
       excluded.push({
@@ -677,7 +886,9 @@ export async function enrichObservables(request: EnrichRequest, deps: EnrichDeps
       continue;
     }
     if (!method || !matched) {
-      unseen.push(base);
+      // Only unseen when neither side holds it. A value the analyser found is
+      // not "we have never seen this".
+      if (!found.length && !resolved) unseen.push(base);
       continue;
     }
     const record = records.get(matched)!;
@@ -741,7 +952,12 @@ export async function enrichObservables(request: EnrichRequest, deps: EnrichDeps
       })
       .filter((day) => day.sources_failed.length)
       .sort((a, b) => (a.report_date < b.report_date ? -1 : 1));
-    const processed = hits.length + excluded.length + unseen.length;
+    // A value answered only by the sample side is answered, so it counts.
+    const sampleOnly = sampleHits.filter((hit) =>
+      !hits.some((news) => news.input_index === hit.input_index) &&
+      !excluded.some((gone) => gone.input_index === hit.input_index),
+    ).length;
+    const processed = hits.length + excluded.length + unseen.length + sampleOnly;
     return {
       status,
       request_id: deps.requestId(),
@@ -757,6 +973,14 @@ export async function enrichObservables(request: EnrichRequest, deps: EnrichDeps
         days_with_source_failures: failures,
         headline_methods: HEADLINE_METHODS,
         public_suffix_list_version: state?.psl_version ?? null,
+        // Two sides, two clocks: articles arrive once a day, samples every hour.
+        samples: sampleState
+          ? {
+              analyzer: sampleState.analyzer,
+              exported_at: sampleState.exported_at,
+              newest_sample: sampleState.high_water,
+            }
+          : null,
         scope: SCOPE_NOTE,
         verdict_note: VERDICT_NOTE,
         absence_note: ABSENCE_NOTE,
@@ -770,11 +994,13 @@ export async function enrichObservables(request: EnrichRequest, deps: EnrichDeps
         hits: hits.length,
         headline_hits: hits.filter((hit) => hit.headline).length,
         excluded: excluded.length,
+        sample_hits: sampleHits.length,
         unseen: unseen.length,
         skipped: skipped.length,
         failed: errors.length,
       },
       hits,
+      sample_hits: sampleHits,
       excluded,
       unseen,
       skipped: skipped.sort((a, b) => Number(a.input_index) - Number(b.input_index)),
