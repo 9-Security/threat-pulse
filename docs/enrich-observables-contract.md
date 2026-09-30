@@ -200,10 +200,20 @@ in both appears in both, under the same `input_index`.
 | `analysis` | That file's own record: `sha256`, `md5`, `sha1`, `file_type`, `submitted_at`, `verdict`, `verdict_score`, `family`, `family_confidence`, `attack_techniques[]` (ATT&CK ids), `indicator_count`, `report`. |
 | `samples[]` | Per sample: `sha256`, `matched_value`, `confidence`, `extracted_by`, `first_seen`, `verdict`, `verdict_score`, `family`, `attack_techniques[]`, `report`. |
 
-**Read `extracted_by` before acting.** A C2 address from `config_extractor` is a
-configuration the malware itself carries; a hostname `strings` happened to find in
-the same file may be a library's, a certificate's, or noise. `confidence` is the
-analyser's own score for that extraction.
+**Read `extracted_by` before acting, and read this paragraph first.** Measured on
+2026-09-30, every value on the sample side comes from scanning strings in the file:
+`strings_entropy` 89%, `floss` 9%, `media_overlay_scan` 4%. The analyser's
+configuration extractor, which would yield a C2 the malware itself carries, has
+produced one non-empty result in four months, so **no strong source is in this data
+today**. A hostname found by scanning may be a library's, a certificate's, or a file
+name that looks like one: of the domain values extracted since 2026-09-08, about
+four in five end in a file extension that is also a valid top-level domain (`.java`,
+`.so`, `.sh`, `.rs`). `confidence` is the analyser's own score for that extraction
+and is not a judgement about the value.
+
+Hashes, `mutex`, `path`, `registry`, `family` and `attack_techniques` do not depend
+on that scanning: a hash identifies the file, an artefact genuinely is a string
+inside it, and family and technique come from YARA and capa.
 
 `report` is a permanent page and stays readable after the sample file itself is
 deleted.
