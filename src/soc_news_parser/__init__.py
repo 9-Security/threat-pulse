@@ -34,6 +34,14 @@ from .backtest import read_values, run_backtest
 from .backtest import render_markdown as render_backtest_markdown
 from .export_d1 import export_report
 from .report import archived_before, collect_report, serialize_report
+from .sample_export import (
+    ANALYZER_BASE_URL,
+    AnalyzerClient,
+    AnalyzerError,
+    collect_samples,
+    high_water_of,
+    render_sql as render_sample_sql,
+)
 from .reanalyze import attach_provenance, reanalyze
 from .snapshot import build_snapshot, refresh_tools, write_bundle
 from .source_health import (
@@ -267,6 +275,24 @@ def _arguments() -> argparse.Namespace:
         "--corpus-state-from",
         help="report folder to compute the corpus_version from; written in the same batch",
     )
+
+    export_samples = subcommands.add_parser(
+        "export-samples",
+        help="render the malware analyser's new samples as SQL for the same service",
+    )
+    export_samples.add_argument(
+        "--analyzer-url",
+        default=ANALYZER_BASE_URL,
+        help=f"the analyser's API, read over the loopback (default {ANALYZER_BASE_URL})",
+    )
+    export_samples.add_argument(
+        "--since",
+        help="the last export's high water mark; without it every public sample is read",
+    )
+    export_samples.add_argument(
+        "--max-samples", type=int, help="stop after this many samples, for a first pass"
+    )
+    export_samples.add_argument("--output", help="write SQL here instead of stdout")
 
     backtest = subcommands.add_parser(
         "backtest",
@@ -826,6 +852,33 @@ def main() -> None:
             print(_atomic_write(args.output, sql))
         else:
             sys.stdout.write(sql)
+        return
+    if args.command == "export-samples":
+        try:
+            with AnalyzerClient(args.analyzer_url) as analyzer:
+                samples = collect_samples(
+                    analyzer, stop_at=args.since, max_samples=args.max_samples
+                )
+                failures = list(analyzer.failures)
+        except AnalyzerError as error:
+            print(f"error: {error}", file=sys.stderr)
+            raise SystemExit(1) from error
+        sql = render_sample_sql(samples, high_water=high_water_of(samples, args.since))
+        if args.output:
+            path = _atomic_write(args.output, sql)
+        else:
+            sys.stdout.write(sql)
+            path = None
+        # Printed for the journal: a run that read nothing is the normal quiet
+        # case, and a run that read nothing *because every fetch failed* is not.
+        summary = {
+            "samples": len(samples),
+            "indicators": sum(len(s.indicators) for s in samples),
+            "high_water": high_water_of(samples, args.since),
+            "failures": failures,
+            "sql_output": path,
+        }
+        print(json.dumps(summary, ensure_ascii=False, indent=2), file=sys.stderr)
         return
     if args.command == "send-report":
         try:
