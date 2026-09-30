@@ -793,6 +793,57 @@ async function runHeartbeat(env: Env): Promise<void> {
  * counters that are no longer needed. Never throws, like the heartbeat. Only token
  * labels and counts are read; the usage table holds nothing else.
  */
+// How stale the sample side may get before it is worth a mail. A missed hour is
+// nothing; a missed day means the exporter, the analyser or the host is broken.
+const SAMPLE_STALE_HOURS = 26;
+
+/**
+ * Whether the sample side is still arriving, checked from outside the host.
+ *
+ * The exporter has its own stall check, and on 2026-09-30 that check could not
+ * fire: the script was committed without its executable bit, systemd answered
+ * 203/EXEC, and the code that would have mailed never ran. A guard that lives
+ * inside the thing it guards is not a guard. This one runs on the Worker's daily
+ * cron and asks the database, so it survives the host being wrong in any way.
+ *
+ * Never throws: a scheduled handler that throws is retried and logged, and the
+ * operator learns nothing from a retried cron.
+ */
+async function runSampleFreshnessCheck(env: Env): Promise<void> {
+  try {
+    const row = await env.DB.prepare(
+      `SELECT exported_at, high_water, added_samples FROM sample_state WHERE id = 1`,
+    ).first<{ exported_at: string | null; high_water: string | null; added_samples: number }>();
+    const exported = row?.exported_at ? Date.parse(row.exported_at) : NaN;
+    const hoursBehind = Number.isNaN(exported) ? null : (Date.now() - exported) / 3_600_000;
+    console.log(
+      `samples: exported_at=${row?.exported_at ?? "never"} hours_behind=${hoursBehind?.toFixed(1) ?? "n/a"}`,
+    );
+    if (hoursBehind !== null && hoursBehind < SAMPLE_STALE_HOURS) return;
+    const body = [
+      "The sample side of the IoC corpus has stopped arriving.",
+      "",
+      row?.exported_at
+        ? `last export: ${row.exported_at} (${hoursBehind?.toFixed(1)} hours ago)`
+        : "last export: never -- no row in sample_state",
+      `newest sample consumed: ${row?.high_water ?? "none"}`,
+      "",
+      "Lookups still answer from what D1 already holds, and the news side is",
+      "unaffected. Nothing the analyser has found since then is in an answer.",
+      "",
+      "On the host: systemctl status threat-pulse-samples.service, and",
+      "journalctl -u threat-pulse-samples.service -n 40.",
+    ].join("\n");
+    const outcome = await sendAlertMail(env, {
+      subject: "[threat-pulse] the sample corpus has stopped arriving",
+      body,
+    });
+    (outcome === "sent" ? console.log : console.error)(`samples: stale -- ${outcome}`);
+  } catch (error) {
+    console.error(`samples: freshness check failed -- ${String(error)}`);
+  }
+}
+
 async function runUsageCheck(env: Env): Promise<void> {
   const now = new Date();
   const day = new Date(now.getTime() - 86_400_000).toISOString().slice(0, 10);
@@ -891,6 +942,7 @@ export default {
   async scheduled(_event: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
     ctx.waitUntil(runHeartbeat(env));
     ctx.waitUntil(runUsageCheck(env));
+    ctx.waitUntil(runSampleFreshnessCheck(env));
   },
 
   async fetch(request: Request, env: Env): Promise<Response> {
