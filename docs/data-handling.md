@@ -195,8 +195,19 @@ become bound parameters in a comparison and are discarded when the response is
 returned. There is no code path by which a queried value could reach the corpus or any
 other table, because no write takes one.
 
-The corpus is built solely by the daily collector, from published vendor and CERT
-reporting. Nothing a caller sends influences it.
+The corpus is built only by the collecting host, from three sources, each in its own
+tables:
+
+- **news**: the daily collector, from published vendor and CERT reporting (`indicators`);
+- **samples**: the malware analyser's public analyses, read over its API hourly
+  (`sample_indicators`, `sample_analysis`);
+- **feeds**: abuse.ch's ThreatFox (C2, payload delivery and payload hashes, confidence
+  ≥ 75, compromised legitimate sites dropped) and Feodo Tracker blocklists, refreshed
+  every 6 hours and kept 30 days after ThreatFox last saw a value (`feed_indicators`,
+  `feed_state`). ThreatFox is read with the operator's abuse.ch Auth-Key; abuse.ch
+  offers its API under fair use, and for-profit use may need its commercial terms.
+
+Nothing a caller sends influences any of them.
 
 ## Authentication and tenant isolation
 

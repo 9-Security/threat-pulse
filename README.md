@@ -407,6 +407,33 @@ uv run soc-news-parser export-d1   --json-report reports/2026-09-05/daily-eviden
 
 重推同一天會先刪除當日資料再寫入，所以修正後的報告是取代而非疊加。
 
+### 情資清單端：abuse.ch（ThreatFox、Feodo Tracker）
+
+D1 裡的指標有三個來源，各存在自己的表，回答時分得出是哪一種說法：
+
+| 來源 | 內容 | 表 | 更新 |
+|---|---|---|---|
+| 新聞 | 出版商在文章裡明確寫出的指標 | `indicators` | 每日 06:00 |
+| 樣本 | Malware Analyzer 在檔案裡找到的值 | `sample_indicators`、`sample_analysis` | 每小時 |
+| 情資清單 | abuse.ch 列管的惡意基礎設施 | `feed_indicators`、`feed_state` | 每 6 小時 |
+
+情資清單收：
+
+- **ThreatFox** `get_iocs`，API 最多回 7 天；只留信心 ≥ 75，丟掉 ThreatFox 標為 `is_compromised` 的被入侵正常網站。每種威脅類型都留，並記錄是 C2（`botnet_cc`）、散布點（`payload_delivery`）或惡意檔案（`payload`）。
+- **Feodo Tracker** 殭屍網路 C2 清單，整份鏡像（它移除的位址就是已下線）。
+
+ThreatFox 的資料保留到它**最後一次看到該值後 30 天**，所以 7 天的 API 視窗累積成約一個月的資料。每次更新只寫有變動的列（2026-10-22 實測：第一次約 7,300 列，之後只寫新增與變動），在 Workers Free 的寫入額度內。來源讀不到時不寫該來源的列，舊資料保留，`feed_state` 記下錯誤；過期刪除照常執行。
+
+ThreatFox 需要 abuse.ch 的免費 Auth-Key，放在主機 env 的 `ABUSE_CH_AUTH_KEY`；沒設時只更新 Feodo。abuse.ch 以合理使用提供 API，營利用途可能需要它的商業條款。
+
+```bash
+ABUSE_CH_AUTH_KEY=... uv run soc-news-parser export-feeds --output /tmp/feeds.sql
+```
+
+排程不用新的 timer：每小時的 `run-samples.sh` 會呼叫 `deploy/run-feeds.sh`，由它自己判斷距上次成功更新是否滿 `FEED_HOURS`（預設 6）小時。資料表由 `deploy/d1/migrations/006-feed-corpus.sql` 建立；未套用前 `run-feeds.sh` 會略過並記錄原因。
+
+查詢服務（Worker）目前**還不會**從情資清單端回答；這一步是資料先進來，查詢端另外處理。
+
 ### 驗證
 
 ```bash
