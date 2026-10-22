@@ -432,7 +432,7 @@ ABUSE_CH_AUTH_KEY=... uv run soc-news-parser export-feeds --output /tmp/feeds.sq
 
 排程不用新的 timer：每小時的 `run-samples.sh` 會呼叫 `deploy/run-feeds.sh`，由它自己判斷距上次成功更新是否滿 `FEED_HOURS`（預設 6）小時。資料表由 `deploy/d1/migrations/006-feed-corpus.sql` 建立；未套用前 `run-feeds.sh` 會略過並記錄原因。
 
-查詢服務（Worker）目前**還不會**從情資清單端回答；這一步是資料先進來，查詢端另外處理。
+`enrich_observables` 在 `feed_hits` 回答情資清單端（與新聞的 `hits`、樣本的 `sample_hits` 分開列）；`lookup_iocs` 目前只查新聞端。
 
 ### 驗證
 

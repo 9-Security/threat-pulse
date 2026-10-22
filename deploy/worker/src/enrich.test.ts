@@ -21,6 +21,7 @@ import {
   type EnrichDeps,
   type EnrichRequest,
   type ExcludedRow,
+  type FeedIndicatorRow,
   type IndicatorRow,
   type SampleAnalysisRow,
   type SampleIndicatorRow,
@@ -109,6 +110,18 @@ function fixture(options: {
     values?: Array<{ type: string; value: string; confidence?: number; by?: string; at?: string }>;
   }>;
   sampleState?: null;
+  feeds?: Array<{
+    source?: string;
+    type: string;
+    value: string;
+    threat?: string;
+    malware?: string;
+    confidence?: number | null;
+    port?: number | null;
+    first?: string;
+    last?: string | null;
+  }>;
+  feedState?: null | Array<{ source: string; ok: boolean; kept: number }>;
   state?: Partial<NonNullable<CorpusInfo["state"]>> | null;
   failWhen?: (kind: string, keys: string[]) => boolean;
   clock?: () => number;
@@ -157,6 +170,19 @@ function fixture(options: {
       report_url: `https://malware.example/s/${s.sha256}`,
     })),
   );
+  const feedRows: FeedIndicatorRow[] = (options.feeds ?? []).map((f, i) => ({
+    source: f.source ?? "threatfox",
+    indicator_type: f.type,
+    value: f.value,
+    value_lc: f.value.toLowerCase(),
+    threat_type: f.threat ?? "botnet_cc",
+    malware: f.malware ?? null,
+    confidence: f.confidence === undefined ? 100 : f.confidence,
+    port: f.port ?? null,
+    first_seen: f.first ?? "2026-09-20T00:00:00Z",
+    last_seen: f.last === undefined ? null : f.last,
+    reference: `https://threatfox.abuse.ch/ioc/${i + 1}/`,
+  }));
   const days = options.days ?? ["2026-09-04", "2026-09-05"];
   const calls: Array<{ kind: string; keys: string[]; since: string | null }> = [];
   const guard = (kind: string, keys: string[], since: string | null = null) => {
@@ -212,6 +238,18 @@ function fixture(options: {
               exported_at: "2026-09-30T02:00:00+00:00",
               high_water: "2026-09-29T16:09:19Z",
             };
+      },
+      async feeds(keys) {
+        guard("feeds", keys);
+        return feedRows.filter((r) => keys.includes(r.value_lc));
+      },
+      async feedState() {
+        guard("feedState", []);
+        if (options.feedState === null) return [];
+        return (options.feedState ?? [
+          { source: "feodo", ok: true, kept: 5 },
+          { source: "threatfox", ok: true, kept: 7253 },
+        ]).map((s) => ({ source: s.source, exported_at: "2026-09-30T00:20:00Z", ok: s.ok ? 1 : 0, kept: s.kept }));
       },
       async corpus() {
         guard("corpus", []);
@@ -275,10 +313,14 @@ function assertEveryValueOnce(out: Json, n: number) {
   for (const bucket of ["hits", "excluded", "unseen", "skipped", "errors"]) {
     for (const item of out[bucket]) seen.push(item.input_index);
   }
-  const sampleOnly = out.sample_hits
-    .map((item: Json) => item.input_index)
-    .filter((index: number) => !seen.includes(index));
-  assert.equal(new Set(sampleOnly).size, sampleOnly.length, "a value appears once in sample_hits");
+  // The feed side is a side bucket in the same way: not exclusive with the rest.
+  for (const side of ["sample_hits", "feed_hits"]) {
+    const indexes = out[side].map((item: Json) => item.input_index);
+    assert.equal(new Set(indexes).size, indexes.length, `a value appears once in ${side}`);
+  }
+  const sampleOnly = [
+    ...new Set([...out.sample_hits, ...out.feed_hits].map((item: Json) => item.input_index)),
+  ].filter((index) => !seen.includes(index as number)) as number[];
   assert.deepEqual(
     [...seen, ...sampleOnly].sort((a, b) => a - b),
     Array.from({ length: n }, (_, i) => i),
@@ -672,8 +714,8 @@ test("since reaches every day-scoped query and narrows the answer", async () => 
   assert.ok(
     calls
       // `cve` and `corpus` take no window; `hashes` and `sampleState` are about
-      // identity and freshness, not recency.
-      .filter((c) => !["cve", "corpus", "hashes", "sampleState"].includes(c.kind))
+      // identity and freshness, not recency; a list says what is listed now.
+      .filter((c) => !["cve", "corpus", "hashes", "sampleState", "feeds", "feedState"].includes(c.kind))
       .every((c) => c.since === "2026-09-05"),
   );
   const ignored = await run(["evil.example.com"], { seeds: MATCHING }, { since: "last week" });
@@ -746,4 +788,92 @@ test("a value in neither corpus is still unseen, and the sample side has its own
   assert.equal(answer.counts.unseen, 1);
   assert.equal(answer.counts.sample_hits, 0);
   assert.equal(answer.coverage.samples.newest_sample, "2026-09-29T16:09:19Z");
+});
+
+/* ------------------------------------------------------- the feed side --- */
+
+const FEEDS = [
+  { type: "domain", value: "evil-c2.example", malware: "AsyncRAT", last: "2026-09-29T00:00:00Z" },
+  { type: "ip", value: "45.33.70.70", malware: "Vidar", port: 443 },
+  { type: "ip", value: "45.33.70.70", source: "feodo", malware: "QakBot", confidence: null, last: "2026-09-30T00:00:00Z" },
+  { type: "url", value: "https://drop.example.com/payload.bin", threat: "payload_delivery", malware: "QakBot" },
+  { type: "sha256", value: "c".repeat(64), threat: "payload", malware: "QakBot" },
+];
+
+test("a listed value is answered from the feed side, most specific match first", async () => {
+  const { out } = await run(
+    [
+      "evil-c2.example", // exact
+      "beacon.evil-c2.example", // its registrable domain is listed
+      "https://evil-c2.example/gate.php", // the URL's host is listed
+      "https://drop.example.com/payload.bin/", // the whole URL, trailing-slash twin
+      "45.33.70.70", // listed by both ThreatFox and Feodo
+      "C".repeat(64),
+      "clean.example.com",
+    ],
+    { feeds: FEEDS },
+  );
+  const at = (i: number) => out.feed_hits.find((h: Json) => h.input_index === i);
+  assert.equal(at(0).match, "exact");
+  assert.equal(at(0).entries[0].malware, "AsyncRAT");
+  assert.equal(at(1).match, "parent_domain");
+  assert.equal(at(1).matched_value, "evil-c2.example");
+  assert.equal(at(2).match, "same_host");
+  assert.equal(at(3).match, "exact");
+  assert.equal(at(3).entries[0].threat_type, "payload_delivery");
+  assert.deepEqual(at(4).sources, ["feodo", "threatfox"]);
+  assert.equal(at(4).entries[0].source, "feodo", "most recently seen first");
+  assert.equal(at(5).entries[0].threat_type, "payload");
+  assert.equal(at(6), undefined);
+  assert.equal(out.counts.feed_hits, 6);
+  assert.equal(out.counts.unseen, 1, "only the value no side holds is unseen");
+  assert.equal(out.counts.processed, 7, "a value only a list carries is answered");
+});
+
+test("the feed side never widens below the registrable domain", async () => {
+  // A listed host says nothing about its siblings.
+  const { out } = await run(["other.evil-c2.example"], {
+    feeds: [{ type: "domain", value: "a.evil-c2.example" }],
+  });
+  assert.equal(out.counts.feed_hits, 0);
+});
+
+test("a side that could not be asked is an error, never unseen", async () => {
+  // Absent from the news side; whether a list or a sample holds it is unknown
+  // when that side's statement failed.
+  const feedDown = await run(["nobody.example.com"], { failWhen: (kind) => kind === "feeds" });
+  assert.equal(feedDown.out.counts.unseen, 0);
+  assert.equal(feedDown.out.errors[0].reason, "lookup_failed");
+  const sampleDown = await run(["nobody.example.com"], { failWhen: (kind) => kind === "samples" });
+  assert.equal(sampleDown.out.counts.unseen, 0);
+  assert.equal(sampleDown.out.errors[0].reason, "lookup_failed");
+  // A news hit still stands when a side is down: it is a different claim.
+  const newsHit = await run(["evil.example.com"], {
+    seeds: [{ value: "evil.example.com" }],
+    failWhen: (kind) => kind === "feeds",
+  });
+  assert.equal(newsHit.out.counts.hits, 1);
+  assert.equal(newsHit.out.counts.failed, 0);
+});
+
+test("each list has its own clock, and a list that cannot be read is null", async () => {
+  const fresh = await run(["clean.example.com"], { feeds: FEEDS });
+  assert.deepEqual(Object.keys(fresh.out.coverage.feeds), ["feodo", "threatfox"]);
+  assert.equal(fresh.out.coverage.feeds.threatfox.ok, true);
+  const failing = await run(["clean.example.com"], { feedState: [{ source: "threatfox", ok: false, kept: 7000 }] });
+  assert.equal(failing.out.coverage.feeds.threatfox.ok, false);
+  const missing = await run(["clean.example.com"], { feedState: null });
+  assert.equal(missing.out.coverage.feeds, null);
+  assert.match(fresh.out.coverage.scope, /feed_hits: abuse\.ch/);
+});
+
+test("the worst case stays inside the 50-statement limit with the feed side", async () => {
+  // 100 URLs whose hosts have 16 labels: the expansion the limits page measures.
+  const host = Array.from({ length: 13 }, (_, i) => `l${i}`).join(".") + ".example.com";
+  const values = Array.from({ length: 100 }, (_, i) => `https://h${i}.${host}/p`);
+  const { calls } = await run(values, {});
+  const feedStatements = calls.filter((c) => c.kind === "feeds").length;
+  assert.ok(feedStatements <= 6, `feed side used ${feedStatements} statements`);
+  // Authentication and the quota counters (4) are spent before enrich runs.
+  assert.ok(calls.length + 4 <= 50, `a worst-case call sends ${calls.length + 4} statements`);
 });
