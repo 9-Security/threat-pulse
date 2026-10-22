@@ -52,7 +52,7 @@ wrong match as if it were the right one.
 | dot-separated labels per value | **16** | skipped, `invalid_value` |
 | request body | **256 KiB** | HTTP 413, JSON-RPC `-32600`; nothing is looked up |
 | candidates per D1 statement | 90 | internal; leaves room for the date bound |
-| D1 statements per call | `lookup_iocs` at most **21** of the 50; `enrich_observables` at most **33** | `lookup_iocs`: 2 for authentication, 2 for the quota counters, at most 17 lookups (100 values × 15 parent candidates ÷ 90). `enrich_observables`: see [its contract](enrich-observables-contract.md#limits-and-performance) |
+| D1 statements per call | `lookup_iocs` at most **21** of the 50; `enrich_observables` at most **47** | `lookup_iocs`: 2 for authentication, 2 for the quota counters, at most 17 lookups (100 values × 15 parent candidates ÷ 90). `enrich_observables`: see [its contract](enrich-observables-contract.md#limits-and-performance) |
 | wall-clock budget per lookup call | **10 s** | values whose statements were not yet sent are returned in `errors` with `time_budget_exceeded` |
 | rows per search | default 40, max **200** | `truncated` is true and `status` is `partial` when more rows matched than were returned |
 | tool calls per token, per UTC minute | **60** by default, set per token | HTTP 429; nothing is looked up — see [Quotas](#quotas) |

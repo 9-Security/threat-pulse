@@ -39,6 +39,8 @@ const SAMPLE_ONLY: readonly string[] = SAMPLE_ONLY_TYPES;
 // Per value, so one popular domain cannot fill an answer with samples. The total
 // is reported alongside, so a caller can tell the list was cut.
 const MAX_SAMPLES_PER_VALUE = 5;
+// Per value on the feed side too: one domain can be listed under many URLs.
+const MAX_FEED_ENTRIES_PER_VALUE = 5;
 export type ObservableType = (typeof OBSERVABLE_TYPES)[number];
 /** Relations counted in the headline rate; `child_domain` is reported but not counted. */
 export const HEADLINE_METHODS = ["exact", "parent_domain", "same_host"] as const;
@@ -54,7 +56,7 @@ export type SkipCode =
 export type ErrorCode = "lookup_failed" | "time_budget_exceeded" | "missing_citation";
 
 export const SCOPE_NOTE =
-  "Published vendor and CERT reporting only. No passive DNS, no sandbox, no AV consensus, no reputation scoring.";
+  "hits: published vendor and CERT reporting. sample_hits: this service's own static analysis of public malware samples. feed_hits: abuse.ch ThreatFox and Feodo Tracker blocklists. No passive DNS, no sandbox, no AV consensus, no reputation scoring.";
 export const VERDICT_NOTE =
   "verdict states what a publisher reported. suggested_investigation_action and priority are this service's own analysis and are not safe to automate without consumer policy.";
 export const ABSENCE_NOTE =
@@ -301,6 +303,29 @@ export interface SampleState {
   analyzer: string | null;
 }
 
+/** One value an abuse.ch list carries. */
+export interface FeedIndicatorRow {
+  source: string; // 'threatfox' | 'feodo'
+  indicator_type: string;
+  value: string;
+  value_lc: string;
+  threat_type: string | null;
+  malware: string | null;
+  confidence: number | null;
+  port: number | null;
+  first_seen: string;
+  last_seen: string | null;
+  reference: string | null;
+}
+
+/** When each list was last read, and whether that worked. */
+export interface FeedStateRow {
+  source: string;
+  exported_at: string;
+  ok: number;
+  kept: number;
+}
+
 export interface CorpusInfo {
   state: {
     corpus_version: string;
@@ -332,6 +357,10 @@ export interface EnrichStore {
    * file this service holds. */
   samplesByHash(hashes: string[]): Promise<SampleAnalysisRow[]>;
   sampleState(): Promise<SampleState | null>;
+  /** Values abuse.ch lists, by stored `value_lc`. No `since`: a list says what is
+   * listed now, and its own expiry already bounds how old a row can be. */
+  feeds(keys: string[]): Promise<FeedIndicatorRow[]>;
+  feedState(): Promise<FeedStateRow[]>;
 }
 
 export interface Boundaries {
@@ -378,7 +407,7 @@ interface Plan {
 
 const whole = (url: string) => url.trim().replace(/\/+$/, "").toLowerCase();
 
-type Group = "indicators" | "children" | "excluded" | "cve" | "samples" | "hashes";
+type Group = "indicators" | "children" | "excluded" | "cve" | "samples" | "hashes" | "feeds";
 type Lost = Map<string, ErrorCode>;
 
 async function runChunked<Row>(
@@ -541,6 +570,9 @@ export async function enrichObservables(request: EnrichRequest, deps: EnrichDeps
   // different strength; one list of both would be longer and less precise, and a
   // caller could no longer tell which it was acting on.
   const sampleHits: Array<Record<string, unknown>> = [];
+  // A third bucket for the same reason: "abuse.ch lists this" is a curated,
+  // current blocklist entry with no article behind it.
+  const feedHits: Array<Record<string, unknown>> = [];
   const excluded: Array<Record<string, unknown>> = [];
   const unseen: Array<Record<string, unknown>> = [];
   const skipped: Array<Record<string, unknown>> = [];
@@ -642,6 +674,16 @@ export async function enrichObservables(request: EnrichRequest, deps: EnrichDeps
     // twin, and nothing else.
     if (group === "samples") return [...new Set([...wholeKeys, plan.key])];
     if (group === "hashes") return HASH_TYPES.includes(plan.used) ? [plan.key] : [];
+    // The feed side matches the value, a URL's host, and the registrable domain --
+    // never the labels in between. A blocklisted domain is a claim about that
+    // domain, so `a.evil.com` under a listed `evil.com` is worth saying; walking
+    // every parent as the news side does would cost up to 16 statements a value
+    // and push a worst-case call past the 50-statement limit.
+    if (group === "feeds") {
+      if (plan.used === "cve") return [];
+      const registrable = plan.registrable && plan.registrable !== plan.key ? [plan.registrable] : [];
+      return [...new Set([...wholeKeys, plan.key, ...registrable])];
+    }
     return plan.used === "cve" ? [plan.normalized] : [];
   };
   const union = (group: Group) => [...new Set(plans.flatMap((plan) => needs(plan, group)))];
@@ -653,12 +695,14 @@ export async function enrichObservables(request: EnrichRequest, deps: EnrichDeps
     cve: new Map(),
     samples: new Map(),
     hashes: new Map(),
+    feeds: new Map(),
   };
 
   // Declared before the first `respond`: the corpus lookup failing returns early,
   // and reading this there would be a temporal dead zone error rather than a
   // failed answer.
   let sampleState: SampleState | null = null;
+  let feedState: FeedStateRow[] | null = null;
   let corpus: CorpusInfo;
   try {
     corpus = await deps.store.corpus();
@@ -690,6 +734,13 @@ export async function enrichObservables(request: EnrichRequest, deps: EnrichDeps
     sampleState = await deps.store.sampleState();
   } catch {
     sampleState = null;
+  }
+  const feedRows = await runChunked(union("feeds"), deps, started, lost.feeds, (chunk) => deps.store.feeds(chunk));
+  // The feed side has a third clock: each list is read every few hours.
+  try {
+    feedState = await deps.store.feedState();
+  } catch {
+    feedState = null;
   }
 
   const reportIds = new Map(corpus.reports.map((r) => [r.report_date, r.report_id]));
@@ -758,6 +809,39 @@ export async function enrichObservables(request: EnrichRequest, deps: EnrichDeps
       if (hash) analysisByHash.set(hash.toLowerCase(), row);
     }
   }
+
+  // Most recently seen first: a list entry ThreatFox re-saw yesterday says more
+  // about now than one it last saw a month ago.
+  const feedsByValue = new Map<string, FeedIndicatorRow[]>();
+  for (const row of feedRows) {
+    const list = feedsByValue.get(row.value_lc) ?? [];
+    list.push(row);
+    feedsByValue.set(row.value_lc, list);
+  }
+  const seenAt = (row: FeedIndicatorRow) => row.last_seen ?? row.first_seen;
+  for (const list of feedsByValue.values()) {
+    list.sort((a, b) =>
+      (seenAt(a) < seenAt(b) ? 1 : seenAt(a) > seenAt(b) ? -1 : 0) ||
+      (a.source < b.source ? -1 : a.source > b.source ? 1 : 0),
+    );
+  }
+  /** The most specific listed candidate: the whole URL, then the value (a URL's host), then its registrable domain. */
+  const feedMatch = (plan: Plan): { method: MatchMethod; key: string; rows: FeedIndicatorRow[] } | null => {
+    const wholeKeys = plan.whole ? [plan.whole, `${plan.whole}/`] : [];
+    for (const key of wholeKeys) {
+      const rows = feedsByValue.get(key);
+      if (rows?.length) return { method: "exact", key, rows };
+    }
+    const own = feedsByValue.get(plan.key);
+    if (own?.length) return { method: plan.used === "url" ? "same_host" : "exact", key: plan.key, rows: own };
+    if (plan.registrable && plan.registrable !== plan.key) {
+      const parent = feedsByValue.get(plan.registrable);
+      if (parent?.length) return { method: "parent_domain", key: plan.registrable, rows: parent };
+    }
+    return null;
+  };
+  const lostFor = (plan: Plan, groups: Group[]): ErrorCode | undefined =>
+    groups.flatMap((group) => needs(plan, group).map((key) => lost[group].get(key))).find(Boolean);
 
   const newestCve = new Map<string, CveRow>();
   for (const row of cveRows) {
@@ -875,6 +959,35 @@ export async function enrichObservables(request: EnrichRequest, deps: EnrichDeps
       });
     }
 
+    // The feed side, independent of both: a blocklist entry stands on its own. A
+    // statement it needed that did not complete means it is unknown here, so it
+    // contributes no answer -- and below, it keeps the value out of `unseen`.
+    const feedLost = lostFor(plan, ["feeds"]);
+    const listed = feedLost ? null : feedMatch(plan);
+    if (listed) {
+      const sources = [...new Set(listed.rows.map((row) => row.source))].sort();
+      feedHits.push({
+        ...base,
+        match: listed.method,
+        matched_value: listed.rows[0].value,
+        sources,
+        entry_count: listed.rows.length,
+        entries: listed.rows.slice(0, MAX_FEED_ENTRIES_PER_VALUE).map((row) => ({
+          source: row.source,
+          matched_value: row.value,
+          // botnet_cc is a C2 server; payload_delivery a download location;
+          // payload a malicious file. They call for different responses.
+          threat_type: row.threat_type,
+          malware: row.malware,
+          confidence: row.confidence,
+          port: row.port,
+          first_seen: row.first_seen,
+          last_seen: row.last_seen,
+          reference: row.reference,
+        })),
+      });
+    }
+
     if (exclusion) {
       const entry = exclusions.get(exclusion)!;
       excluded.push({
@@ -886,9 +999,14 @@ export async function enrichObservables(request: EnrichRequest, deps: EnrichDeps
       continue;
     }
     if (!method || !matched) {
-      // Only unseen when neither side holds it. A value the analyser found is
-      // not "we have never seen this".
-      if (!found.length && !resolved) unseen.push(base);
+      // Only unseen when no side holds it. A value the analyser found, or a list
+      // carries, is not "we have never seen this".
+      if (found.length || resolved || listed) continue;
+      // And only when every side was actually asked. A side whose statement failed
+      // or ran out of budget did not say "not found", so the value is an error.
+      const sideLost = lostFor(plan, ["samples", "hashes"]) ?? feedLost;
+      if (sideLost) errors.push({ input_index: plan.index, value: plan.value, reason: sideLost });
+      else unseen.push(base);
       continue;
     }
     const record = records.get(matched)!;
@@ -926,7 +1044,9 @@ export async function enrichObservables(request: EnrichRequest, deps: EnrichDeps
     });
   }
 
-  const answered = hits.length + excluded.length + unseen.length;
+  // A value only the sample or feed side answered is still an answer: without it,
+  // a call whose news statements all failed would read as failed outright.
+  const answered = hits.length + excluded.length + unseen.length + sampleHits.length + feedHits.length;
   const status = errors.length === 0 ? (truncated ? "partial" : "complete") : answered === 0 ? "failed" : "partial";
   return respond(corpus, status);
 
@@ -952,12 +1072,22 @@ export async function enrichObservables(request: EnrichRequest, deps: EnrichDeps
       })
       .filter((day) => day.sources_failed.length)
       .sort((a, b) => (a.report_date < b.report_date ? -1 : 1));
-    // A value answered only by the sample side is answered, so it counts.
-    const sampleOnly = sampleHits.filter((hit) =>
-      !hits.some((news) => news.input_index === hit.input_index) &&
-      !excluded.some((gone) => gone.input_index === hit.input_index),
-    ).length;
-    const processed = hits.length + excluded.length + unseen.length + sampleOnly;
+    // A value answered only by the sample or feed side is answered, so it counts --
+    // once, however many of those sides answered it.
+    const answeredElsewhere = new Set(
+      [...hits, ...excluded].map((item) => item.input_index),
+    );
+    const sideOnly = new Set(
+      [...sampleHits, ...feedHits].map((hit) => hit.input_index).filter((index) => !answeredElsewhere.has(index)),
+    ).size;
+    const processed = hits.length + excluded.length + unseen.length + sideOnly;
+    const feeds = feedState?.length
+      ? Object.fromEntries(
+          [...feedState]
+            .sort((a, b) => (a.source < b.source ? -1 : 1))
+            .map((row) => [row.source, { exported_at: row.exported_at, ok: Boolean(row.ok), kept: row.kept }]),
+        )
+      : null;
     return {
       status,
       request_id: deps.requestId(),
@@ -981,6 +1111,9 @@ export async function enrichObservables(request: EnrichRequest, deps: EnrichDeps
               newest_sample: sampleState.high_water,
             }
           : null,
+        // A third clock: each abuse.ch list is read every few hours, and one can be
+        // failing while the other is fresh.
+        feeds,
         scope: SCOPE_NOTE,
         verdict_note: VERDICT_NOTE,
         absence_note: ABSENCE_NOTE,
@@ -995,12 +1128,14 @@ export async function enrichObservables(request: EnrichRequest, deps: EnrichDeps
         headline_hits: hits.filter((hit) => hit.headline).length,
         excluded: excluded.length,
         sample_hits: sampleHits.length,
+        feed_hits: feedHits.length,
         unseen: unseen.length,
         skipped: skipped.length,
         failed: errors.length,
       },
       hits,
       sample_hits: sampleHits,
+      feed_hits: feedHits,
       excluded,
       unseen,
       skipped: skipped.sort((a, b) => Number(a.input_index) - Number(b.input_index)),

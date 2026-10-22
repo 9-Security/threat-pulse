@@ -55,6 +55,7 @@
       "counts",
       "hits",
       "sample_hits",
+      "feed_hits",
       "excluded",
       "unseen",
       "skipped",
@@ -113,7 +114,8 @@
           "scope",
           "verdict_note",
           "absence_note",
-          "samples"
+          "samples",
+          "feeds"
         ],
         "properties": {
           "report_range": {
@@ -217,6 +219,58 @@
                 ]
               }
             }
+          },
+          "feeds": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "freshness of each abuse.ch list, read every few hours; null when it cannot be read",
+            "additionalProperties": false,
+            "properties": {
+              "threatfox": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "exported_at",
+                  "ok",
+                  "kept"
+                ],
+                "properties": {
+                  "exported_at": {
+                    "type": "string"
+                  },
+                  "ok": {
+                    "type": "boolean",
+                    "description": "false: the last read failed; the rows from earlier reads are still served until they expire"
+                  },
+                  "kept": {
+                    "type": "integer"
+                  }
+                }
+              },
+              "feodo": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "exported_at",
+                  "ok",
+                  "kept"
+                ],
+                "properties": {
+                  "exported_at": {
+                    "type": "string"
+                  },
+                  "ok": {
+                    "type": "boolean",
+                    "description": "false: the last read failed; the rows from earlier reads are still served until they expire"
+                  },
+                  "kept": {
+                    "type": "integer"
+                  }
+                }
+              }
+            }
           }
         }
       },
@@ -230,6 +284,7 @@
           "headline_hits",
           "excluded",
           "sample_hits",
+          "feed_hits",
           "unseen",
           "skipped",
           "failed"
@@ -261,6 +316,9 @@
             "type": "integer"
           },
           "sample_hits": {
+            "type": "integer"
+          },
+          "feed_hits": {
             "type": "integer"
           }
         }
@@ -299,6 +357,12 @@
         "type": "array",
         "items": {
           "$ref": "#/$defs/sample_hit"
+        }
+      },
+      "feed_hits": {
+        "type": "array",
+        "items": {
+          "$ref": "#/$defs/feed_hit"
         }
       }
     },
@@ -1105,6 +1169,173 @@
             "type": "array",
             "items": {
               "$ref": "#/$defs/sample_finding"
+            }
+          }
+        }
+      },
+      "feed_entry": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "source",
+          "matched_value",
+          "threat_type",
+          "malware",
+          "confidence",
+          "port",
+          "first_seen",
+          "last_seen",
+          "reference"
+        ],
+        "properties": {
+          "source": {
+            "type": "string",
+            "enum": [
+              "threatfox",
+              "feodo"
+            ]
+          },
+          "matched_value": {
+            "type": "string"
+          },
+          "threat_type": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "botnet_cc (a C2 server), payload_delivery (a download location), payload (a malicious file), as the list classifies it"
+          },
+          "malware": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "confidence": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "ThreatFox's own confidence, 75-100; null for Feodo Tracker"
+          },
+          "port": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "first_seen": {
+            "type": "string"
+          },
+          "last_seen": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "reference": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "the entry on abuse.ch"
+          }
+        }
+      },
+      "feed_hit": {
+        "type": "object",
+        "additionalProperties": false,
+        "description": "A value an abuse.ch blocklist carries (ThreatFox, Feodo Tracker). Reported apart from `hits` and `sample_hits`: a curated third-party list entry is current and specific, and has no article behind it.",
+        "required": [
+          "input_index",
+          "value",
+          "normalized_value",
+          "normalization_applied",
+          "type",
+          "type_supplied",
+          "match",
+          "matched_value",
+          "sources",
+          "entry_count",
+          "entries"
+        ],
+        "properties": {
+          "input_index": {
+            "type": "integer"
+          },
+          "value": {
+            "type": "string",
+            "description": "As submitted."
+          },
+          "normalized_value": {
+            "type": "string",
+            "description": "What was matched: a URL's host, a canonical address, an upper-case CVE."
+          },
+          "normalization_applied": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "defang",
+                "defang_scheme",
+                "trailing_dot"
+              ]
+            }
+          },
+          "type_supplied": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "warnings": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "domain",
+              "ip",
+              "url",
+              "md5",
+              "sha1",
+              "sha256"
+            ]
+          },
+          "match": {
+            "type": "string",
+            "enum": [
+              "exact",
+              "same_host",
+              "parent_domain"
+            ],
+            "description": "exact: the value (or whole URL) is listed; same_host: a URL's host is listed; parent_domain: the registrable domain is listed"
+          },
+          "matched_value": {
+            "type": "string"
+          },
+          "sources": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "threatfox",
+                "feodo"
+              ]
+            }
+          },
+          "entry_count": {
+            "type": "integer",
+            "description": "list entries for the matched value; `entries` lists at most five, most recently seen first"
+          },
+          "entries": {
+            "type": "array",
+            "maxItems": 5,
+            "items": {
+              "$ref": "#/$defs/feed_entry"
             }
           }
         }

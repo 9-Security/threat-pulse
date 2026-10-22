@@ -18,6 +18,8 @@ import {
   type CveRow,
   type EnrichStore,
   type ExcludedRow,
+  type FeedIndicatorRow,
+  type FeedStateRow,
   type IndicatorRow,
   type SampleAnalysisRow,
   type SampleIndicatorRow,
@@ -582,6 +584,23 @@ function enrichStore(env: Env): EnrichStore {
         `SELECT exported_at, high_water, analyzer FROM sample_state WHERE id = 1`,
       ).first<SampleState>();
       return row ?? null;
+    },
+    async feeds(keys) {
+      const { results } = await env.DB.prepare(
+        `SELECT source, indicator_type, value, value_lc, threat_type, malware, confidence, port,
+                first_seen, last_seen, reference
+           FROM feed_indicators
+          WHERE value_lc IN (${placeholders(keys.length)})`,
+      )
+        .bind(...keys)
+        .all<FeedIndicatorRow>();
+      return results;
+    },
+    async feedState() {
+      const { results } = await env.DB.prepare(
+        `SELECT source, exported_at, ok, kept FROM feed_state ORDER BY source`,
+      ).all<FeedStateRow>();
+      return results;
     },
     async corpus(): Promise<CorpusInfo> {
       const [state, reports] = await env.DB.batch([

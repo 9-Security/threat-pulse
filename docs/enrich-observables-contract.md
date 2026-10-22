@@ -111,8 +111,8 @@ again. `truncated` does, because values dropped by the limit can be resubmitted.
 ### `counts`
 
 `requested`, `processed` (= `hits` + `excluded` + `unseen` + values answered by
-the sample side alone), `hits`, `headline_hits`, `excluded`, `sample_hits`,
-`unseen`, `skipped`, `failed`.
+the sample or feed side alone, each counted once), `hits`, `headline_hits`,
+`excluded`, `sample_hits`, `feed_hits`, `unseen`, `skipped`, `failed`.
 
 A coverage rate is `headline_hits / processed`. Skipped and failed values are not
 in the denominator.
@@ -130,6 +130,7 @@ in the denominator.
 | `scope`, `verdict_note`, `absence_note` | Fixed sentences stating what this service is not, and how `verdict` and `unseen` must be read. |
 | `version_note` | Present only when `corpus_version` is withheld. |
 | `samples` | Freshness of the sample side: `{analyzer, exported_at, newest_sample}`, or `null`. It arrives hourly from the malware analyser, while the news side arrives once a day, so the two carry separate clocks. |
+| `feeds` | Freshness of each abuse.ch list: `{threatfox: {exported_at, ok, kept}, feodo: {…}}`, or `null` when it cannot be read. Each list is read every six hours. `ok: false` means the last read failed; the rows from earlier reads are still served until they expire. |
 
 ### `hits[]`
 
@@ -230,6 +231,37 @@ text — a mutex name is any string. Such a value is taken verbatim: it is not
 undefanged, no trailing punctuation is stripped, and the hostname rules do not
 apply to it.
 
+### `feed_hits[]`
+
+Values an **abuse.ch blocklist** carries: ThreatFox (C2 servers, payload delivery
+locations and payload hashes, ThreatFox confidence ≥ 75, hacked legitimate sites
+excluded) and Feodo Tracker (botnet C2 addresses). Reported apart from `hits` and
+`sample_hits`: a curated third-party list entry is current and specific, and has no
+article behind it. A value can appear here and in the other buckets at once, under
+the same `input_index`.
+
+`input_index`, `value`, `normalized_value`, `normalization_applied`, `type`,
+`type_supplied`, `warnings`, plus:
+
+| field | meaning |
+|---|---|
+| `match` | `exact` (the value, or the whole URL, is listed), `same_host` (a URL's host is listed), or `parent_domain` (the submitted host's **registrable domain** is listed). |
+| `matched_value` | The listed value, as stored. |
+| `sources` | `threatfox`, `feodo`, or both. |
+| `entry_count` | List entries for the matched value. `entries[]` lists at most five, most recently seen first. |
+| `entries[]` | Per entry: `source`, `matched_value`, `threat_type`, `malware`, `confidence`, `port`, `first_seen`, `last_seen`, `reference` (the entry on abuse.ch). |
+
+**Read `threat_type` before acting.** `botnet_cc` is a command-and-control server,
+`payload_delivery` a location that served malware, `payload` a malicious file. They
+call for different responses. `confidence` is ThreatFox's own (75–100) and is `null`
+for Feodo Tracker.
+
+Matching stops at the registrable domain: a listed `evil.com` answers for
+`a.evil.com`, but a listed `a.evil.com` says nothing about `b.evil.com`, and the
+labels between a host and its registrable domain are not looked up. ThreatFox rows
+are kept until 30 days after ThreatFox last saw them; the API itself reaches back
+7 days.
+
 ### `excluded[]`
 
 The service saw the value and ruled it out. That is not the same as never having seen
@@ -248,9 +280,10 @@ Fields: `input_index`, `value`, `normalized_value`, `normalization_applied`, `ty
 `input_index`, `value`, `normalized_value`, `normalization_applied`, `type`,
 `type_supplied`, `warnings`.
 
-**`unseen` is not a clean or benign verdict.** It means neither side holds the
-value: no report over `coverage.report_range` names it, and no file analysed here
-contains it.
+**`unseen` is not a clean or benign verdict.** It means no side holds the value: no
+report over `coverage.report_range` names it, no file analysed here contains it, and
+no abuse.ch list carries it. A value is `unseen` only when every side was actually
+asked; if the sample or feed lookup it needed failed, it is an error instead.
 
 ### `skipped[]`
 
@@ -298,8 +331,12 @@ unknown, and retry.
    4. for a URL, an exclusion of its host → `excluded`
    5. a **parent** domain confirmed → hit, `parent_domain`; otherwise a **child** domain
       confirmed → hit, `child_domain`
-   6. otherwise → `unseen`
+   6. otherwise → `unseen`, unless the sample or feed side holds it (then it is
+      answered there alone), or a sample or feed lookup it needed failed (then it
+      is an error)
 4. **Cite.** A match without a citation becomes an error.
+5. **Independently**, the sample side and the feed side are looked up for every
+   value and answered in `sample_hits` and `feed_hits`.
 
 Whole URLs are compared trimmed, in lower case, and without trailing slashes on
 either side.
@@ -361,7 +398,7 @@ For any non-200 response, or a client timeout, **every value in the call is unkn
 | characters per value, labels per value | 512, 16 |
 | request body | 256 KiB |
 | wall-clock budget | 10 s, checked before each database statement |
-| database statements per call | at most 33: 2 authentication, 2 quota, 2 corpus, ≤ 19 confirmations, ≤ 4 exclusions, ≤ 2 child domains, ≤ 2 CVE records |
+| database statements per call | at most 47 of the platform's 50: 2 authentication, 2 quota, 2 corpus, ≤ 19 confirmations, ≤ 4 exclusions, ≤ 2 child domains, ≤ 2 CVE records, ≤ 4 sample values, ≤ 2 sample hashes, 1 sample freshness, ≤ 6 feed values, 1 feed freshness |
 
 Measured on 2026-09-18 against the deployed service, eight calls each:
 
