@@ -42,6 +42,8 @@ from .sample_export import (
     high_water_of,
     render_sql as render_sample_sql,
 )
+from .feed_export import collect_feeds, summary_of as feed_summary_of
+from .feed_export import render_sql as render_feed_sql
 from .reanalyze import attach_provenance, reanalyze
 from .snapshot import build_snapshot, refresh_tools, write_bundle
 from .source_health import (
@@ -293,6 +295,12 @@ def _arguments() -> argparse.Namespace:
         "--max-samples", type=int, help="stop after this many samples, for a first pass"
     )
     export_samples.add_argument("--output", help="write SQL here instead of stdout")
+
+    export_feeds = subcommands.add_parser(
+        "export-feeds",
+        help="render abuse.ch's ThreatFox and Feodo Tracker lists as SQL for the same service",
+    )
+    export_feeds.add_argument("--output", help="write SQL here instead of stdout")
 
     backtest = subcommands.add_parser(
         "backtest",
@@ -852,6 +860,21 @@ def main() -> None:
             print(_atomic_write(args.output, sql))
         else:
             sys.stdout.write(sql)
+        return
+    if args.command == "export-feeds":
+        # ThreatFox's key comes from ABUSE_CH_AUTH_KEY in the environment, never an
+        # argument: an argument is visible to every process on the host.
+        results = collect_feeds()
+        sql = render_feed_sql(results)
+        path = _atomic_write(args.output, sql) if args.output else None
+        if path is None:
+            sys.stdout.write(sql)
+        summary = feed_summary_of(results) | {"sql_output": path}
+        print(json.dumps(summary, ensure_ascii=False, indent=2), file=sys.stderr)
+        # Every source failing is a failed run; one failing is recorded in
+        # feed_state and the other's rows still land.
+        if not summary["any_ok"]:
+            raise SystemExit(1)
         return
     if args.command == "export-samples":
         try:

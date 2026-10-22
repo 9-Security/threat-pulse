@@ -54,6 +54,10 @@ for name in CLOUDFLARE_API_TOKEN CLOUDFLARE_ACCOUNT_ID; do
   fi
 done
 
+# The feed side (abuse.ch) refreshes from here, so it needs no timer of its own.
+# It decides for itself whether a refresh is due, and it never stops this export.
+"$APP_DIR/deploy/run-feeds.sh" || echo "feed refresh failed; the sample export continues" >&2
+
 # Where the last export stopped. An unreadable answer is not "nothing stored":
 # treating it as such would re-read the whole corpus every hour.
 state="$(d1 --json --command \
