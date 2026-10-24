@@ -241,4 +241,19 @@ check_source_health() {
     "$APP_DIR/deploy/alert.sh" "[threat-pulse] source failing on $(hostname)" || true
 }
 
+# The Malware Analyser website reads this file from a shared directory on the same
+# host. A failure here leaves the previous file in place and never fails the day:
+# the D1 push above is the record that matters.
+export_site_snapshot() {
+  if [ "${DRY_RUN:-0}" = "1" ]; then
+    echo "dry run; not writing the site export"
+    return 0
+  fi
+  uv run soc-news-parser export-site \
+    --output "${SITE_EXPORT_PATH:-/srv/threat-pulse-export/iocs.json}" ||
+    echo "site export failed; the website keeps the previous file" >&2
+}
+
+export_site_snapshot
+
 check_source_health
