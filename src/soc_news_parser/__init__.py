@@ -33,6 +33,9 @@ from .enrich import (
 from .backtest import read_values, run_backtest
 from .backtest import render_markdown as render_backtest_markdown
 from .export_d1 import export_report
+from .site_export import build_document as build_site_document
+from .site_export import ExportError
+from .site_export import write_document as write_site_document
 from .report import archived_before, collect_report, serialize_report
 from .sample_export import (
     ANALYZER_BASE_URL,
@@ -263,6 +266,12 @@ def _arguments() -> argparse.Namespace:
         default=DEFAULT_CACHE_DIR,
         help=f"CVE enrichment cache directory (default {DEFAULT_CACHE_DIR})",
     )
+
+    export_site = subcommands.add_parser(
+        "export-site",
+        help="write the public-safe IoC JSON read by the Malware Analyser website",
+    )
+    export_site.add_argument("--output", required=True)
 
     export_d1 = subcommands.add_parser(
         "export-d1",
@@ -846,6 +855,15 @@ def main() -> None:
             print(f"    {item.last_error or '(no message recorded)'}")
         return
 
+    if args.command == "export-site":
+        try:
+            document = build_site_document()
+        except ExportError as error:
+            print(f"error: {error}", file=sys.stderr)
+            raise SystemExit(1) from error
+        path = write_site_document(document, args.output)
+        print(f"{path}: {document['indicator_count']} indicators {document['counts']}")
+        return
     if args.command == "export-d1":
         try:
             sql = export_report(
