@@ -36,7 +36,10 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=read-only
-ReadWritePaths=/home/threatpulse/app /home/threatpulse
+# /srv/threat-pulse-export is the shared directory the Malware Analyser website
+# reads its IoC export from. It is the only path outside the home directory this
+# job writes to; run-daily.sh's export_site_snapshot fails without it.
+ReadWritePaths=/home/threatpulse/app /home/threatpulse /srv/threat-pulse-export
 ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectControlGroups=true
