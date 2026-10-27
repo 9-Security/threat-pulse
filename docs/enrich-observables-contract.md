@@ -28,7 +28,7 @@ described under [Parity with the offline validator](#parity-with-the-offline-val
 
 | | |
 |---|---|
-| URL | `https://ioc.nine-security.com/mcp`, or `https://threat-pulse.nine-security.com/mcp` — the same service on both names |
+| URL | `https://threat-pulse.nine-security.com/mcp` |
 | method | `POST`, `Content-Type: application/json` |
 | protocol | JSON-RPC 2.0, MCP `2025-06-18`. Stateless: no session id and no SSE; every response is one JSON body |
 | methods | `initialize`, `notifications/initialized`, `tools/list`, `tools/call` |
