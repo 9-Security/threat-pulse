@@ -559,6 +559,18 @@ def _recipients(args: argparse.Namespace) -> list[str]:
     ]
 
 
+def _bcc(args: argparse.Namespace) -> list[str]:
+    # An explicit --to is a one-off send (often a test); it should not copy the
+    # standing BCC list.
+    if getattr(args, "to", None):
+        return []
+    return [
+        value.strip()
+        for value in os.environ.get("RESEND_BCC", "").split(",")
+        if value.strip()
+    ]
+
+
 def _sender(args: argparse.Namespace) -> str:
     return getattr(args, "sender", None) or os.environ.get("RESEND_FROM", "")
 
@@ -570,12 +582,14 @@ def _send_report_files(
     sender: str,
     recipients: list[str],
     dry_run: bool,
+    bcc: list[str] | None = None,
 ) -> dict[str, object]:
     email = build_report_email(
         json_path=json_path,
         markdown_path=markdown_path,
         sender=sender,
         recipients=recipients,
+        bcc=bcc,
     )
     if dry_run:
         return {
@@ -584,6 +598,7 @@ def _send_report_files(
             "subject": email.payload["subject"],
             "sender": email.payload["from"],
             "recipients": email.payload["to"],
+            "bcc": email.payload.get("bcc", []),
             "attachment_count": len(email.payload["attachments"]),
             "idempotency_key": email.idempotency_key,
         }
@@ -641,6 +656,7 @@ def _deliver(args: argparse.Namespace) -> dict[str, object]:
         markdown_path=markdown_output,
         sender=_sender(args),
         recipients=_recipients(args),
+        bcc=_bcc(args),
         dry_run=bool(getattr(args, "dry_run", False)),
     )
     return {
@@ -928,6 +944,7 @@ def main() -> None:
                 markdown_path=args.markdown_report,
                 sender=_sender(args),
                 recipients=_recipients(args),
+                bcc=_bcc(args),
                 dry_run=args.dry_run,
             )
         except ResendError as error:
