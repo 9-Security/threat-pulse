@@ -106,18 +106,27 @@ def build_report_email(
     markdown_path: str,
     sender: str,
     recipients: list[str],
+    bcc: list[str] | None = None,
 ) -> ReportEmail:
     if not recipients:
         raise ResendError("at least one recipient is required")
     sender = _valid_address(sender, allow_display_name=True)
     normalized_recipients = [_valid_address(value) for value in recipients]
+    # An address already in "to" would get the report twice.
+    visible = {value.lower() for value in normalized_recipients}
+    normalized_bcc = [
+        _valid_address(value) for value in bcc or [] if value.lower() not in visible
+    ]
     report, markdown, json_bytes, markdown_bytes, csv_bytes = _load_report_pair(
         json_path, markdown_path
     )
     report_id = report["report_id"]
-    recipient_digest = hashlib.sha256(
-        "\n".join(sorted(normalized_recipients)).encode()
-    ).hexdigest()[:16]
+    # Without BCC the digest input is unchanged, so keys made before BCC existed
+    # still match on a same-day retry.
+    digest_input = "\n".join(sorted(normalized_recipients))
+    if normalized_bcc:
+        digest_input += "\nbcc:" + "\n".join(sorted(normalized_bcc))
+    recipient_digest = hashlib.sha256(digest_input.encode()).hexdigest()[:16]
     idempotency_key = f"soc-report/{report_id}/{recipient_digest}"
     rendered_report = render_markdown_html(
         markdown,
@@ -163,6 +172,8 @@ def build_report_email(
         ],
         "tags": [{"name": "report_id", "value": report_id}],
     }
+    if normalized_bcc:
+        payload["bcc"] = normalized_bcc
     request_size = len(
         json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
     )

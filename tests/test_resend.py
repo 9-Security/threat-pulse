@@ -2,6 +2,7 @@ import base64
 import hashlib
 import json
 from pathlib import Path
+from typing import Any
 
 import httpx
 import pytest
@@ -167,6 +168,28 @@ def test_idempotency_key_changes_with_recipient(tmp_path: Path) -> None:
     assert first.idempotency_key != second.idempotency_key
 
 
+def test_bcc_is_validated_deduplicated_and_keyed(tmp_path: Path) -> None:
+    json_path, markdown_path = report_pair(tmp_path)
+    common: dict[str, Any] = dict(
+        json_path=json_path,
+        markdown_path=markdown_path,
+        sender="reports@example.com",
+        recipients=["first@example.com"],
+    )
+    plain = build_report_email(**common)
+    no_bcc = build_report_email(**common, bcc=[])
+    with_bcc = build_report_email(
+        **common, bcc=["First@example.com", "audit@example.com"]
+    )
+
+    assert "bcc" not in plain.payload
+    assert no_bcc.idempotency_key == plain.idempotency_key
+    assert with_bcc.payload["bcc"] == ["audit@example.com"]
+    assert with_bcc.idempotency_key != plain.idempotency_key
+    with pytest.raises(ResendError):
+        build_report_email(**common, bcc=["Audit <audit@example.com>"])
+
+
 def test_resend_client_retries_and_returns_email_id() -> None:
     attempts = 0
     delays: list[float] = []
@@ -220,3 +243,15 @@ def test_resend_client_reports_non_retryable_error() -> None:
                     report_id=REPORT_ID,
                 )
             )
+
+
+def test_bcc_comes_from_env_only_without_explicit_to(monkeypatch) -> None:
+    import argparse
+
+    from soc_news_parser import _bcc
+
+    monkeypatch.setenv("RESEND_BCC", " audit@example.com, ,b@example.com ")
+    assert _bcc(argparse.Namespace(to=None)) == ["audit@example.com", "b@example.com"]
+    assert _bcc(argparse.Namespace(to=["test@example.com"])) == []
+    monkeypatch.delenv("RESEND_BCC")
+    assert _bcc(argparse.Namespace(to=None)) == []

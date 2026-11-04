@@ -252,6 +252,7 @@ sudo systemctl enable --now threat-pulse-daily.timer
 RESEND_API_KEY=...
 RESEND_FROM=SOC Reports <reports@your-verified-domain.example>
 RESEND_TO=analyst@example.com
+RESEND_BCC=archive@example.com # 選用，逗號分隔；只加在每日報告，告警與手動 --to 不帶
 NVD_API_KEY=...              # 強烈建議：無 key 時的速率會讓忙碌的一天跑不完
 CLOUDFLARE_API_TOKEN=...     # 只需要 D1 Edit 權限
 CLOUDFLARE_ACCOUNT_ID=...
