@@ -896,8 +896,9 @@ def main() -> None:
             sys.stdout.write(sql)
         return
     if args.command == "export-feeds":
-        # ThreatFox's key comes from ABUSE_CH_AUTH_KEY in the environment, never an
-        # argument: an argument is visible to every process on the host.
+        # The analyser's key comes from ANALYZER_API_KEY in the environment, never an
+        # argument: an argument is visible to every process on the host. abuse.ch is
+        # read through the analyser, which holds the only abuse.ch key.
         results = collect_feeds()
         sql = render_feed_sql(results)
         path = _atomic_write(args.output, sql) if args.output else None

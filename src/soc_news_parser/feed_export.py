@@ -8,6 +8,12 @@ renders SQL for the same D1 database, into tables of their own, because "abuse.c
 lists this" is a third kind of claim: curated by a third party, current, and
 without the context an article gives.
 
+abuse.ch is not called from here. The malware analyser on this host holds the one
+abuse.ch key and serves every row it fetched at GET /api/threat-intel/watchlist
+(X-API-Key); this exporter reads that over the loopback, like export-samples does.
+The rows keep abuse.ch's own fields (first/last seen, ThreatFox id, threat type), so
+what lands in D1 is what reading abuse.ch directly produced.
+
 What is kept
   * ThreatFox `get_iocs` for the last 7 days (the API maximum), confidence >= 75,
     rows ThreatFox marks `is_compromised` (a hacked legitimate site) dropped. Every
@@ -23,12 +29,18 @@ never re-saw them). The 7-day API window therefore becomes a 30-day corpus. A
 source that cannot be read writes nothing for itself, so its previous rows stay;
 expiry still runs, so a long outage cannot keep dead infrastructure forever.
 
+The analyser keeps a ThreatFox row 30 days after it was last listed, and a failing
+source's last rows. A row the analyser reports as failing upstream is treated as an
+unreadable source here, and a row older than the retention window is never written
+(it would be inserted and expired in the same batch, spending writes for nothing).
+
 Normalisation is the news side's own (`_normalize`, `registrable_domain`,
 `_is_public_address`), for the reason sample_export.py gives: a value normalised
 differently on one side hits there and misses here.
 
-ThreatFox needs a free abuse.ch Auth-Key (ABUSE_CH_AUTH_KEY). abuse.ch offers the
-API under fair use; for-profit use may need its commercial terms.
+The analyser's API key comes from ANALYZER_API_KEY and its address from ANALYZER_URL
+(default the loopback). abuse.ch offers its API under fair use; for-profit use may
+need its commercial terms.
 """
 
 from __future__ import annotations
@@ -44,29 +56,22 @@ import httpx
 from .evidence import _normalize
 from .parser import _is_public_address
 from .publicsuffix import registrable_domain
-from .sample_export import BATCH_ROWS, _row, _text
+from .sample_export import ANALYZER_BASE_URL, BATCH_ROWS, _row, _text
 
-THREATFOX_API_URL = "https://threatfox-api.abuse.ch/api/v1/"
-FEODO_URL = "https://feodotracker.abuse.ch/downloads/ipblocklist.json"
+WATCHLIST_PATH = "/api/threat-intel/watchlist"
+SOURCES = ("threatfox", "feodo")
 THREATFOX_IOC_URL = "https://threatfox.abuse.ch/ioc/{id}/"
 FEODO_REFERENCE = "https://feodotracker.abuse.ch/browse/host/{ip}/"
-THREATFOX_DAYS = 7
 MIN_CONFIDENCE = 75
 RETENTION_DAYS = 30
 MAX_VALUE_CHARS = 512
-# A 7-day get_iocs answer is about 12 MB; the cap is the guard against a broken
-# or hostile response, not a working limit.
+# The watchlist answer is a few MB; the cap is the guard against a broken or
+# hostile response, not a working limit.
 MAX_RESPONSE_BYTES = 64 * 1024 * 1024
-TIMEOUT_SECONDS = 90.0
+# A stale analyser cache refreshes abuse.ch before it answers.
+TIMEOUT_SECONDS = 240.0
 
-THREATFOX_TYPES = {
-    "ip:port": "ip",
-    "domain": "domain",
-    "url": "url",
-    "md5_hash": "md5",
-    "sha1_hash": "sha1",
-    "sha256_hash": "sha256",
-}
+THREATFOX_TYPES = frozenset({"ip", "domain", "url", "md5", "sha1", "sha256"})
 
 FEED_INDICATOR_COLUMNS = (
     "source, indicator_type, value, threat_type, malware, confidence, port, "
@@ -170,67 +175,50 @@ def _indicator(
     )
 
 
-def parse_threatfox(body: Any) -> tuple[FeedIndicator, ...]:
-    """Confident, non-compromised ThreatFox rows. Raises FeedError on a refused query."""
-    if not isinstance(body, dict):
-        raise FeedError("ThreatFox: the answer is not a JSON object")
-    status = body.get("query_status")
-    if status == "no_result":
-        return ()
-    if status != "ok":
-        # unknown_auth_key, illegal_days and the like: the query was refused, which
-        # is not the same as the feed being empty.
-        raise FeedError(f"ThreatFox query_status: {str(status)[:80]}")
+def _keep_latest(best: dict[Any, FeedIndicator], key: Any, found: FeedIndicator) -> None:
+    current = best.get(key)
+    # One value listed twice (two ports, two reports): keep the most recent sighting.
+    if current is None or (found.last_seen or found.first_seen) > (current.last_seen or current.first_seen):
+        best[key] = found
+
+
+def threatfox_indicators(rows: Sequence[dict[str, Any]]) -> tuple[FeedIndicator, ...]:
+    """Confident ThreatFox rows as the analyser serves them (port split off, hacked sites dropped)."""
     best: dict[tuple[str, str], FeedIndicator] = {}
-    for row in body.get("data") or []:
-        if not isinstance(row, dict) or row.get("is_compromised"):
-            continue
-        indicator_type = THREATFOX_TYPES.get(str(row.get("ioc_type") or ""))
-        raw = _text(row.get("ioc"))
-        if not indicator_type or not raw:
+    for row in rows:
+        indicator_type = _text(row.get("ioc_type"))
+        raw = _text(row.get("value"))
+        if indicator_type not in THREATFOX_TYPES or not raw:
             continue
         try:
-            confidence = int(row.get("confidence_level") or 0)
+            confidence = int(row.get("confidence") or 0)
         except (TypeError, ValueError):
             continue
         if confidence < MIN_CONFIDENCE:
             continue
-        port = None
-        if indicator_type == "ip" and raw.count(":") == 1:
-            raw, port_text = raw.split(":", 1)
-            port = int(port_text) if port_text.isdigit() else None
-        ioc_id = row.get("id")
+        port, ioc_id = row.get("port"), row.get("ioc_id")
         found = _indicator(
             "threatfox",
             indicator_type,
             raw,
             threat_type=_text(row.get("threat_type")),
-            malware=_text(row.get("malware_printable")) or _text(row.get("malware")),
+            malware=_text(row.get("malware")),
             confidence=confidence,
-            port=port,
+            port=port if isinstance(port, int) else None,
             first_seen=_stamp(row.get("first_seen")),
             last_seen=_stamp(row.get("last_seen")),
-            reference=THREATFOX_IOC_URL.format(id=ioc_id) if ioc_id else None,
+            reference=THREATFOX_IOC_URL.format(id=ioc_id) if isinstance(ioc_id, int) else None,
         )
-        if found is None:
-            continue
-        key = (found.indicator_type, found.value.lower())
-        current = best.get(key)
-        # One value listed twice (two ports, two reports): keep the most recent sighting.
-        if current is None or (found.last_seen or found.first_seen) > (current.last_seen or current.first_seen):
-            best[key] = found
+        if found is not None:
+            _keep_latest(best, (found.indicator_type, found.value.lower()), found)
     return tuple(best[key] for key in sorted(best))
 
 
-def parse_feodo(body: Any) -> tuple[FeedIndicator, ...]:
-    if not isinstance(body, list):
-        raise FeedError("Feodo Tracker: the answer is not a JSON list")
+def feodo_indicators(rows: Sequence[dict[str, Any]]) -> tuple[FeedIndicator, ...]:
     best: dict[str, FeedIndicator] = {}
-    for row in body:
-        if not isinstance(row, dict):
-            continue
-        raw = _text(row.get("ip_address"))
-        if not raw:
+    for row in rows:
+        raw = _text(row.get("value"))
+        if row.get("ioc_type") != "ip" or not raw:
             continue
         port = row.get("port")
         found = _indicator(
@@ -242,12 +230,44 @@ def parse_feodo(body: Any) -> tuple[FeedIndicator, ...]:
             confidence=None,
             port=port if isinstance(port, int) else None,
             first_seen=_stamp(row.get("first_seen")),
-            last_seen=_stamp(row.get("last_online")),
+            last_seen=_stamp(row.get("last_seen")),
             reference=FEODO_REFERENCE.format(ip=raw),
         )
         if found is not None:
             best[found.value] = found
     return tuple(best[key] for key in sorted(best))
+
+
+BUILDERS: dict[str, Callable[[Sequence[dict[str, Any]]], tuple[FeedIndicator, ...]]] = {
+    "threatfox": threatfox_indicators,
+    "feodo": feodo_indicators,
+}
+
+
+def parse_watchlist(body: Any) -> list[FeedResult]:
+    """One FeedResult per source. Raises FeedError when the answer is not a watchlist."""
+    if not isinstance(body, dict) or not isinstance(body.get("items"), list) or not isinstance(
+        body.get("sources"), dict
+    ):
+        raise FeedError("analyser watchlist: the answer is not a watchlist")
+    results: list[FeedResult] = []
+    for name in SOURCES:
+        state = body["sources"].get(name)
+        if not isinstance(state, dict):
+            results.append(FeedResult(name, error=f"the analyser serves no {name} source"))
+            continue
+        if state.get("ok") is not True:
+            # The analyser could not read abuse.ch and is serving its last rows: that
+            # is a failing source, not a current one.
+            reason = str(state.get("error") or "unknown error")[:160]
+            results.append(FeedResult(name, error=f"analyser: {name} upstream failing: {reason}"))
+            continue
+        rows = [r for r in body["items"] if isinstance(r, dict) and r.get("source") == name]
+        listed = state.get("listed_now")
+        results.append(
+            FeedResult(name, BUILDERS[name](rows), listed=listed if isinstance(listed, int) else len(rows))
+        )
+    return results
 
 
 def _read_json(client: httpx.Client, method: str, url: str, **kwargs: Any) -> Any:
@@ -266,50 +286,32 @@ def _read_json(client: httpx.Client, method: str, url: str, **kwargs: Any) -> An
         raise FeedError(f"{url}: {error}") from error
 
 
-def fetch_threatfox(client: httpx.Client, auth_key: str | None) -> FeedResult:
-    if not auth_key:
-        return FeedResult("threatfox", error="ABUSE_CH_AUTH_KEY is not set")
+def fetch_watchlist(client: httpx.Client, base_url: str, api_key: str | None) -> list[FeedResult]:
+    """Every source from one analyser call; any failure is every source's error."""
+    if not api_key:
+        return [FeedResult(name, error="ANALYZER_API_KEY is not set") for name in SOURCES]
     try:
-        body = _read_json(
-            client,
-            "POST",
-            THREATFOX_API_URL,
-            json={"query": "get_iocs", "days": THREATFOX_DAYS},
-            headers={"Auth-Key": auth_key},
-        )
-        listed = len(body.get("data") or []) if isinstance(body, dict) else 0
-        return FeedResult("threatfox", parse_threatfox(body), listed=listed)
+        body = _read_json(client, "GET", base_url.rstrip("/") + WATCHLIST_PATH, headers={"X-API-Key": api_key})
+        return parse_watchlist(body)
     except FeedError as error:
-        return FeedResult("threatfox", error=str(error)[:200])
-
-
-def fetch_feodo(client: httpx.Client) -> FeedResult:
-    try:
-        body = _read_json(client, "GET", FEODO_URL)
-        return FeedResult("feodo", parse_feodo(body), listed=len(body) if isinstance(body, list) else 0)
-    except FeedError as error:
-        return FeedResult("feodo", error=str(error)[:200])
+        return [FeedResult(name, error=str(error)[:200]) for name in SOURCES]
 
 
 def collect_feeds(
     *,
-    auth_key: str | None = None,
+    base_url: str | None = None,
+    api_key: str | None = None,
     client: httpx.Client | None = None,
-    fetchers: dict[str, Callable[[], FeedResult]] | None = None,
 ) -> list[FeedResult]:
-    """Read every source. One source failing never stops the other."""
-    if fetchers is None:
-        own = client or httpx.Client(
-            timeout=TIMEOUT_SECONDS, headers={"user-agent": "threat-pulse feed export"}
-        )
-        key = auth_key if auth_key is not None else os.environ.get("ABUSE_CH_AUTH_KEY", "").strip()
-        fetchers = {"threatfox": lambda: fetch_threatfox(own, key), "feodo": lambda: fetch_feodo(own)}
-        try:
-            return [fetch() for fetch in fetchers.values()]
-        finally:
-            if client is None:
-                own.close()
-    return [fetch() for fetch in fetchers.values()]
+    """Read every source through the analyser. One source failing never stops the other."""
+    url = base_url or os.environ.get("ANALYZER_URL", "").strip() or ANALYZER_BASE_URL
+    key = api_key if api_key is not None else os.environ.get("ANALYZER_API_KEY", "").strip()
+    own = client or httpx.Client(timeout=TIMEOUT_SECONDS, headers={"user-agent": "threat-pulse feed export"})
+    try:
+        return fetch_watchlist(own, url, key)
+    finally:
+        if client is None:
+            own.close()
 
 
 def render_sql(
@@ -346,6 +348,8 @@ def render_sql(
                 i.registrable_lc,
             )
             for i in result.indicators
+            # Only ThreatFox expires by age; Feodo is mirrored as a set.
+            if i.source != "threatfox" or (i.last_seen or i.first_seen) >= cutoff
         ]
         if result.source == "feodo" and result.ok:
             lines.append("DELETE FROM feed_indicators WHERE source = 'feodo';")

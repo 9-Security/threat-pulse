@@ -425,10 +425,10 @@ D1 裡的指標有三個來源，各存在自己的表，回答時分得出是�
 
 ThreatFox 的資料保留到它**最後一次看到該值後 30 天**，所以 7 天的 API 視窗累積成約一個月的資料。每次更新只寫有變動的列（2026-10-22 實測：第一次約 7,300 列，之後只寫新增與變動），在 Workers Free 的寫入額度內。來源讀不到時不寫該來源的列，舊資料保留，`feed_state` 記下錯誤；過期刪除照常執行。
 
-ThreatFox 需要 abuse.ch 的免費 Auth-Key，放在主機 env 的 `ABUSE_CH_AUTH_KEY`；沒設時只更新 Feodo。abuse.ch 以合理使用提供 API，營利用途可能需要它的商業條款。
+這兩份清單不直接向 abuse.ch 抓：同機的 Malware Analyzer 持有唯一一把 abuse.ch 金鑰，threat-pulse 經 loopback 讀它的 `GET /api/threat-intel/watchlist`（與 export-samples 同一個 `ANALYZER_URL`，預設 `http://127.0.0.1:18080`），帶主機 env 的 `ANALYZER_API_KEY`。analyzer 回報某來源抓取失敗時，該來源視為讀不到（不寫列、`feed_state` 記錯誤）；ThreatFox 早於保留期的列不寫入。abuse.ch 以合理使用提供 API，營利用途可能需要它的商業條款。
 
 ```bash
-ABUSE_CH_AUTH_KEY=... uv run soc-news-parser export-feeds --output /tmp/feeds.sql
+ANALYZER_API_KEY=... uv run soc-news-parser export-feeds --output /tmp/feeds.sql
 ```
 
 排程不用新的 timer：每小時的 `run-samples.sh` 會呼叫 `deploy/run-feeds.sh`，由它自己判斷距上次成功更新是否滿 `FEED_HOURS`（預設 6）小時。資料表由 `deploy/d1/migrations/006-feed-corpus.sql` 建立；未套用前 `run-feeds.sh` 會略過並記錄原因。
