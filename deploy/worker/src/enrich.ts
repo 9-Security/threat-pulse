@@ -56,7 +56,7 @@ export type SkipCode =
 export type ErrorCode = "lookup_failed" | "time_budget_exceeded" | "missing_citation";
 
 export const SCOPE_NOTE =
-  "hits: published vendor and CERT reporting. sample_hits: this service's own static analysis of public malware samples. feed_hits: abuse.ch ThreatFox and Feodo Tracker blocklists. No passive DNS, no sandbox, no AV consensus, no reputation scoring.";
+  "hits: published vendor and CERT reporting. sample_hits: this service's own static analysis of public malware samples. feed_hits: abuse.ch ThreatFox and Feodo Tracker blocklists, and the Emerging Threats compromised-host IP list. No passive DNS, no sandbox, no AV consensus, no reputation scoring.";
 export const VERDICT_NOTE =
   "verdict states what a publisher reported. suggested_investigation_action and priority are this service's own analysis and are not safe to automate without consumer policy.";
 export const ABSENCE_NOTE =
@@ -305,7 +305,7 @@ export interface SampleState {
 
 /** One value an abuse.ch list carries. */
 export interface FeedIndicatorRow {
-  source: string; // 'threatfox' | 'feodo'
+  source: string; // 'threatfox' | 'feodo' | 'et_compromised'
   indicator_type: string;
   value: string;
   value_lc: string;

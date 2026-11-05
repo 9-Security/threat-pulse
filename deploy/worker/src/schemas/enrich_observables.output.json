@@ -183,7 +183,7 @@
             "object",
             "null"
           ],
-          "description": "freshness of each abuse.ch list, read every few hours; null when it cannot be read",
+          "description": "freshness of each feed list (abuse.ch ThreatFox and Feodo, Emerging Threats compromised IPs), read every few hours; null when it cannot be read",
           "additionalProperties": false,
           "properties": {
             "threatfox": {
@@ -208,6 +208,27 @@
               }
             },
             "feodo": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "exported_at",
+                "ok",
+                "kept"
+              ],
+              "properties": {
+                "exported_at": {
+                  "type": "string"
+                },
+                "ok": {
+                  "type": "boolean",
+                  "description": "false: the last read failed; the rows from earlier reads are still served until they expire"
+                },
+                "kept": {
+                  "type": "integer"
+                }
+              }
+            },
+            "et_compromised": {
               "type": "object",
               "additionalProperties": false,
               "required": [
@@ -1150,7 +1171,8 @@
           "type": "string",
           "enum": [
             "threatfox",
-            "feodo"
+            "feodo",
+            "et_compromised"
           ]
         },
         "matched_value": {
@@ -1281,7 +1303,8 @@
             "type": "string",
             "enum": [
               "threatfox",
-              "feodo"
+              "feodo",
+              "et_compromised"
             ]
           }
         },

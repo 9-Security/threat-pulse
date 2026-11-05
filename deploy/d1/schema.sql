@@ -234,7 +234,7 @@ CREATE TABLE IF NOT EXISTS sample_state (
 -- The feed side of the corpus: what abuse.ch lists as malicious infrastructure.
 -- Existing databases get these tables from deploy/d1/migrations/006-feed-corpus.sql.
 CREATE TABLE IF NOT EXISTS feed_indicators (
-    source          TEXT NOT NULL,          -- 'threatfox' | 'feodo'
+    source          TEXT NOT NULL,          -- 'threatfox' | 'feodo' | 'et_compromised'
     indicator_type  TEXT NOT NULL,          -- ip, domain, url, md5, sha1, sha256
     value           TEXT NOT NULL,
     -- botnet_cc, payload_delivery, payload, ...: a C2 server and a download

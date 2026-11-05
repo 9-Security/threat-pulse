@@ -10,8 +10,11 @@ from soc_news_parser.evidence import _normalize
 from soc_news_parser.feed_export import (
     FeedError,
     FeedResult,
+    ET_COMPROMISED_URL,
     collect_feeds,
     feodo_indicators,
+    fetch_et_compromised,
+    parse_et_compromised,
     fetch_watchlist,
     parse_watchlist,
     render_sql,
@@ -200,24 +203,40 @@ def _client(handler) -> httpx.Client:
     return httpx.Client(transport=httpx.MockTransport(handler))
 
 
-def test_without_an_analyser_key_every_source_says_so_and_nothing_is_fetched():
+ET_LIST = "# compromised hosts\n45.33.70.70\n91.240.118.222\n10.0.0.9\n\n45.33.70.70\nnot-an-ip\n"
+
+
+def _routes(watchlist=None):
     def handler(request: httpx.Request) -> httpx.Response:
-        raise AssertionError("no request without a key")
-    results = collect_feeds(base_url="http://analyser.test", api_key="", client=_client(handler))
-    assert [r.error for r in results] == ["ANALYZER_API_KEY is not set"] * 2
-    assert summary_of(results)["any_ok"] is False
+        if str(request.url) == ET_COMPROMISED_URL:
+            return httpx.Response(200, text=ET_LIST)
+        if watchlist is None:
+            raise AssertionError("no analyser request without a key")
+        return httpx.Response(200, json=watchlist)
+    return handler
+
+
+def test_without_an_analyser_key_abuse_ch_says_so_and_et_still_lands():
+    results = {r.source: r for r in collect_feeds(base_url="http://analyser.test", api_key="", client=_client(_routes()))}
+    assert results["threatfox"].error == results["feodo"].error == "ANALYZER_API_KEY is not set"
+    assert results["et_compromised"].ok
+    assert summary_of(list(results.values()))["any_ok"] is True
 
 
 def test_the_request_goes_to_the_analyser_with_its_key_and_never_to_abuse_ch():
     seen = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
+        if str(request.url) == ET_COMPROMISED_URL:
+            assert "X-API-Key" not in request.headers, "the analyser key never goes to a third party"
+            return httpx.Response(200, text=ET_LIST)
         seen["url"] = str(request.url)
         seen["key"] = request.headers.get("X-API-Key")
         return httpx.Response(200, json=_watchlist())
     results = collect_feeds(base_url="http://127.0.0.1:18080/", api_key="k3y", client=_client(handler))
     assert seen == {"url": "http://127.0.0.1:18080/api/threat-intel/watchlist", "key": "k3y"}
     assert "abuse.ch" not in seen["url"]
+    assert [r.source for r in results] == ["threatfox", "feodo", "et_compromised"]
     assert summary_of(results)["any_ok"] is True
 
 
@@ -225,3 +244,40 @@ def test_http_failures_become_every_sources_error():
     results = fetch_watchlist(_client(lambda request: httpx.Response(503)), "http://analyser.test", "k3y")
     assert [r.source for r in results] == ["threatfox", "feodo"]
     assert all(not r.ok and "503" in (r.error or "") for r in results)
+
+
+def test_et_list_keeps_distinct_public_addresses():
+    rows = parse_et_compromised(ET_LIST, seen_at="2026-11-05T08:00:00Z")
+    assert [r.value for r in rows] == ["45.33.70.70", "91.240.118.222"]
+    assert all(r.source == "et_compromised" and r.threat_type == "compromised" for r in rows)
+    assert rows[0].first_seen == "2026-11-05T08:00:00Z" and rows[0].reference == ET_COMPROMISED_URL
+
+
+def test_et_answers_that_are_not_the_list_are_errors():
+    for body in ("", "# only comments\n", "<html><body>blocked</body></html>", "10.0.0.1\n192.168.0.1\n"):
+        with pytest.raises(FeedError):
+            parse_et_compromised(body, seen_at="2026-11-05T08:00:00Z")
+    result = fetch_et_compromised(_client(lambda request: httpx.Response(503)), seen_at="x")
+    assert not result.ok and "503" in (result.error or "")
+
+
+def test_et_push_writes_only_what_changed_and_keeps_first_seen():
+    conn = _db()
+    first = [FeedResult("et_compromised", parse_et_compromised(ET_LIST, seen_at="2026-11-05T00:00:00Z"))]
+    assert _apply(conn, render_sql(first, now=NOW)) == 2
+    # The same list a day later: nothing is written, and first_seen stays the first sighting.
+    again = [FeedResult("et_compromised", parse_et_compromised(ET_LIST, seen_at="2026-11-06T00:00:00Z"))]
+    assert _apply(conn, render_sql(again, now=NOW)) == 0
+    assert _rows(conn)[("et_compromised", "45.33.70.70")][4] == "2026-11-05T00:00:00Z"  # first_seen
+    # One address leaves, one arrives: exactly two rows change.
+    moved = [FeedResult("et_compromised", parse_et_compromised("45.33.70.70\n185.220.101.7\n", seen_at="2026-11-07T00:00:00Z"))]
+    assert _apply(conn, render_sql(moved, now=NOW)) == 2
+    assert {v for (src, v) in _rows(conn) if src == "et_compromised"} == {"45.33.70.70", "185.220.101.7"}
+
+
+def test_a_failed_et_read_keeps_its_rows():
+    conn = _db()
+    _apply(conn, render_sql([FeedResult("et_compromised", parse_et_compromised(ET_LIST, seen_at="x"))], now=NOW))
+    _apply(conn, render_sql([FeedResult("et_compromised", error="HTTP 503")], now=NOW))
+    assert {v for (src, v) in _rows(conn) if src == "et_compromised"} == {"45.33.70.70", "91.240.118.222"}
+    assert dict(conn.execute("SELECT source, ok FROM feed_state")) == {"et_compromised": 0}

@@ -867,6 +867,25 @@ test("each list has its own clock, and a list that cannot be read is null", asyn
   assert.match(fresh.out.coverage.scope, /feed_hits: abuse\.ch/);
 });
 
+test("an Emerging Threats compromised-host row is a feed hit and keeps the published shape", async () => {
+  const feeds = [
+    ...FEEDS,
+    { type: "ip", value: "45.33.70.70", source: "et_compromised", malware: null, confidence: null, threat: "compromised", last: null },
+  ];
+  const { out } = await run(["45.33.70.70"], {
+    feeds,
+    feedState: [
+      { source: "threatfox", ok: true, kept: 7000 },
+      { source: "feodo", ok: true, kept: 5 },
+      { source: "et_compromised", ok: true, kept: 514 },
+    ],
+  });
+  assertShape(out);
+  assert.deepEqual(out.feed_hits[0].sources, ["et_compromised", "feodo", "threatfox"]);
+  assert.deepEqual(Object.keys(out.coverage.feeds), ["et_compromised", "feodo", "threatfox"]);
+  assert.match(out.coverage.scope, /Emerging Threats/);
+});
+
 test("the worst case stays inside the 50-statement limit with the feed side", async () => {
   // 100 URLs whose hosts have 16 labels: the expansion the limits page measures.
   const host = Array.from({ length: 13 }, (_, i) => `l${i}`).join(".") + ".example.com";

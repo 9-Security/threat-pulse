@@ -15,6 +15,10 @@ The rows keep abuse.ch's own fields (first/last seen, ThreatFox id, threat type)
 what lands in D1 is what reading abuse.ch directly produced.
 
 What is kept
+  * Emerging Threats' compromised-host IP list (`compromised-ips.txt`, about 500
+    addresses, refreshed daily by Proofpoint), mirrored. It needs no key, so it is
+    read directly rather than through the analyser. Rows change only when the list
+    does: new addresses are inserted, dropped ones deleted, the rest write nothing.
   * ThreatFox `get_iocs` for the last 7 days (the API maximum), confidence >= 75,
     rows ThreatFox marks `is_compromised` (a hacked legitimate site) dropped. Every
     threat type is kept and recorded, so an answer says whether a value is a C2
@@ -45,6 +49,7 @@ need its commercial terms.
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import os
 from dataclasses import dataclass
@@ -60,6 +65,11 @@ from .sample_export import ANALYZER_BASE_URL, BATCH_ROWS, _row, _text
 
 WATCHLIST_PATH = "/api/threat-intel/watchlist"
 SOURCES = ("threatfox", "feodo")
+ET_SOURCE = "et_compromised"
+ET_COMPROMISED_URL = "https://rules.emergingthreats.net/blockrules/compromised-ips.txt"
+# The list has held about 500 addresses; far more means something other than the list
+# answered, and the NOT IN delete below must stay a small statement.
+ET_MAX_ADDRESSES = 20_000
 THREATFOX_IOC_URL = "https://threatfox.abuse.ch/ioc/{id}/"
 FEODO_REFERENCE = "https://feodotracker.abuse.ch/browse/host/{ip}/"
 MIN_CONFIDENCE = 75
@@ -270,6 +280,65 @@ def parse_watchlist(body: Any) -> list[FeedResult]:
     return results
 
 
+def _read_bytes(client: httpx.Client, method: str, url: str, **kwargs: Any) -> bytes:
+    try:
+        with client.stream(method, url, **kwargs) as response:
+            response.raise_for_status()
+            chunks: list[bytes] = []
+            size = 0
+            for chunk in response.iter_bytes():
+                size += len(chunk)
+                if size > MAX_RESPONSE_BYTES:
+                    raise FeedError(f"{url}: response larger than {MAX_RESPONSE_BYTES} bytes")
+                chunks.append(chunk)
+        return b"".join(chunks)
+    except httpx.HTTPError as error:
+        raise FeedError(f"{url}: {error}") from error
+
+
+def parse_et_compromised(body: str, *, seen_at: str) -> tuple[FeedIndicator, ...]:
+    """One IP per line, '#' comments. Raises FeedError when the answer is not that list."""
+    found: dict[str, FeedIndicator] = {}
+    lines = [line.strip() for line in body.splitlines()]
+    lines = [line for line in lines if line and not line.startswith("#")]
+    if any("<" in line for line in lines[:5]):
+        raise FeedError("Emerging Threats: the answer is HTML, not the IP list")
+    for line in lines:
+        try:
+            ipaddress.IPv4Address(line)
+        except ValueError:
+            continue  # one malformed line must not sink the list (or the other sources)
+        indicator = _indicator(
+            ET_SOURCE,
+            "ip",
+            line,
+            threat_type="compromised",
+            malware=None,
+            confidence=None,
+            port=None,
+            first_seen=seen_at,
+            last_seen=None,
+            reference=ET_COMPROMISED_URL,
+        )
+        if indicator is not None:
+            found[indicator.value] = indicator
+    # The list is never empty; zero addresses from a non-empty answer is breakage.
+    if not found:
+        raise FeedError("Emerging Threats: no public IPv4 address in the answer")
+    if len(found) > ET_MAX_ADDRESSES:
+        raise FeedError(f"Emerging Threats: {len(found)} addresses, more than {ET_MAX_ADDRESSES}")
+    return tuple(found[key] for key in sorted(found))
+
+
+def fetch_et_compromised(client: httpx.Client, *, seen_at: str) -> FeedResult:
+    try:
+        body = _read_bytes(client, "GET", ET_COMPROMISED_URL).decode("utf-8", errors="replace")
+        indicators = parse_et_compromised(body, seen_at=seen_at)
+        return FeedResult(ET_SOURCE, indicators, listed=len(indicators))
+    except FeedError as error:
+        return FeedResult(ET_SOURCE, error=str(error)[:200])
+
+
 def _read_json(client: httpx.Client, method: str, url: str, **kwargs: Any) -> Any:
     try:
         with client.stream(method, url, **kwargs) as response:
@@ -303,12 +372,13 @@ def collect_feeds(
     api_key: str | None = None,
     client: httpx.Client | None = None,
 ) -> list[FeedResult]:
-    """Read every source through the analyser. One source failing never stops the other."""
+    """abuse.ch through the analyser, Emerging Threats directly. One source failing never stops another."""
     url = base_url or os.environ.get("ANALYZER_URL", "").strip() or ANALYZER_BASE_URL
     key = api_key if api_key is not None else os.environ.get("ANALYZER_API_KEY", "").strip()
     own = client or httpx.Client(timeout=TIMEOUT_SECONDS, headers={"user-agent": "threat-pulse feed export"})
+    seen_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     try:
-        return fetch_watchlist(own, url, key)
+        return [*fetch_watchlist(own, url, key), fetch_et_compromised(own, seen_at=seen_at)]
     finally:
         if client is None:
             own.close()
@@ -353,6 +423,18 @@ def render_sql(
         ]
         if result.source == "feodo" and result.ok:
             lines.append("DELETE FROM feed_indicators WHERE source = 'feodo';")
+        if result.source == ET_SOURCE and result.ok and rows:
+            # Mirrored like Feodo, but ~500 rows: delete only what left the list and insert
+            # only what is new, so an unchanged list writes nothing.
+            listed = _row(tuple(sorted({row[2] for row in rows})))
+            lines.append(f"DELETE FROM feed_indicators WHERE source = '{ET_SOURCE}' AND value NOT IN {listed};")
+            for start in range(0, len(rows), BATCH_ROWS):
+                lines.append(f"INSERT INTO feed_indicators ({FEED_INDICATOR_COLUMNS}) VALUES")
+                lines.append(
+                    ",\n".join(_row(row) for row in rows[start : start + BATCH_ROWS])
+                    + " ON CONFLICT(source, indicator_type, value) DO NOTHING;"
+                )
+            continue
         if result.ok:
             for start in range(0, len(rows), BATCH_ROWS):
                 lines.append(f"INSERT INTO feed_indicators ({FEED_INDICATOR_COLUMNS}) VALUES")
