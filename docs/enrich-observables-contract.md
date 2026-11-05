@@ -130,7 +130,7 @@ in the denominator.
 | `scope`, `verdict_note`, `absence_note` | Fixed sentences stating what this service is not, and how `verdict` and `unseen` must be read. |
 | `version_note` | Present only when `corpus_version` is withheld. |
 | `samples` | Freshness of the sample side: `{analyzer, exported_at, newest_sample}`, or `null`. It arrives hourly from the malware analyser, while the news side arrives once a day, so the two carry separate clocks. |
-| `feeds` | Freshness of each abuse.ch list: `{threatfox: {exported_at, ok, kept}, feodo: {…}}`, or `null` when it cannot be read. Each list is read every six hours. `ok: false` means the last read failed; the rows from earlier reads are still served until they expire. |
+| `feeds` | Freshness of each feed list: `{threatfox: {exported_at, ok, kept}, feodo: {…}, et_compromised: {…}}`, or `null` when it cannot be read. Each list is read every six hours. `ok: false` means the last read failed; the rows from earlier reads are still served until they expire. |
 
 ### `hits[]`
 
@@ -247,9 +247,9 @@ the same `input_index`.
 |---|---|
 | `match` | `exact` (the value, or the whole URL, is listed), `same_host` (a URL's host is listed), or `parent_domain` (the submitted host's **registrable domain** is listed). |
 | `matched_value` | The listed value, as stored. |
-| `sources` | `threatfox`, `feodo`, or both. |
+| `sources` | Any of `threatfox`, `feodo` (abuse.ch) and `et_compromised` (Emerging Threats' compromised-host IP list). |
 | `entry_count` | List entries for the matched value. `entries[]` lists at most five, most recently seen first. |
-| `entries[]` | Per entry: `source`, `matched_value`, `threat_type`, `malware`, `confidence`, `port`, `first_seen`, `last_seen`, `reference` (the entry on abuse.ch). |
+| `entries[]` | Per entry: `source`, `matched_value`, `threat_type`, `malware`, `confidence`, `port`, `first_seen`, `last_seen`, `reference` (the entry on abuse.ch; for `et_compromised`, the list itself). |
 
 **Read `threat_type` before acting.** `botnet_cc` is a command-and-control server,
 `payload_delivery` a location that served malware, `payload` a malicious file. They
