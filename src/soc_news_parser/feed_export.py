@@ -16,9 +16,10 @@ what lands in D1 is what reading abuse.ch directly produced.
 
 What is kept
   * Emerging Threats' compromised-host IP list (`compromised-ips.txt`, about 500
-    addresses, refreshed daily by Proofpoint), mirrored. It needs no key, so it is
-    read directly rather than through the analyser. Rows change only when the list
-    does: new addresses are inserted, dropped ones deleted, the rest write nothing.
+    addresses, refreshed daily by Proofpoint), mirrored, read through the analyser
+    like abuse.ch, so the XDR platform and this service see the same list. Rows
+    change only when the list does: new addresses are inserted, dropped ones
+    deleted, the rest write nothing.
   * ThreatFox `get_iocs` for the last 7 days (the API maximum), confidence >= 75,
     rows ThreatFox marks `is_compromised` (a hacked legitimate site) dropped. Every
     threat type is kept and recorded, so an answer says whether a value is a C2
@@ -64,8 +65,8 @@ from .publicsuffix import registrable_domain
 from .sample_export import ANALYZER_BASE_URL, BATCH_ROWS, _row, _text
 
 WATCHLIST_PATH = "/api/threat-intel/watchlist"
-SOURCES = ("threatfox", "feodo")
 ET_SOURCE = "et_compromised"
+SOURCES = ("threatfox", "feodo", ET_SOURCE)
 ET_COMPROMISED_URL = "https://rules.emergingthreats.net/blockrules/compromised-ips.txt"
 # The list has held about 500 addresses; far more means something other than the list
 # answered, and the NOT IN delete below must stay a small statement.
@@ -248,14 +249,49 @@ def feodo_indicators(rows: Sequence[dict[str, Any]]) -> tuple[FeedIndicator, ...
     return tuple(best[key] for key in sorted(best))
 
 
-BUILDERS: dict[str, Callable[[Sequence[dict[str, Any]]], tuple[FeedIndicator, ...]]] = {
-    "threatfox": threatfox_indicators,
-    "feodo": feodo_indicators,
-}
+def et_indicators(rows: Sequence[dict[str, Any]], *, seen_at: str) -> tuple[FeedIndicator, ...]:
+    """Emerging Threats compromised hosts as the analyser serves them. `first_seen` is when this
+    service first saw the address (the list has no dates); the upsert keeps the first one."""
+    found: dict[str, FeedIndicator] = {}
+    for row in rows:
+        raw = _text(row.get("value"))
+        if row.get("ioc_type") != "ip" or not raw:
+            continue
+        try:
+            ipaddress.IPv4Address(raw)
+        except ValueError:
+            continue  # one malformed row must not sink the list (or the other sources)
+        indicator = _indicator(
+            ET_SOURCE,
+            "ip",
+            raw,
+            threat_type="compromised",
+            malware=None,
+            confidence=None,
+            port=None,
+            first_seen=seen_at,
+            last_seen=None,
+            reference=ET_COMPROMISED_URL,
+        )
+        if indicator is not None:
+            found[indicator.value] = indicator
+    if len(found) > ET_MAX_ADDRESSES:
+        raise FeedError(f"Emerging Threats: {len(found)} addresses, more than {ET_MAX_ADDRESSES}")
+    return tuple(found[key] for key in sorted(found))
 
 
-def parse_watchlist(body: Any) -> list[FeedResult]:
+def _now_stamp() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def parse_watchlist(body: Any, *, seen_at: str | None = None) -> list[FeedResult]:
     """One FeedResult per source. Raises FeedError when the answer is not a watchlist."""
+    stamp = seen_at or _now_stamp()
+    builders: dict[str, Callable[[Sequence[dict[str, Any]]], tuple[FeedIndicator, ...]]] = {
+        "threatfox": threatfox_indicators,
+        "feodo": feodo_indicators,
+        ET_SOURCE: lambda rows: et_indicators(rows, seen_at=stamp),
+    }
     if not isinstance(body, dict) or not isinstance(body.get("items"), list) or not isinstance(
         body.get("sources"), dict
     ):
@@ -267,76 +303,20 @@ def parse_watchlist(body: Any) -> list[FeedResult]:
             results.append(FeedResult(name, error=f"the analyser serves no {name} source"))
             continue
         if state.get("ok") is not True:
-            # The analyser could not read abuse.ch and is serving its last rows: that
-            # is a failing source, not a current one.
+            # The analyser could not read its upstream and is serving its last rows:
+            # that is a failing source, not a current one.
             reason = str(state.get("error") or "unknown error")[:160]
             results.append(FeedResult(name, error=f"analyser: {name} upstream failing: {reason}"))
             continue
         rows = [r for r in body["items"] if isinstance(r, dict) and r.get("source") == name]
         listed = state.get("listed_now")
-        results.append(
-            FeedResult(name, BUILDERS[name](rows), listed=listed if isinstance(listed, int) else len(rows))
-        )
-    return results
-
-
-def _read_bytes(client: httpx.Client, method: str, url: str, **kwargs: Any) -> bytes:
-    try:
-        with client.stream(method, url, **kwargs) as response:
-            response.raise_for_status()
-            chunks: list[bytes] = []
-            size = 0
-            for chunk in response.iter_bytes():
-                size += len(chunk)
-                if size > MAX_RESPONSE_BYTES:
-                    raise FeedError(f"{url}: response larger than {MAX_RESPONSE_BYTES} bytes")
-                chunks.append(chunk)
-        return b"".join(chunks)
-    except httpx.HTTPError as error:
-        raise FeedError(f"{url}: {error}") from error
-
-
-def parse_et_compromised(body: str, *, seen_at: str) -> tuple[FeedIndicator, ...]:
-    """One IP per line, '#' comments. Raises FeedError when the answer is not that list."""
-    found: dict[str, FeedIndicator] = {}
-    lines = [line.strip() for line in body.splitlines()]
-    lines = [line for line in lines if line and not line.startswith("#")]
-    if any("<" in line for line in lines[:5]):
-        raise FeedError("Emerging Threats: the answer is HTML, not the IP list")
-    for line in lines:
         try:
-            ipaddress.IPv4Address(line)
-        except ValueError:
-            continue  # one malformed line must not sink the list (or the other sources)
-        indicator = _indicator(
-            ET_SOURCE,
-            "ip",
-            line,
-            threat_type="compromised",
-            malware=None,
-            confidence=None,
-            port=None,
-            first_seen=seen_at,
-            last_seen=None,
-            reference=ET_COMPROMISED_URL,
-        )
-        if indicator is not None:
-            found[indicator.value] = indicator
-    # The list is never empty; zero addresses from a non-empty answer is breakage.
-    if not found:
-        raise FeedError("Emerging Threats: no public IPv4 address in the answer")
-    if len(found) > ET_MAX_ADDRESSES:
-        raise FeedError(f"Emerging Threats: {len(found)} addresses, more than {ET_MAX_ADDRESSES}")
-    return tuple(found[key] for key in sorted(found))
-
-
-def fetch_et_compromised(client: httpx.Client, *, seen_at: str) -> FeedResult:
-    try:
-        body = _read_bytes(client, "GET", ET_COMPROMISED_URL).decode("utf-8", errors="replace")
-        indicators = parse_et_compromised(body, seen_at=seen_at)
-        return FeedResult(ET_SOURCE, indicators, listed=len(indicators))
-    except FeedError as error:
-        return FeedResult(ET_SOURCE, error=str(error)[:200])
+            indicators = builders[name](rows)
+        except FeedError as error:
+            results.append(FeedResult(name, error=str(error)[:200]))
+            continue
+        results.append(FeedResult(name, indicators, listed=listed if isinstance(listed, int) else len(rows)))
+    return results
 
 
 def _read_json(client: httpx.Client, method: str, url: str, **kwargs: Any) -> Any:
@@ -355,13 +335,15 @@ def _read_json(client: httpx.Client, method: str, url: str, **kwargs: Any) -> An
         raise FeedError(f"{url}: {error}") from error
 
 
-def fetch_watchlist(client: httpx.Client, base_url: str, api_key: str | None) -> list[FeedResult]:
+def fetch_watchlist(
+    client: httpx.Client, base_url: str, api_key: str | None, *, seen_at: str | None = None
+) -> list[FeedResult]:
     """Every source from one analyser call; any failure is every source's error."""
     if not api_key:
         return [FeedResult(name, error="ANALYZER_API_KEY is not set") for name in SOURCES]
     try:
         body = _read_json(client, "GET", base_url.rstrip("/") + WATCHLIST_PATH, headers={"X-API-Key": api_key})
-        return parse_watchlist(body)
+        return parse_watchlist(body, seen_at=seen_at)
     except FeedError as error:
         return [FeedResult(name, error=str(error)[:200]) for name in SOURCES]
 
@@ -372,13 +354,12 @@ def collect_feeds(
     api_key: str | None = None,
     client: httpx.Client | None = None,
 ) -> list[FeedResult]:
-    """abuse.ch through the analyser, Emerging Threats directly. One source failing never stops another."""
+    """Every source through the analyser. One source failing never stops another."""
     url = base_url or os.environ.get("ANALYZER_URL", "").strip() or ANALYZER_BASE_URL
     key = api_key if api_key is not None else os.environ.get("ANALYZER_API_KEY", "").strip()
     own = client or httpx.Client(timeout=TIMEOUT_SECONDS, headers={"user-agent": "threat-pulse feed export"})
-    seen_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     try:
-        return [*fetch_watchlist(own, url, key), fetch_et_compromised(own, seen_at=seen_at)]
+        return fetch_watchlist(own, url, key, seen_at=_now_stamp())
     finally:
         if client is None:
             own.close()
