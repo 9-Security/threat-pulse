@@ -422,7 +422,7 @@ D1 裡的指標有三個來源，各存在自己的表，回答時分得出是�
 
 - **ThreatFox** `get_iocs`，API 最多回 7 天；只留信心 ≥ 75，丟掉 ThreatFox 標為 `is_compromised` 的被入侵正常網站。每種威脅類型都留，並記錄是 C2（`botnet_cc`）、散布點（`payload_delivery`）或惡意檔案（`payload`）。
 - **Feodo Tracker** 殭屍網路 C2 清單，整份鏡像（它移除的位址就是已下線）。
-- **Emerging Threats** `compromised-ips.txt`（Proofpoint 每日更新，約 500 個已遭入侵主機 IP），來源名 `et_compromised`、`threat_type` 為 `compromised`。不需金鑰，所以直接抓、不經 analyzer。整份鏡像，但只寫變動：新位址插入、移出清單的刪除，清單沒變時零寫入；`first_seen` 是本服務第一次看到的時間。讀不到或內容不像清單（HTML、零個公網 IP）時視為失敗，舊資料保留。商業轉散布前需確認 Proofpoint 的使用條款。
+- **Emerging Threats** `compromised-ips.txt`（Proofpoint 每日更新，約 500 個已遭入侵主機 IP），來源名 `et_compromised`、`threat_type` 為 `compromised`。和 abuse.ch 一樣經 analyzer 的 `/watchlist` 取得，XDR 平台與本服務看到的是同一份清單。整份鏡像，但只寫變動：新位址插入、移出清單的刪除，清單沒變時零寫入；`first_seen` 是本服務第一次看到的時間。analyzer 回報該來源抓取失敗時視為失敗，舊資料保留。商業轉散布前需確認 Proofpoint 的使用條款。
 
 ThreatFox 的資料保留到它**最後一次看到該值後 30 天**，所以 7 天的 API 視窗累積成約一個月的資料。每次更新只寫有變動的列（2026-10-22 實測：第一次約 7,300 列，之後只寫新增與變動），在 Workers Free 的寫入額度內。來源讀不到時不寫該來源的列，舊資料保留，`feed_state` 記下錯誤；過期刪除照常執行。
 
